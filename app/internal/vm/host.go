@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -85,7 +86,7 @@ func RunHost() int {
 	return 0
 }
 
-func runHost(logf func(string, ...any)) error {
+func runHost(logf func(string, ...any)) (retErr error) {
 	if err := os.MkdirAll(runDir(), 0o700); err != nil {
 		return err
 	}
@@ -99,34 +100,62 @@ func runHost(logf func(string, ...any)) error {
 	}
 	defer func() { _ = os.Remove(controlSocket()) }()
 
+	h := &host{
+		logf: logf, stopReq: make(chan struct{}),
+		status: HostStatus{Running: true, PID: os.Getpid(), Logs: LogsConnecting},
+	}
+	startupHandler := h.startupRoutes()
+	var activeHandler atomic.Pointer[http.Handler]
+	initialHandler := startupHandler
+	activeHandler.Store(&initialHandler)
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			(*activeHandler.Load()).ServeHTTP(w, r)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { _ = srv.Serve(ctl) }()
+	defer func() {
+		h.mu.Lock()
+		startupFailed := h.status.Error != ""
+		h.mu.Unlock()
+		if retErr != nil && startupFailed {
+			// Keep a startup failure queryable long enough for the app to report
+			// it instead of waiting for the generic five-minute timeout.
+			time.Sleep(5 * time.Second)
+		}
+		_ = srv.Close()
+	}()
+
 	man, err := Installed()
 	if err != nil {
+		h.setError(err)
 		return err
 	}
+	h.mu.Lock()
+	h.status.Version = man.Version
+	h.mu.Unlock()
 	cfg := LoadConfig()
 	if err := prepareDataDisk(man, cfg.DiskGB); err != nil {
-		return fmt.Errorf("data disk: %w", err)
+		err = fmt.Errorf("data disk: %w", err)
+		h.setError(err)
+		return err
 	}
 	logf("engine: booting %s (%d CPUs, %d MB, %d GB disk)", man.Version, cfg.CPUs, cfg.MemoryMB, cfg.DiskGB)
 	m, err := boot(bootOptions{manifest: man, config: cfg, logf: logf})
 	if err != nil {
-		return fmt.Errorf("start VM: %w", err)
+		err = fmt.Errorf("start VM: %w", err)
+		h.setError(err)
+		return err
 	}
-	h := &host{
-		m: m, man: man, logf: logf, stopReq: make(chan struct{}),
-		g:      newGuest(func(ctx context.Context) (net.Conn, error) { return m.dial(ctx, vsockControl) }),
-		status: HostStatus{Running: true, Version: man.Version, PID: os.Getpid(), Logs: LogsConnecting},
-	}
+	h.m, h.man = m, man
+	h.g = newGuest(func(ctx context.Context) (net.Conn, error) { return m.dial(ctx, vsockControl) })
 	h.advertiser = mdns.NewManager(func(line string) { logf("%s", line) })
 	h.status.AdvertisementSupported = true
 	defer h.stopAdvertisement()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go h.collectLogs(ctx)
-
-	srv := &http.Server{Handler: h.routes(), ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = srv.Serve(ctl) }()
-	defer func() { _ = srv.Close() }()
 
 	if err := h.waitReady(ctx, 4*time.Minute); err != nil {
 		h.setError(err)
@@ -138,6 +167,11 @@ func runHost(logf func(string, ...any)) error {
 		h.shutdown()
 		return err
 	}
+	h.mu.Lock()
+	h.status.Docker = true
+	h.mu.Unlock()
+	readyHandler := http.Handler(h.routes())
+	activeHandler.Store(&readyHandler)
 	logf("engine: ready")
 	go h.housekeeping(ctx)
 
@@ -184,9 +218,6 @@ func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 		cancel()
 		if err == nil && s.Docker {
 			_ = h.g.setTime(ctx, time.Now())
-			h.mu.Lock()
-			h.status.Docker = true
-			h.mu.Unlock()
 			return nil
 		}
 		if err == nil {
@@ -295,12 +326,7 @@ func (h *host) shutdown() {
 
 func (h *host) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
-		h.mu.Lock()
-		s := h.status
-		h.mu.Unlock()
-		writeJSON(w, s)
-	})
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) { h.writeStatus(w) })
 	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, r *http.Request) {
 		h.stopAdvertisement()
 		h.once.Do(func() { close(h.stopReq) })
@@ -336,6 +362,23 @@ func (h *host) routes() http.Handler {
 		}
 	})
 	return mux
+}
+
+func (h *host) startupRoutes() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/status" {
+			http.Error(w, "engine is still starting", http.StatusServiceUnavailable)
+			return
+		}
+		h.writeStatus(w)
+	})
+}
+
+func (h *host) writeStatus(w http.ResponseWriter) {
+	h.mu.Lock()
+	status := h.status
+	h.mu.Unlock()
+	writeJSON(w, status)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

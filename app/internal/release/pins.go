@@ -2,7 +2,6 @@ package release
 
 import (
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -193,12 +192,4 @@ func Load(env []byte) (*Pins, error) {
 		}
 	}
 	return &p, nil
-}
-
-func IsCommitRef(ref string) bool {
-	if len(ref) != 40 {
-		return false
-	}
-	_, err := hex.DecodeString(ref)
-	return err == nil
 }

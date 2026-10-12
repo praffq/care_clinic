@@ -222,6 +222,7 @@ func (s *Store) RestoreFrom(srcDir, dbDump, filesArchive, recoveryFile string) e
 	}
 	j.Phase = "committed"
 	if err := s.writeRestoreJournal(j); err != nil {
+		j.Phase = "prepared"
 		return s.restoreFailure(j, err)
 	}
 	s.logln("Bringing CARE back up...")

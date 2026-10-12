@@ -146,6 +146,9 @@ func (s *Store) PendingRestore() (bool, error) {
 }
 
 func (s *Store) restoreFailure(j *restoreJournal, err error) error {
+	if j.Phase == "committed" {
+		return fmt.Errorf("restore %s was committed, but completion failed: %w; the restored database and files remain in place and will not be rolled back. Start CARE Clinic to finish bringing up and cleaning the restore; do not start containers manually (some services may be stopped)", j.ID, err)
+	}
 	return fmt.Errorf("restore %s failed: %w; recovery data was retained. Start CARE to recover safely; do not start containers manually (some services may be stopped)", j.ID, err)
 }
 

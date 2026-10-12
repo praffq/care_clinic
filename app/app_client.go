@@ -168,16 +168,24 @@ func (a *App) ClientReachable() (state ClientReachability, err error) {
 
 // ClientPreflight reports what connecting will clean up. It runs no privileged
 // command and reaches no network.
-func (a *App) ClientPreflight() (result ClientPreflight, err error) {
+func (a *App) ClientPreflight(address string) (result ClientPreflight, err error) {
 	err = a.withReadJob(func() error {
 		cfg := a.loadConfig()
+		clinicURL, err := trust.ClientURL(address)
+		if err != nil {
+			return err
+		}
+		host := strings.TrimPrefix(clinicURL, "https://")
 		entry, err := hosts.Inspect()
 		if err != nil {
 			return err
 		}
-		host := strings.TrimPrefix(cfg.ClientURL, "https://")
 		result.HostsEntry = entry || host != "" && hosts.HasEntry(host)
-		stale, err := trust.OtherCARoots(trust.SHA1Hex(cfg.ClientCertificate))
+		keepRoot := cfg.ClientCertificate
+		if pending := a.clinicRoot(clinicURL); pending != "" {
+			keepRoot = pending
+		}
+		stale, err := trust.OtherCARoots(trust.SHA1Hex(keepRoot))
 		if err != nil {
 			return err
 		}
@@ -248,8 +256,8 @@ func (a *App) ConnectClient(address string) error {
 			// second administrator prompt but still connects.
 			at, _ = clinicDialAddress(host)
 		}
-		batched := repairHosts && at != ""
-		root, err := a.connectRoot(cfg, clinicURL, at, repairHosts && !batched)
+		repairFirst, batched := clientHostRepair(repairHosts, hosts.HasEntry(host), at != "")
+		root, err := a.connectRoot(cfg, clinicURL, at, repairFirst)
 		if err != nil {
 			return err
 		}
@@ -291,6 +299,16 @@ func (a *App) ConnectClient(address string) error {
 		a.OpenURL(clinicURL)
 		return nil
 	})
+}
+
+func clientHostRepair(repairHosts, hostEntry, bypass bool) (repairFirst, batched bool) {
+	if !repairHosts {
+		return false, false
+	}
+	if bypass || !hostEntry {
+		return false, true
+	}
+	return true, false
 }
 
 // connectRoot repairs the hosts file first when the clinic could not be reached

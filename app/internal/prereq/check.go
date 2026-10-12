@@ -2,6 +2,8 @@ package prereq
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -38,11 +40,28 @@ func DockerCheck(run proc.Runner) Status {
 		return Status{OK: true, Message: "Docker " + version}
 	case vm.Supported():
 		return engineCheck()
+	case runtime.GOOS == "linux" && dockerSocketPermissionDenied(err):
+		return Status{OK: false, Message: dockerLoginAdvice}
 	case hasCommand("docker"):
 		return Status{OK: false, Message: "Docker is installed but not running."}
 	default:
 		return Status{OK: false, Message: "Docker is not installed."}
 	}
+}
+
+const dockerLoginAdvice = "Docker is running, but this login session cannot access it. Log out and back in so your account picks up its new docker group membership, then check again."
+
+func dockerSocketPermissionDenied(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	output := strings.ToLower(string(exit.Stderr))
+	return strings.Contains(output, "permission denied") && strings.Contains(output, "docker.sock")
+}
+
+func dockerNeedsLogin(message string) bool {
+	return message == dockerLoginAdvice
 }
 
 func engineCheck() Status {

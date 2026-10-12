@@ -3,7 +3,7 @@
 package diskspace
 
 import (
-	"strconv"
+	"fmt"
 
 	"golang.org/x/sys/unix"
 )
@@ -13,13 +13,9 @@ func statVolume(path string) (Usage, error) {
 	if err := unix.Statfs(path, &fs); err != nil {
 		return Usage{}, err
 	}
-	var st unix.Stat_t
-	if err := unix.Stat(path, &st); err != nil {
-		return Usage{}, err
-	}
-	bsize := uint64(fs.Bsize)
+	bsize := statBlockSize(&fs)
 	return Usage{
-		Volume: strconv.FormatUint(uint64(st.Dev), 10),
+		Volume: fmt.Sprintf("%v", fs.Fsid),
 		Free:   uint64(fs.Bavail) * bsize,
 		Total:  uint64(fs.Blocks) * bsize,
 	}, nil

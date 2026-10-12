@@ -432,6 +432,7 @@ const run = async (env, missing) => {
   const logs = [];
   const proc = {env: {}, exitCode: undefined};
   await vm.runInNewContext(verifier, {
+    URL,
     process: proc,
     console: {log: line => logs.push(line)},
     fetch: async url => {
@@ -477,12 +478,11 @@ func TestEngineUpdateLeavesClinicAloneWhenDownloadFails(t *testing.T) {
 		http.Error(w, "missing", http.StatusNotFound)
 	}))
 	defer server.Close()
-	pr := NewProvisioner(proc.Runner{}, &release.Pins{
-		CareVMVersion: "0.1.1", CareVMBaseURL: server.URL,
-		CareVMAarch64SHA256: "vm-arm", CareVMX8664SHA256: "vm-intel",
-	}, nil)
+	pr := NewProvisioner(proc.Runner{}, nil, nil)
 	stopped := false
-	err := pr.UpdateEngine(func() error { stopped = true; return nil })
+	err := pr.installEngineDownloads([]Download{
+		{Name: "care-engine-test.tar.gz", URL: server.URL, SHA256: strings.Repeat("0", 64)},
+	}, func() error { stopped = true; return nil })
 	if err == nil {
 		t.Fatal("update must fail when the engine cannot be downloaded")
 	}

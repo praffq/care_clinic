@@ -106,11 +106,8 @@ func TestRestorePostgresTransactionsAndCorruptPayload(t *testing.T) {
 	}
 	root := restoreTestDir(t)
 	dataDir := filepath.Join(root, "data")
-	socketDir, err := filepath.Abs(filepath.Join("..", "..", "..", ".restore-socket-"+strings.TrimPrefix(filepath.Base(root), ".restore-test-")))
+	socketDir, err := os.MkdirTemp("/tmp", ".care-pg-")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(socketDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

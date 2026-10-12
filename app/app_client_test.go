@@ -25,7 +25,7 @@ func TestFindClinicRejectsTheSameAddressesAsConnect(t *testing.T) {
 	}
 }
 
-func TestFindClinicChangesNothingOnThisComputer(t *testing.T) {
+func TestFailedFindClinicDoesNotChangeThisComputer(t *testing.T) {
 	a := roleApp(t)
 	// care-clinic-not-a-clinic.local cannot be in any hosts file, so this
 	// reaches the network and fails without touching the system.
@@ -62,6 +62,30 @@ func TestClinicDialAddressIsEmptyWithoutAHostsEntry(t *testing.T) {
 	at, err := clinicDialAddress("care-clinic-not-a-clinic.local")
 	if err != nil || at != "" {
 		t.Fatalf("clinicDialAddress = %q, %v", at, err)
+	}
+}
+
+func TestClientConnectBatchesUnrelatedHostsRepair(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		repair      bool
+		hasEntry    bool
+		bypass      bool
+		repairFirst bool
+		batched     bool
+	}{
+		{name: "unrelated old clinic marker", repair: true, batched: true},
+		{name: "host entry without bypass", repair: true, hasEntry: true, repairFirst: true},
+		{name: "host entry with bypass", repair: true, hasEntry: true, bypass: true, batched: true},
+		{name: "no repair needed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repairFirst, batched := clientHostRepair(tt.repair, tt.hasEntry, tt.bypass)
+			if repairFirst != tt.repairFirst || batched != tt.batched {
+				t.Fatalf("repair decision = (%t,%t), want (%t,%t)",
+					repairFirst, batched, tt.repairFirst, tt.batched)
+			}
+		})
 	}
 }
 
@@ -107,7 +131,7 @@ func TestClientReachableDoesNotWaitForARunningJob(t *testing.T) {
 
 func TestClientPreflightReadsWithoutChangingAnything(t *testing.T) {
 	a := roleApp(t)
-	result, err := a.ClientPreflight()
+	result, err := a.ClientPreflight("care.local")
 	if err != nil {
 		t.Skipf("this computer's certificate stores could not be inspected: %v", err)
 	}
@@ -124,7 +148,7 @@ func TestClientPreflightReadsWithoutChangingAnything(t *testing.T) {
 	if err := os.WriteFile(a.installDir()+"/earlier-installation", []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err = a.ClientPreflight()
+	result, err = a.ClientPreflight("care.local")
 	if err != nil || !result.UnfinishedServerSetup {
 		t.Fatalf("a half-installed clinic was not reported: %+v, %v", result, err)
 	}

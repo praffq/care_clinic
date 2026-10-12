@@ -20,15 +20,18 @@ var windowsRebootKeys = []string{
 }
 
 func Check() Plan {
-	if !windowsPending() {
+	return pendingPlan(windowsPending())
+}
+
+func pendingPlan(pending bool) Plan {
+	if !pending {
 		return Plan{}
 	}
 	return Plan{
 		Needed: true,
-		Title:  "Restart to finish setting up the CARE engine",
-		Detail: "Windows needs to restart before the CARE engine can run - it has to turn on the " +
-			"Windows Hypervisor Platform, which only takes effect after a restart. CARE Clinic will " +
-			"open again by itself and pick up where you left off.",
+		Title:  "Restart to finish Windows setup",
+		Detail: "Windows has a pending restart. Restart this computer to finish Windows setup. " +
+			"CARE Clinic will open again by itself and pick up where you left off.",
 		Label: "Restart now",
 	}
 }
@@ -50,5 +53,5 @@ func Now() error {
 		return fmt.Errorf("restarting isn't supported on %s", runtime.GOOS)
 	}
 	return proc.Command("shutdown", "/r", "/t", "5", "/c",
-		"CARE Clinic is restarting this computer to finish setting up Docker.").Run()
+		"CARE Clinic is restarting this computer to finish Windows setup.").Run()
 }

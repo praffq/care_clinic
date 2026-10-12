@@ -1,6 +1,8 @@
 package hosts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -111,7 +113,7 @@ func Remove(log func(string), confirm func(string, string) bool, host string) st
 		return Leftover(host)
 	}
 	data, err := os.ReadFile(path())
-	if os.IsNotExist(err) || err == nil && !strings.Contains(string(data), marker) {
+	if os.IsNotExist(err) || err == nil && !containsMarker(string(data)) {
 		return ""
 	}
 	logln(log, "Removing the "+host+" hosts entry...")
@@ -150,7 +152,7 @@ func leftover(host, p string) string {
 	if err != nil {
 		return "Could not check CARE's hosts entry in " + p + ": " + err.Error()
 	}
-	if !strings.Contains(string(data), marker) {
+	if !containsMarker(string(data)) {
 		return ""
 	}
 	return "The line \"" + line(host) + "\" is still in " + p +
@@ -180,7 +182,7 @@ func inspect(p string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("could not inspect %s: %w", p, err)
 	}
-	return strings.Contains(string(data), marker), nil
+	return containsMarker(string(data)), nil
 }
 
 func RemoveHost(log func(string), host string) error {
@@ -254,6 +256,10 @@ func replaceStep(p string, keep func(string) (string, bool), what string) (step 
 	if !changed {
 		return elevate.Step{}, cleanup, false, nil
 	}
+	sum := sha256.Sum256(data)
+	originalHash := hex.EncodeToString(sum[:])
+	cleanSum := sha256.Sum256([]byte(cleaned))
+	cleanHash := hex.EncodeToString(cleanSum[:])
 	f, err := os.CreateTemp("", "care-hosts-*")
 	if err != nil {
 		return elevate.Step{}, cleanup, false, err
@@ -266,31 +272,64 @@ func replaceStep(p string, keep func(string) (string, bool), what string) (step 
 	if err := f.Close(); err != nil {
 		return elevate.Step{}, cleanup, false, err
 	}
-	if err := os.Chmod(f.Name(), 0o644); err != nil {
-		return elevate.Step{}, cleanup, false, err
-	}
-	return elevate.Step{What: what, Sh: replaceSh(f.Name(), p), PS: replacePS(f.Name(), p)}, cleanup, true, nil
+	return elevate.Step{
+		What: what,
+		Sh:   replaceSh(f.Name(), p, originalHash, cleanHash),
+		PS:   replacePS(f.Name(), p, originalHash, cleanHash),
+	}, cleanup, true, nil
 }
 
 func withoutMarker(data string) (string, bool) {
 	lines := strings.SplitAfter(data, "\n")
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
-		if !strings.Contains(ln, marker) {
+		if !hasMarker(ln) {
 			out = append(out, ln)
 		}
 	}
 	return strings.Join(out, ""), len(out) != len(lines)
 }
 
-func replaceSh(src, dst string) string {
+func containsMarker(data string) bool {
+	for _, line := range strings.Split(data, "\n") {
+		if hasMarker(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMarker(line string) bool {
+	if i := strings.IndexByte(line, '#'); i >= 0 {
+		comment := strings.TrimSpace(line[i:])
+		return comment == marker || strings.HasPrefix(comment, marker+" ") ||
+			strings.HasPrefix(comment, marker+"\t")
+	}
+	return false
+}
+
+func replaceSh(src, dst, originalHash, cleanHash string) string {
 	d := elevate.ShQuote(dst)
-	return "cp " + d + " " + elevate.ShQuote(dst+".care-backup") + " && cat " + elevate.ShQuote(src) + " > " + d +
+	hashCheck := shHashCheck(src, cleanHash) + " && " + shHashCheck(dst, originalHash)
+	return hashCheck + " && cp " + d + " " + elevate.ShQuote(dst+".care-backup") + " && cat " + elevate.ShQuote(src) + " > " + d +
 		" && { dscacheutil -flushcache 2>/dev/null; killall -HUP mDNSResponder 2>/dev/null; resolvectl flush-caches 2>/dev/null; true; }"
 }
 
-func replacePS(src, dst string) string {
-	return "Copy-Item -LiteralPath " + elevate.PSQuote(dst) + " -Destination " + elevate.PSQuote(dst+".care-backup") + " -Force; " +
+func shHashCheck(path, expected string) string {
+	q := elevate.ShQuote(path)
+	return "actual=$(if command -v shasum >/dev/null 2>&1; then shasum -a 256 < " + q +
+		"; elif command -v sha256sum >/dev/null 2>&1; then sha256sum < " + q +
+		"; else exit 1; fi) && test \"$actual\" = " + elevate.ShQuote(expected+"  -")
+}
+
+func replacePS(src, dst, originalHash, cleanHash string) string {
+	return "if ((Get-FileHash -LiteralPath " + elevate.PSQuote(src) +
+		" -Algorithm SHA256).Hash -ne " + elevate.PSQuote(cleanHash) +
+		") { throw 'prepared hosts cleanup changed; no changes were made' }; " +
+		"if ((Get-FileHash -LiteralPath " + elevate.PSQuote(dst) +
+		" -Algorithm SHA256).Hash -ne " + elevate.PSQuote(originalHash) +
+		") { throw 'hosts file changed since cleanup was prepared; no changes were made' }; " +
+		"Copy-Item -LiteralPath " + elevate.PSQuote(dst) + " -Destination " + elevate.PSQuote(dst+".care-backup") + " -Force; " +
 		"Copy-Item -LiteralPath " + elevate.PSQuote(src) + " -Destination " + elevate.PSQuote(dst) + " -Force; " +
 		"ipconfig /flushdns | Out-Null"
 }

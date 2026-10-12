@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,9 +12,30 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type countingListener struct {
+	net.Listener
+	accepted atomic.Int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return conn, err
+}
+
+type vanishedEntry struct{}
+
+func (vanishedEntry) Name() string               { return "vanished" }
+func (vanishedEntry) IsDir() bool                { return false }
+func (vanishedEntry) Type() fs.FileMode          { return 0 }
+func (vanishedEntry) Info() (fs.FileInfo, error) { return nil, fs.ErrNotExist }
 
 func testServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
@@ -109,6 +132,52 @@ func TestStatusWithoutDocker(t *testing.T) {
 	var s Status
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil || s.Docker {
 		t.Fatalf("%+v %v", s, err)
+	}
+}
+
+func TestStatusReusesDockerConnection(t *testing.T) {
+	socket := filepath.Join(".", "docker-status-test-"+strconv.Itoa(os.Getpid())+".sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countingListener{Listener: listener}
+	docker := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"Version":"test"}`)
+	})}
+	go func() { _ = docker.Serve(counted) }()
+	t.Cleanup(func() {
+		_ = docker.Close()
+		_ = os.Remove(socket)
+	})
+
+	a := newAPI(socket)
+	t.Cleanup(a.closeIdleConnections)
+	for i := 0; i < 32; i++ {
+		recorder := httptest.NewRecorder()
+		a.status(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+		var got Status
+		if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &got) != nil ||
+			!got.Docker || got.Version != "test" {
+			t.Fatalf("status %d: %s", recorder.Code, recorder.Body)
+		}
+	}
+	if got := counted.accepted.Load(); got != 1 {
+		t.Fatalf("Docker accepted %d connections for 32 status requests; want one reused connection", got)
+	}
+}
+
+func TestListSkipsEntriesRemovedDuringWalk(t *testing.T) {
+	root := "missing-root"
+	entries := []Entry{}
+	if err := appendListedFile(&entries, root, filepath.Join(root, "vanished"), nil, fs.ErrNotExist); err != nil {
+		t.Fatalf("walk error for vanished entry: %v", err)
+	}
+	if err := appendListedFile(&entries, root, filepath.Join(root, "vanished"), vanishedEntry{}, nil); err != nil {
+		t.Fatalf("Info error for vanished entry: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("vanished entries were included: %+v", entries)
 	}
 }
 

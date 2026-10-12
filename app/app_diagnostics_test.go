@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,5 +34,17 @@ func TestDiagnosticsExportOnlyLogsAndVersions(t *testing.T) {
 		if f.Name != "versions.json" && f.Name != "care-log.log" {
 			t.Fatalf("sensitive file exported: %s", f.Name)
 		}
+	}
+}
+
+func TestDiagnosticsPathTreatsDifferentVolumesAsOutside(t *testing.T) {
+	if diagnosticsPathInsideLogDir("", errors.New("paths are on different volumes")) {
+		t.Fatal("a relative-path error was treated as a destination inside the logs folder")
+	}
+	if !diagnosticsPathInsideLogDir(filepath.Join("nested", "export.zip"), nil) {
+		t.Fatal("a destination inside the logs folder was allowed")
+	}
+	if diagnosticsPathInsideLogDir(filepath.Join("..", "export.zip"), nil) {
+		t.Fatal("a destination outside the logs folder was rejected")
 	}
 }

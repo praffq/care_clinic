@@ -21,12 +21,24 @@ type api struct {
 	docker  string
 	started time.Time
 	// root confines the file API; "/" in the guest, a temp dir in tests.
-	root string
+	root   string
+	client *http.Client
 }
 
 func newAPI(dockerSock string) *api {
-	return &api{docker: dockerSock, started: time.Now(), root: "/"}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", dockerSock)
+		},
+		IdleConnTimeout: 30 * time.Second,
+	}
+	return &api{
+		docker: dockerSock, started: time.Now(), root: "/",
+		client: &http.Client{Timeout: 3 * time.Second, Transport: transport},
+	}
 }
+
+func (a *api) closeIdleConnections() { a.client.CloseIdleConnections() }
 
 // Entry describes one file in a listing. Paths are slash-separated and
 // relative to the listed root.
@@ -66,13 +78,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func (a *api) status(w http.ResponseWriter, r *http.Request) {
 	s := Status{Uptime: int64(time.Since(a.started).Seconds())}
-	client := http.Client{
-		Timeout: 3 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", a.docker)
-		}},
-	}
-	if resp, err := client.Get("http://docker/version"); err == nil {
+	if resp, err := a.client.Get("http://docker/version"); err == nil {
 		var v struct{ Version string }
 		_ = json.NewDecoder(resp.Body).Decode(&v)
 		_ = resp.Body.Close()
@@ -167,29 +173,39 @@ func (a *api) list(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := []Entry{}
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) && p == root {
-				return fs.SkipAll
-			}
-			return err
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		entries = append(entries, Entry{Path: filepath.ToSlash(rel), Size: info.Size(),
-			MtimeNs: info.ModTime().UnixNano(), Mode: uint32(info.Mode().Perm())})
-		return nil
+		return appendListedFile(&entries, root, p, d, err)
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, entries)
+}
+
+func appendListedFile(entries *[]Entry, root, p string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		if os.IsNotExist(walkErr) {
+			if p == root {
+				return fs.SkipAll
+			}
+			return nil
+		}
+		return walkErr
+	}
+	if !d.Type().IsRegular() {
+		return nil
+	}
+	info, err := d.Info()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	rel, _ := filepath.Rel(root, p)
+	*entries = append(*entries, Entry{Path: filepath.ToSlash(rel), Size: info.Size(),
+		MtimeNs: info.ModTime().UnixNano(), Mode: uint32(info.Mode().Perm())})
+	return nil
 }
 
 func (a *api) getFile(w http.ResponseWriter, r *http.Request) {

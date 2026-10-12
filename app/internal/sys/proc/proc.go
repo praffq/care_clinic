@@ -254,13 +254,17 @@ func loginShellPath() string {
 	if runtime.GOOS == "windows" {
 		return ""
 	}
+	return loginShellPathWithTimeout(3 * time.Second)
+}
+
+func loginShellPathWithTimeout(timeout time.Duration) string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/zsh"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, shell, "-lc",
+	out, err := CommandContext(ctx, shell, "-lc",
 		"printf '"+pathMarker+"%s\\n' \"$PATH\"").Output()
 	if err != nil {
 		return ""

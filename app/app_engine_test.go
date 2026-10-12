@@ -33,6 +33,9 @@ func TestEngineStateDetectsOutdatedEngine(t *testing.T) {
 }
 
 func TestEngineUpdateIsAnAllowedClinicAction(t *testing.T) {
+	if !clinicActionAllowed("engine-update") {
+		t.Fatal("engine-update was removed from the ClinicAction allow-list")
+	}
 	if got := failureTitle("engine-update"); got != "The CARE engine update didn't finish" {
 		t.Fatalf("failure title = %q", got)
 	}

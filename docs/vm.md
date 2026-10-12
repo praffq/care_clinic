@@ -18,11 +18,13 @@ flowchart LR
     Browser["Browser"] -->|:80 / :443| Helper
   end
   subgraph VM["CARE engine (Linux VM)"]
-    Agent["care-agent"]
+    Agent["care-engine-agent"]
     Dockerd["dockerd"] --> Stack["CARE containers<br/>(caddy, backend, frontend, db, ...)"]
   end
-  Helper -->|vsock (macOS) / forwarded TCP + mTLS (Windows)| Dockerd
-  Helper --> Agent
+  Helper -->|Docker API: vsock / forwarded TCP + mTLS| Agent
+  Helper -->|:80 / :443| Agent
+  Agent -->|/run/docker.sock| Dockerd
+  Agent -->|guest :80 / :443| Stack
 ```
 
 ## What the app does
@@ -75,6 +77,8 @@ This is an availability check, not proof of trusted TLS, full clinical health
 or remote LAN reachability. Windows also checks existing `netfix` profile and
 port rules; failures report repair details to logs/status, and the app's
 **Fix network** action performs the existing elevated repair.
+An otherwise available clinic name remains advertised while repair details
+are surfaced.
 
 Helper housekeeping checks availability, interface changes, foreign-name
 conflicts and direct hostname responses every 15 seconds. App jobs queue one
@@ -154,7 +158,7 @@ Limits:
 
 ## Platforms
 
-| | macOS (11+, Apple silicon and Intel) | Windows 10/11 (x64) |
+| | macOS (12.3+, Apple silicon and Intel) | Windows 10/11 (x64) |
 | --- | --- | --- |
 | Hypervisor | Apple Virtualization framework (built in) | QEMU with Windows Hypervisor Platform (WHPX) |
 | One-time setup | None | Turn on *Windows Hypervisor Platform* (admin prompt, then restart). Virtualization must be enabled in the BIOS/UEFI. |
@@ -169,6 +173,12 @@ of the install folder and the backup folder inside the VM. It syncs before and
 after every Docker command that uses those files (compose up, backups,
 restores) and every 15 seconds in between. When the same file changed on both
 sides since the last sync, the computer's copy wins.
+
+The guest mirrors live under `/var/lib/care-sync` on the persistent data disk,
+not the disposable guest root. If a guest mirror is unexpectedly empty while
+the host still has files, the helper restores the guest from the host instead
+of interpreting the missing files as host deletions. The Windows mirror shares
+the data disk's capacity with Docker images and clinic data.
 
 ## Where things live
 
@@ -216,7 +226,7 @@ The engine is defined in `vm/`:
   [microvm.nix](https://github.com/microvm-nix/microvm.nix)) running only
   dockerd and the agent, with a read-only erofs system image and an ext4 data
   disk that grows on boot.
-- `vm/agent/`: `care-agent`, a small Go service in the guest that reports
+- `vm/agent/`: `care-engine-agent`, a small Go service in the guest that reports
   status, mounts shares, reads logs, sets the clock after sleep and serves the
   Windows sync.
 - `vm/nix/bundle.nix`: packs the kernel, initrd, system image and data seed
@@ -232,10 +242,11 @@ The app pins a small patch of `Code-Hex/vz` in `app/go.mod`: its Objective-C
 Wails. The replacement points at a specific commit in `praffq/vz`, not a moving
 branch.
 
-To release a new engine: bump `vm/VERSION`, run the **CARE engine** workflow
-(`.github/workflows/care-vm.yml`), then paste the values it prints into
-`deployments/.env` and ship an app release. Locally (needs Docker; takes
-about 15 minutes the first time):
+This checkout has no tracked **CARE engine** publication workflow. The
+following command builds the local bundle (needs Docker; takes about 15 minutes
+the first time); publishing a new engine requires an approved workflow or
+release process that records the resulting version and checksums in
+`deployments/.env`:
 
 ```sh
 docker volume create care-nix-store
@@ -299,7 +310,8 @@ before public redistribution; checksum verification is not a licensing audit.
 The prepared 10.1.0 bundle has SHA-256
 `35e964db85f55a4a08786fb418c2572c4e22e5d370862987b0eecb82400d6364`,
 now recorded in `deployments/.env`. It has **not** been Windows-validated or
-uploaded yet. The published `care-vm.yml` currently makes Windows packaging
-optional and defaults to a different, unpinned installer. A workflow patch is
-provided separately for the GitHub configuration owner; the repository's
-`.github/` files and desktop signing/release flow are unchanged.
+uploaded yet. No `care-vm.yml` is tracked in this checkout, so there is no
+verified automated path to publish that support asset here. The separate
+workflow patch covers desktop CI/release pin checks and macOS entitlements; it
+does not add an engine-publication workflow. The repository's `.github/` files
+remain unchanged.

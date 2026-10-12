@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/csv"
 	"runtime"
 	"strings"
 )
@@ -111,7 +112,12 @@ func rewriteVolume(v string, paths []string) (string, []string) {
 }
 
 func rewriteMount(v string, paths []string) (string, []string) {
-	fields := strings.Split(v, ",")
+	reader := csv.NewReader(strings.NewReader(v))
+	reader.FieldsPerRecord = -1
+	fields, err := reader.Read()
+	if err != nil {
+		return v, paths
+	}
 	bind := false
 	for _, f := range fields {
 		if f == "type=bind" {
@@ -121,6 +127,7 @@ func rewriteMount(v string, paths []string) (string, []string) {
 	if !bind {
 		return v, paths
 	}
+	var rewrittenPaths []string
 	for i, f := range fields {
 		k, val, ok := strings.Cut(f, "=")
 		if !ok || (k != "source" && k != "src") {
@@ -128,10 +135,19 @@ func rewriteMount(v string, paths []string) (string, []string) {
 		}
 		if g, ok := windowsToGuest(val); ok {
 			fields[i] = k + "=" + g
-			paths = append(paths, val)
+			rewrittenPaths = append(rewrittenPaths, val)
 		}
 	}
-	return strings.Join(fields, ","), paths
+	var encoded strings.Builder
+	writer := csv.NewWriter(&encoded)
+	if err := writer.Write(fields); err != nil {
+		return v, paths
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return v, paths
+	}
+	return strings.TrimSuffix(encoded.String(), "\n"), append(paths, rewrittenPaths...)
 }
 
 // MountSensitive reports whether a docker command may read or write bind

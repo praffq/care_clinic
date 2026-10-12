@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/appremoval"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -93,9 +96,25 @@ func (a *App) RemoveApp() (err error) {
 	if err != nil {
 		return err
 	}
+	if err := stopVMBeforeRemoval(); err != nil {
+		return fmt.Errorf("could not stop the CARE engine before removing the app: %w", err)
+	}
 	a.removeTarget = target
 	go a.quitWhenIdle()
 	return nil
+}
+
+func stopEngineForRemoval(ctx context.Context, supported bool, stop func(context.Context) error) error {
+	if !supported {
+		return nil
+	}
+	return stop(ctx)
+}
+
+func stopVMBeforeRemoval() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return stopEngineForRemoval(ctx, vm.Supported(), vm.Stop)
 }
 
 func (a *App) quitWhenIdle() {

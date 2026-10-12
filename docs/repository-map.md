@@ -24,7 +24,6 @@ care_desktop/
 |   |-- clinic-lifecycle.md
 |   |-- images-and-lines.md
 |   |-- local-logs.md
-|   |-- vm.md
 |   |-- backups-and-restore.md
 |   |-- cleanup-and-uninstall.md
 |   |-- native-integrations.md
@@ -33,6 +32,10 @@ care_desktop/
 |   `-- onboarding.md
 |-- vm/
 |   |-- flake.nix
+|   |-- package_qemu.py
+|   |-- qemu-windows.json
+|   |-- test_package_qemu.py
+|   |-- validate_qemu_windows.ps1
 |   |-- nix/
 |   |-- agent/
 |   `-- VERSION
@@ -69,8 +72,7 @@ care_desktop/
 `-- .github/
     `-- workflows/
         |-- ci.yml
-        |-- release.yml
-        `-- care-vm.yml
+        `-- release.yml
 ```
 
 `deployments/` is versioned kit source. `app/install/` is generated build staging. The clinic computer's installed kit is a third location selected by the application, not either of those checkout directories. [Facility setup](onboarding.md) and its curated datasets live in the separate `ohcnetwork/care_onboarding_fe` plugin repository.
@@ -202,7 +204,7 @@ app/internal/
 |   |-- host.go
 |   |-- driver_darwin.go
 |   |-- driver_windows.go
-|   |-- qemu.go
+|   |-- qemu_windows.go
 |   |-- sync.go
 |   `-- client.go
 |-- release/
@@ -370,7 +372,7 @@ app/frontend/
 | [`setup-screen.tsx`](../app/frontend/src/screens/setup/setup-screen.tsx), [`use-setup-checks.ts`](../app/frontend/src/screens/setup/use-setup-checks.ts) | Role initialization, platform-aware checks, configuration/recovery steps and Review preflight. |
 | [`installing-screen.tsx`](../app/frontend/src/screens/install/installing-screen.tsx), [`failed-screen.tsx`](../app/frontend/src/screens/install/failed-screen.tsx) | Log-backed milestones, quiet-activity warning, retained-attempt retry and explicit cleanup fallback. |
 | [`confirmation-dialog.tsx`](../app/frontend/src/components/confirmation-dialog.tsx), [`quit-dialog.tsx`](../app/frontend/src/components/quit-dialog.tsx) | Request registration, stale-response protection, safe consent focus and response errors. |
-| [`use-app-update.ts`](../app/frontend/src/hooks/use-app-update.ts), [`panel-update-lock.tsx`](../app/frontend/src/screens/panel/panel-update-lock.tsx) | Shared updater, installer acknowledgement, restart guard and live/stale-operation exclusion. |
+| [`use-app-update.ts`](../app/frontend/src/hooks/use-app-update.ts), [`panel-update-lock.tsx`](../app/frontend/src/screens/panel/panel-update-lock.tsx) | Shared updater, restart handoff guard and live/stale-operation exclusion. |
 | [`panel-screen.tsx`](../app/frontend/src/screens/panel/panel-screen.tsx), [`panel-requirements.tsx`](../app/frontend/src/screens/panel/panel-requirements.tsx) | Panel navigation, shared task guards and actionable native requirements. |
 | [`overview-tab.tsx`](../app/frontend/src/screens/panel/overview-tab.tsx), [`storage-tab.tsx`](../app/frontend/src/screens/panel/storage-tab.tsx), [`phone-dialog.tsx`](../app/frontend/src/screens/panel/phone-dialog.tsx) | Health/actions, storage measurements and the mobile setup QR. |
 | [`backups-tab.tsx`](../app/frontend/src/screens/panel/backups-tab.tsx), [`restore-backup-dialog.tsx`](../app/frontend/src/screens/panel/restore-backup-dialog.tsx) | Actual policy/destination, backup operations, restore consent and cancelled/stale preflight handling. |

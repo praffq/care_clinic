@@ -104,8 +104,9 @@ export function AdminPasswordForm({
       if (live.current) { setWorking(false); onWorkingChange?.(false); }
     }
   };
+  const passwordBytes = new TextEncoder().encode(password).length;
   const rules = [
-    { label: "8–20 characters", met: [...password].length >= 8 && [...password].length <= 20 },
+    { label: "8–20 characters, no more than 72 UTF-8 bytes", met: [...password].length >= 8 && [...password].length <= 20 && passwordBytes <= 72 },
     { label: "Uppercase", met: /\p{Lu}/u.test(password) },
     { label: "Lowercase", met: /\p{Ll}/u.test(password) },
     { label: "A number", met: /\p{Nd}/u.test(password) },

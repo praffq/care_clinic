@@ -115,8 +115,9 @@ export function AdminStep({ form, patch, strength, passwordError, folderProblem,
   const { platform } = useCare();
   const [show, setShow] = useState(false);
   const length = [...form.adminPassword].length;
+  const bytes = new TextEncoder().encode(form.adminPassword).length;
   const rules = [
-    { label: "8 to 20 characters", ok: length >= 8 && length <= 20 },
+    { label: "8 to 20 characters, no more than 72 UTF-8 bytes", ok: length >= 8 && length <= 20 && bytes <= 72 },
     { label: "Upper and lowercase letter", ok: /\p{Lu}/u.test(form.adminPassword) && /\p{Ll}/u.test(form.adminPassword) },
     { label: "A number", ok: /\p{Nd}/u.test(form.adminPassword) },
   ];

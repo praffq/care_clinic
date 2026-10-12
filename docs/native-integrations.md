@@ -105,10 +105,10 @@ environment, browser, or architecture is supported or has been integration-teste
 | Concern | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Child process windows | Console-hiding helper is a no-op. | `HideWindow` and `CREATE_NO_WINDOW` prevent ordinary child-console flashes. OS approval dialogs still appear. | Console-hiding helper is a no-op. |
-| GUI PATH repair | Login-shell PATH, then Homebrew and standard executable directories. | Docker installation directories and legacy Git PATH entries, then inherited PATH; no login-shell probe. | Login-shell PATH, then the same Unix directory list, including Homebrew paths even if absent. |
+| GUI PATH repair | Login-shell PATH, then Homebrew and standard executable directories. | `C:\Program Files\Git\bin` and `C:\Program Files\Git\cmd`, then inherited PATH; no login-shell probe. | Login-shell PATH, then the same Unix directory list, including Homebrew paths even if absent. |
 | Batched administrator approval | AppleScript `do shell script ... with administrator privileges`. | One elevated PowerShell child through `Start-Process -Verb RunAs`. | `pkexec sh -c`; requires the relevant policy/desktop support. |
 | Server hosts file | `/etc/hosts`. | `%WINDIR%\System32\drivers\etc\hosts`; path helper falls back to `C:\Windows`. | `/etc/hosts`. |
-| Local certificate installation | After the confirmation: when the hosts entry also needs elevation, put the System keychain install in that same elevated batch and fall back to the login keychain only if trust is still unverified; otherwise try the login keychain first. | After the confirmation, try machine `Root` through `certutil`, then elevation. | After the confirmation, try system anchors/bundle update, then elevation. |
+| Local certificate installation | After the confirmation: when the hosts entry also needs elevation, put the System keychain install in that same elevated batch and fall back to the login keychain only if trust is still unverified; otherwise try the login keychain first. Both use the SSL trust policy (`-p ssl`), not a clinic-hostname constraint. | After the confirmation, try machine `Root` through `certutil`, then elevation; trust is not restricted to a purpose or hostname. | After the confirmation, try system anchors/bundle update, then elevation; trust is not restricted to a purpose or hostname. |
 | Client certificate cleanup and installation | One elevated batch for the hosts repair and System-keychain deletions, then one shell as the signed-in user for the login-keychain deletions and the install, which is the only way macOS will set trust. Up to two prompts; fewer when there is less to repair. | One elevated batch: hosts repair, `Remove-Item` per stale thumbprint, then `certutil -addstore -f Root`. | One elevated batch: hosts repair, stale anchor removal with a trust-store update, then the new anchor with another update. |
 | mDNS | Shared IPv4 address-selection and response-probing implementation. | Same implementation; firewall/profile repair is separate. | Same implementation; no Linux firewall manager is configured here. |
 | Network repair | `netfix` reports not applicable; no repair. | Public profiles can become Private; three owned inbound rules cover HTTP, HTTPS, and mDNS on Private and Domain profiles. | `netfix` reports not applicable; no repair. |
@@ -369,7 +369,9 @@ Current batching preserves failures:
 - Windows sets `$ErrorActionPreference = 'Stop'`, runs each step in a script
   block, and checks `$?` after each block.
 - The elevated Windows child is started with `-Wait -PassThru`; the parent exits
-  using the child's `ExitCode`.
+  using the child's `ExitCode`. The inner PowerShell script is passed with
+  `-EncodedCommand` (UTF-16LE base64), avoiding `Start-Process -ArgumentList`
+  reparsing quotes and whitespace in the script.
 
 This is not rollback. If hosts modification succeeds and trust installation
 fails, the hosts change remains. Moreover, generated installer wrappers elsewhere
@@ -555,21 +557,21 @@ another device, or prove that the `.local` name works beyond this machine.
 
 Removal is intentionally marker-based:
 
-- It removes every line containing the marker, not just the hostname passed to
-  `Remove`. Unmarked user-managed lines are not claimed, except for the one
-  name a client is connecting to, which it removes whoever wrote it.
-- Unix removal filters into a scratch file and uses `cat` back into the original
-  file, preserving its inode and associated ownership/mode rather than renaming
-  a replacement over it. This is not an atomic replacement.
-- A `grep` status of 1 is allowed: all lines might have been owned, leaving an
-  empty result. Other filter errors and the final write failure remain failures.
-  A trap attempts scratch-file cleanup.
+- It removes lines whose trailing comment contains the complete `# care-clinic`
+  marker token, not arbitrary comments that merely contain that text. Unmarked
+  user-managed lines are not claimed, except for the one name a client is
+  connecting to, which it removes whoever wrote it.
+- Cleanup is prepared in a private scratch file. Before replacing the live
+  hosts file, the elevated script checks both the staged cleanup contents and
+  that the live file still matches the snapshot used to prepare it; unexpected
+  edits abort rather than being copied over. Unix then copies a backup and
+  writes the prepared contents with `cat`; Windows copies a backup and the
+  prepared file with `Copy-Item`. This is not an atomic replacement.
 - Unix removal tries without elevation first, then re-reads. If a line remains,
   it can ask for elevation; this removal helper permits elevation when the
   confirmation callback is nil, unlike `setUpThisComputer`.
-- Windows uses an elevated PowerShell read/filter/write operation. Its wrapper
-  does not use the batching helper's `-PassThru` contract; remaining state is
-  checked afterwards.
+- Windows cleanup uses the elevated batching helper and therefore inherits its
+  `-PassThru` exit-code handling; remaining state is checked afterwards.
 
 `Leftover` returns either an empty string, an explanation that a marked line
 remains, or an explicit inspection-error sentence. A missing file is absence;
@@ -622,8 +624,9 @@ replace an already running old helper; persistence requires helper restart.
    installer hash again after exit, preserve a signed installation's publisher,
    and request UAC for the verified NSIS installer. Silent update mode targets
    the existing directory, extracts the new executable before touching the old
-   one, and rolls back a failed final rename. Locks or stale recovery artifacts
-   fail the update rather than force-killing processes or scheduling a reboot.
+   one, and rolls back a failed final rename. A lock that prevents the current
+   executable rename or a conflicting same-version recovery/staging path fails
+   the update rather than force-killing processes or scheduling a reboot.
    The unelevated helper checks the installer exit code and installed product
    version, then relaunches as the original user, not the UAC administrator.
 
@@ -634,8 +637,11 @@ failure. A relaunch failure does not claim installation failed or clinic data
 was removed: open the installed app manually and inspect that log. On success
 the download/helper workspace is removed. Interrupted transactions can leave
 `.care-update-*` recovery directories beside the macOS app or
-`.care-update-previous.exe`/`.care-update-new` beside the Windows executable.
-Keep these for recovery/support; subsequent updates do not overwrite them.
+`.care-update-previous-<version>.exe`/`.care-update-new` beside the Windows
+executable. Keep these for recovery/support; subsequent updates use a
+version-specific previous-executable path and do not overwrite locked files.
+Existing `.care-update-previous.exe` files are preserved and do not block
+updates from the current installer.
 This is rollback for replacement failures, not a full crash-proof transaction
 or an automatic rollback when a newly released app itself fails at startup.
 
@@ -781,6 +787,27 @@ left the certificate in the System keychain but untrusted. Running as the user l
 macOS show its own trust prompt; the trust applies to that macOS user only. The
 client counts the certificate as present only when it is in the login keychain
 and macOS trusts it, so a half-finished install is retried rather than skipped.
+
+### Root trust scope and deferred CA constraints
+
+New macOS root installations use `security add-trusted-cert -p ssl` in both
+the login-keychain and System-keychain paths. The macOS security manual defines
+`ssl` as a trust-policy constraint. This narrows the trust purpose to TLS/SSL,
+but it does **not** constrain the certificate to `care.local` or any other
+clinic hostname; a CA that can issue valid server certificates can still be
+trusted for other TLS names.
+
+Windows roots remain in the machine-wide `LocalMachine\Root` store, and Linux
+roots remain in the system CA bundle. Neither platform is narrowed by this
+change; do not interpret the macOS policy as a hostname limit or as applying to
+Windows/Linux. Also, this change does not migrate trust settings for roots that
+were installed before the SSL policy was added, so their existing scope may
+remain broader.
+
+The Caddy CA identity and its first-use bootstrap are unchanged. A
+name-constrained CA/key migration would need coordinated server, client,
+recovery, and persisted-root handling; it is deferred rather than attempted as
+part of this trust-policy narrowing.
 
 The client screen shows plain-language errors (`frontend/src/lib/client-errors.ts`
 maps each backend error to a title, message and next steps). The original
@@ -963,7 +990,7 @@ fingerprint plus the store it lives in:
 
 | Platform | What is enumerated | How it is removed |
 | --- | --- | --- |
-| macOS | `security find-certificate -a -Z -c "CARE Clinic Local CA"` in the login and System keychains. | `security delete-certificate -t -Z <fingerprint> <keychain>`. Login-keychain deletions run as the signed-in user, for the same reason installation does; System-keychain deletions join the elevated batch. |
+| macOS | `security find-certificate -a -Z -c "CARE Clinic Local CA"` in the login and System keychains. | Export each exact fingerprint, run `security remove-trusted-cert [-d] <certificate.pem>` to clear its user/admin trust settings, then delete it with `security delete-certificate -t -Z <fingerprint> <keychain>`. Login cleanup runs as the signed-in user; System cleanup joins one elevated batch. |
 | Windows | `Get-ChildItem Cert:\LocalMachine\Root` filtered on an exact `CN=CARE Clinic Local CA` subject, returning thumbprints. | `Remove-Item Cert:\LocalMachine\Root\<thumbprint>`, one per certificate. **Not** `certutil -delstore Root <CommonName>`: deleting by name in the same step as the installation would take the new clinic's root with it. |
 | Linux | Every `.crt` in `/usr/local/share/ca-certificates` and `/etc/pki/ca-trust/source/anchors` that parses as a single CARE CA root. Files that are not CARE roots are skipped, not inspected further. | The shared anchor-removal script, which deletes the files and runs whichever of `update-ca-certificates` and `update-ca-trust` exists. |
 
@@ -1382,7 +1409,10 @@ shell it installs `iptables` if needed, extracts and copies the binaries,
 writes `/etc/systemd/system/docker.service`, adds the `docker` group and current
 user, reloads systemd, and enables and starts Docker. The unit runs `dockerd`,
 which starts and manages its own containerd. If Docker is already answering and
-only Compose is missing, only the Compose plugin is installed.
+only Compose is missing, only the Compose plugin is installed. When Docker
+answers but this login cannot access `/var/run/docker.sock` because the new
+group membership has not taken effect yet, installation completes with logout
+and login guidance instead of waiting for a readiness timeout.
 
 Adding the user to the `docker` group grants substantial host control through
 Docker. Static binaries are not updated by the distribution; a security fix
@@ -1538,32 +1568,36 @@ as not busy. The Compose capture and `lsof` calls do not gain the TCP probe's
 
 Source: [autostart.go](../app/internal/sys/autostart/autostart.go).
 
-Autostart registers the current executable with `--autostart`. It starts the
-native desktop application, not a new clinical web frontend, a Docker daemon
-configuration, or a system-wide CARE service.
+Autostart starts the native desktop application with `--autostart`, not a new
+clinical web frontend, a Docker daemon configuration, or a system-wide CARE
+service. macOS resolves the app by its Launch Services bundle identifier rather
+than persisting the temporary executable path used by App Translocation.
 
 Login startup is on by default: when server setup finishes successfully, the
 application enables it before emitting `setup-done`. A failure there is logged
-and does not fail setup. The user can turn it off from the Overview tab, and
-that choice is not overridden later because setup only completes once.
+and does not fail setup. The user can turn it off from the Overview tab, but
+choosing **Restart now** explicitly enables login startup again before the
+restart so CARE Clinic can reopen.
 
 | Platform | Owned registration | Enabled/disabled behavior |
 | --- | --- | --- |
-| macOS | `~/Library/LaunchAgents/ohc.care-clinic.plist` with label `ohc.care-clinic` | Writes `ProgramArguments` for the current executable and `--autostart`, with `RunAtLoad`. Disabling removes the file. There is no `launchctl` load/unload or `KeepAlive` operation here. |
+| macOS | `~/Library/LaunchAgents/ohc.care-clinic.plist` with label `ohc.care-clinic` | Writes `ProgramArguments` for `/usr/bin/open -b ohc.care-clinic --args --autostart`, with `RunAtLoad`. Launch Services resolves the bundle when the agent runs. Disabling removes the file. There is no `launchctl` load/unload or `KeepAlive` operation here. |
 | Windows | Value `CARE Clinic` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Uses `reg add` with a quoted executable path and `--autostart`; disabling uses `reg delete`. It does not delete the whole Run key. |
 | Linux | `~/.config/autostart/care-clinic.desktop` | Writes a desktop entry with a quoted executable path, `--autostart`, and `X-GNOME-Autostart-enabled=true`; disabling removes the file. This path does not honor `XDG_CONFIG_HOME`. |
 
 The Unix registration directories are created with `0755` and files with `0644`.
-Writes are not atomic. `Set` obtains `os.Executable` before dispatching even for
-disable operations and returns relevant write/command errors. Moving the
-executable later does not automatically rewrite the recorded path.
+Writes are not atomic. Linux and Windows `Set(true)` use `os.Executable`; macOS
+uses the bundle identifier, and disable operations do not need an executable
+path. Moving a Linux or Windows executable later does not automatically rewrite
+the recorded path.
 
-`Enabled` only checks file existence or whether `reg query` succeeds. It does not
-parse a registration, validate its executable path, prove it has been loaded, or
-verify a successful login launch. Its false result can include inspection
-failure. Unix removal treats any initial stat error as already absent; Windows
-can return an error when deleting a nonexistent value. These APIs are not as
-strict as the explicit hosts/trust/firewall residue inspectors.
+`Enabled` checks that the recorded Linux or Windows command matches the current
+executable, or that the macOS plist contains the expected Launch Services
+arguments. It does not prove that the agent has been loaded or verify a
+successful login launch. Its false result can include inspection failure. Unix
+removal treats any initial stat error as already absent; Windows can return an
+error when deleting a nonexistent value. These APIs are not as strict as the
+explicit hosts/trust/firewall residue inspectors.
 
 The second-instance boundary matters. [main.go](../app/main.go) configures
 Wails' single-instance lock; [app_lifecycle.go](../app/app_lifecycle.go) responds
@@ -1587,17 +1621,16 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootP
 HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired
 ```
 
-Either successful query produces a restart plan. The message is framed around
-finishing Windows Hypervisor Platform setup, but the keys are general Windows
-servicing/update indicators. They do not prove that this feature caused the
-restart requirement.
+Either successful query produces a generic Windows restart plan. These keys
+are general servicing/update indicators; they do not prove that Windows
+Hypervisor Platform caused the restart requirement.
 Query failures are treated as no positive signal; there is no separate
 inspection-error status or exhaustive restart detection.
 
-`Now` is implemented only on Windows. It invokes `shutdown /r /t 5` with a CARE
-setup explanation, scheduling an actual machine restart after five seconds.
-It returns the command result, not proof that the restart finished. Other
-platforms return an unsupported error.
+`Now` is implemented only on Windows. It invokes `shutdown /r /t 5` with a
+generic Windows setup explanation, scheduling an actual machine restart after
+five seconds. It returns the command result, not proof that the restart
+finished. Other platforms return an unsupported error.
 
 The application bridge attempts to enable CARE login startup before requesting
 a restart and logs a warning if that fails; see

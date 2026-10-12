@@ -28,7 +28,7 @@ func advertisementFixture(t *testing.T) *host {
 	}
 }
 
-func TestAdvertisementPersistsAcrossHelperRestart(t *testing.T) {
+func TestUnavailableClinicIsNotAdvertisedAfterHelperRestart(t *testing.T) {
 	h := advertisementFixture(t)
 	c := AdvertisementConfig{Enabled: true, Name: "care.local", InstallDir: t.TempDir()}
 	if err := SaveAdvertisement(c); err != nil {
@@ -59,6 +59,30 @@ func TestAdvertisementPersistsAcrossHelperRestart(t *testing.T) {
 
 	if got, err := loadAdvertisement(); err != nil || got.Enabled {
 		t.Fatal("uninstall did not persist withdrawal")
+	}
+}
+
+func TestAdvertisementRestartsWithPersistedClinicName(t *testing.T) {
+	h := advertisementFixture(t)
+	c := AdvertisementConfig{Enabled: true, Name: "care.local", InstallDir: t.TempDir()}
+	if err := SaveAdvertisement(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetAdvertisementOwner(true); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := &host{advertiser: &fakeHostAdvertisement{}, logf: h.logf}
+	restarted.refreshAdvertisementWith(context.Background(),
+		func(_ context.Context, got AdvertisementConfig) (bool, error) {
+			if got.Name != c.Name || !got.HelperOwned || !got.Enabled {
+				t.Fatalf("helper did not reload persisted advertisement settings: %+v", got)
+			}
+			return true, nil
+		},
+		func(proc.Runner) netfix.Status { return netfix.Status{OK: true} })
+	if !restarted.status.Advertisement.Running || restarted.status.Advertisement.Name != "care" {
+		t.Fatalf("advertisement did not resume after helper restart: %+v", restarted.status.Advertisement)
 	}
 }
 
@@ -197,7 +221,7 @@ func TestClinicHealthProbeUsesClinicTLSAndHostWithoutDNS(t *testing.T) {
 	}
 }
 
-func TestHelperWithdrawalCancelsSlowAvailabilityAndDoesNotRestart(t *testing.T) {
+func TestHelperWithdrawalCancelsSlowAvailabilityBeforeItCanAdvertise(t *testing.T) {
 	h := advertisementFixture(t)
 	h.advertiser = &fakeHostAdvertisement{}
 	if err := SaveAdvertisement(AdvertisementConfig{Enabled: true, Name: "care", InstallDir: t.TempDir()}); err != nil {
@@ -315,8 +339,8 @@ func TestHostAdvertisementAvailabilityAndNetworkTransitions(t *testing.T) {
 	network.OK = false
 	network.Message, network.How = "public profile", "use Fix network"
 	refresh()
-	if h.status.Advertisement.Running || h.status.Advertisement.Error == "" {
-		t.Fatal("Windows network repair requirement hidden")
+	if !h.status.Advertisement.Running || h.status.Advertisement.Error == "" {
+		t.Fatal("network warning withdrew the persistent clinic name")
 	}
 	network.OK = true
 	refresh()

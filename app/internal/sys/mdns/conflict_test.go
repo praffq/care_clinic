@@ -154,6 +154,51 @@ func TestConflictQueryKeepsListeningAfterOwnReply(t *testing.T) {
 	}
 }
 
+func TestConflictQueryIgnoresMalformedResponseAndKeepsListening(t *testing.T) {
+	server, client := conflictTestSocket(t), conflictTestSocket(t)
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 9000)
+		_ = server.SetDeadline(time.Now().Add(2 * time.Second))
+		n, from, err := server.ReadFromUDP(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		var query dns.Msg
+		if err := query.Unpack(buf[:n]); err != nil {
+			done <- err
+			return
+		}
+		if _, err := server.WriteToUDP([]byte{0xff, 0x00, 0x01}, from); err != nil {
+			done <- err
+			return
+		}
+		reply := new(dns.Msg)
+		reply.SetReply(&query)
+		reply.Authoritative = true
+		reply.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{Name: "care.local.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 120},
+			A:   net.ParseIP("192.0.2.20"),
+		}}
+		wire, err := reply.Pack()
+		if err == nil {
+			_, err = server.WriteToUDP(wire, from)
+		}
+		done <- err
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := queryConflicts(ctx, client, "care.local.", []net.IP{net.ParseIP("192.0.2.10")}, server.LocalAddr().(*net.UDPAddr))
+	if serverErr := <-done; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+	var conflict *ConflictError
+	if !errors.As(err, &conflict) || conflict.Address.String() != "192.0.2.20" {
+		t.Fatalf("malformed response stopped conflict detection: %v", err)
+	}
+}
+
 func TestConflictQuerySilenceRetriesAndErrors(t *testing.T) {
 	server, client := conflictTestSocket(t), conflictTestSocket(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

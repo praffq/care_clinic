@@ -63,6 +63,12 @@ func main() {
 	if osUninstall || uninstallCheck {
 		code := app.removalExitCode()
 		if code == exitRemovable || uninstallCheck {
+			if code == exitRemovable {
+				if err := stopVMBeforeRemoval(); err != nil {
+					appLog.Writef("uninstall: could not stop the CARE engine: %s", err)
+					exit(exitRunning)
+				}
+			}
 			appLog.Writef("uninstall: setup check finished (exit %d)", code)
 			exit(code)
 		}
@@ -101,7 +107,14 @@ func main() {
 		fatal(err)
 	}
 	if app.osUninstall {
-		exit(app.removalExitCode())
+		code := app.removalExitCode()
+		if code == exitRemovable {
+			if err := stopVMBeforeRemoval(); err != nil {
+				appLog.Writef("uninstall: could not stop the CARE engine: %s", err)
+				code = exitRunning
+			}
+		}
+		exit(code)
 	}
 	if app.removeTarget != "" {
 		if err := appremoval.Remove(app.removeTarget); err != nil {

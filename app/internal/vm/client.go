@@ -80,7 +80,12 @@ func Ensure(ctx context.Context, logf func(string)) error {
 	if !Supported() {
 		return nil
 	}
-	if s := Status(ctx); s.Running && s.Docker {
+	initial := Status(ctx)
+	ready, err := statusOutcome(initial)
+	if err != nil {
+		return err
+	}
+	if ready {
 		return nil
 	}
 	if _, err := Installed(); err != nil {
@@ -105,19 +110,28 @@ func Ensure(ctx context.Context, logf func(string)) error {
 			return err
 		}
 		s := Status(ctx)
-		switch {
-		case s.Running && s.Docker:
+		ready, err := statusOutcome(s)
+		if err != nil {
+			return err
+		}
+		if ready {
 			return nil
-		case s.Error != "":
-			return fmt.Errorf("CARE engine: %s", s.Error)
-		case s.Running:
+		}
+		if s.Running {
 			seen = true
-		case seen:
+		} else if seen {
 			return fmt.Errorf("the CARE engine stopped while starting: %s", lastLogLine())
 		}
 		time.Sleep(time.Second)
 	}
 	return errors.New("the CARE engine took too long to start")
+}
+
+func statusOutcome(s HostStatus) (bool, error) {
+	if s.Error != "" {
+		return false, fmt.Errorf("CARE engine: %s", s.Error)
+	}
+	return s.Running && s.Docker, nil
 }
 
 // Stop shuts the VM down and waits for the helper to exit.

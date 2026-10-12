@@ -68,8 +68,8 @@ func (a *api) logs(w http.ResponseWriter, r *http.Request) {
 	if scanner.Err() != nil {
 		_ = cmd.Process.Kill()
 	}
-	waitErr := cmd.Wait()
 	detail := <-errCh
+	waitErr := cmd.Wait()
 	if r.Context().Err() == nil && (waitErr != nil || scanner.Err() != nil) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"collector_error": fmt.Sprintf("journal stream ended: %v; %v; %s", waitErr, scanner.Err(), detail)})
 		flusher.Flush()

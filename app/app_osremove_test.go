@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,5 +76,29 @@ func TestOSUninstallerCannotRemoveAppAgain(t *testing.T) {
 	}
 	if err := a.RemoveApp(); err == nil {
 		t.Fatal("started app removal from inside the OS uninstaller")
+	}
+}
+
+func TestStopEngineForRemovalOnlyStopsSupportedEngines(t *testing.T) {
+	called := false
+	stop := func(context.Context) error {
+		called = true
+		return nil
+	}
+	if err := stopEngineForRemoval(context.Background(), false, stop); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("unsupported engine was stopped")
+	}
+}
+
+func TestStopEngineForRemovalPropagatesFailure(t *testing.T) {
+	want := errors.New("helper did not stop")
+	err := stopEngineForRemoval(context.Background(), true, func(context.Context) error {
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("stopEngineForRemoval error = %v, want %v", err, want)
 	}
 }

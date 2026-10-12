@@ -1,10 +1,12 @@
 package elevate
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
@@ -16,7 +18,13 @@ type Step struct {
 }
 
 func PSQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	return "'" + strings.NewReplacer(
+		"'", "''",
+		"\u2018", "\u2018\u2018",
+		"\u2019", "\u2019\u2019",
+		"\u201a", "\u201a\u201a",
+		"\u201b", "\u201b\u201b",
+	).Replace(s) + "'"
 }
 
 func ShQuote(s string) string {
@@ -60,7 +68,18 @@ func run(c *exec.Cmd) error {
 
 func elevatedPS(inner string) string {
 	return "$ErrorActionPreference = 'Stop'; $p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru " +
-		"-ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command'," + PSQuote(inner) + "; exit $p.ExitCode"
+		"-ArgumentList '-NoProfile','-WindowStyle','Hidden','-EncodedCommand','" +
+		encodePowerShell(inner) + "'; exit $p.ExitCode"
+}
+
+func encodePowerShell(script string) string {
+	encoded := utf16.Encode([]rune(script))
+	bytes := make([]byte, len(encoded)*2)
+	for i, unit := range encoded {
+		bytes[i*2] = byte(unit)
+		bytes[i*2+1] = byte(unit >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(bytes)
 }
 
 func stepScript(steps []Step, windows bool) string {
@@ -71,7 +90,8 @@ func stepScript(steps []Step, windows bool) string {
 	parts := make([]string, 0, len(steps))
 	for _, s := range steps {
 		if windows {
-			parts = append(parts, "& { "+pick(s)+" }; if (-not $?) { exit 1 }")
+			parts = append(parts, "$global:LASTEXITCODE = 0; & { "+pick(s)+
+				" }; if (-not $? -or $LASTEXITCODE -ne 0) { exit 1 }")
 		} else {
 			parts = append(parts, "( "+pick(s)+" )")
 		}
@@ -87,8 +107,8 @@ func Teardown(steps []Step) error {
 		return nil
 	}
 	if runtime.GOOS == "windows" {
-		return proc.Command("powershell", "-NoProfile", "-Command",
-			elevatedPS(teardownScript(steps, true))).Run()
+		return run(proc.Command("powershell", "-NoProfile", "-Command",
+			elevatedPS(teardownScript(steps, true))))
 	}
 	return Run(teardownScript(steps, false), true)
 }

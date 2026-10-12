@@ -12,7 +12,7 @@ import (
 
 func TestJournalStreamAndProcessErrors(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\nprintf '%s\\n' '{\"__CURSOR\":\"test\",\"MESSAGE\":\"ready\"}'\nprintf '%s\\n' 'journal failed' >&2\nexit 1\n"
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"__CURSOR\":\"test\",\"MESSAGE\":\"ready\"}'\n(sleep 0.1; printf '%s\\n' 'journal failed' >&2) >/dev/null &\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(dir, "journalctl"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

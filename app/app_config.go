@@ -141,20 +141,40 @@ func (a *App) saveConfig(cfg Config) error {
 }
 
 func (a *App) writeConfigLocked(cfg Config) error {
+	var syncAdvertisement func() error
+	if vm.Supported() && (cfg.Role == roleServer || cfg.Role == "") {
+		syncAdvertisement = func() error {
+			return vm.SaveAdvertisement(vm.AdvertisementConfig{
+				Enabled: cfg.Role == roleServer && cfg.SetupDone && !cfg.Removing && cfg.MDNSName != "",
+				Name:    cfg.MDNSName, InstallDir: a.installDir(),
+			})
+		}
+	}
+	if err := persistConfig(a.configPath(), cfg, a.cfg, syncAdvertisement); err != nil {
+		return err
+	}
+	a.cfg = cfg
+	return nil
+}
+
+func persistConfig(path string, cfg, previous Config, syncSideEffect func() error) error {
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := atomicfile.WritePrivate(a.configPath(), b); err != nil {
+	if err := atomicfile.WritePrivate(path, b); err != nil {
 		return fmt.Errorf("could not save settings: %w", err)
 	}
-	a.cfg = cfg
-	if vm.Supported() && (cfg.Role == roleServer || cfg.Role == "") {
-		if err := vm.SaveAdvertisement(vm.AdvertisementConfig{
-			Enabled: cfg.Role == roleServer && cfg.SetupDone && !cfg.Removing && cfg.MDNSName != "",
-			Name:    cfg.MDNSName, InstallDir: a.installDir(),
-		}); err != nil {
-			return fmt.Errorf("settings were saved, but persistent clinic advertising could not be synchronized: %w", err)
+	if syncSideEffect != nil {
+		if err := syncSideEffect(); err != nil {
+			previousData, marshalErr := json.MarshalIndent(previous, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("could not synchronize persistent clinic advertising and could not restore previous settings: %w", errors.Join(err, marshalErr))
+			}
+			if rollbackErr := atomicfile.WritePrivate(path, previousData); rollbackErr != nil {
+				return fmt.Errorf("could not synchronize persistent clinic advertising and could not restore previous settings: %w", errors.Join(err, rollbackErr))
+			}
+			return fmt.Errorf("could not synchronize persistent clinic advertising; settings were not changed: %w", err)
 		}
 	}
 	return nil

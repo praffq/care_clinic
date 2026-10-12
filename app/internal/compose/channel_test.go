@@ -135,6 +135,26 @@ func TestLineUpgradeSwitchesTheClinicsLine(t *testing.T) {
 	}
 }
 
+func TestFailedLineUpgradeDoesNotStageOnlyTheFrontend(t *testing.T) {
+	dockerFixture(t)
+	t.Setenv("CARE_IMAGE_EXISTS", "no")
+	t.Setenv("CARE_FAIL_INSPECT", "yes")
+	b := builderFixture(t)
+	newer := lineFixture("next", 'b')
+	publish(t, b, lines.Manifest{Lines: []lines.Line{lineFixture("stable", 'a'), newer}})
+	t.Setenv("CARE_FAIL_PULL_MATCH", newer.Backend.Image)
+
+	if _, err := b.StageLine("next"); err == nil {
+		t.Fatal("StageLine succeeded despite the backend image download failure")
+	}
+	if waiting := b.Waiting(); waiting.Any() || waiting.Line != "" {
+		t.Fatalf("partially staged line upgrade is visible: %+v", waiting)
+	}
+	if lock := ReadLock(b.dir); lock.NextLine != "" || lock.Backend.Next != nil || lock.Frontend.Next != nil {
+		t.Fatalf("partial line upgrade persisted in lock: %+v", lock)
+	}
+}
+
 func TestDecliningALineUpgradeDropsIt(t *testing.T) {
 	b := installed(t)
 	publish(t, b, lines.Manifest{Lines: []lines.Line{lineFixture("stable", 'a'), lineFixture("next", 'b')}})

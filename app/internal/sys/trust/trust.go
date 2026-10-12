@@ -20,8 +20,12 @@ import (
 )
 
 func installSh(path string) string {
-	if runtime.GOOS == "darwin" {
-		return "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain " +
+	return installShFor(runtime.GOOS, path)
+}
+
+func installShFor(goos, path string) string {
+	if goos == "darwin" {
+		return "security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain " +
 			elevate.ShQuote(path)
 	}
 	q := elevate.ShQuote(path)
@@ -37,8 +41,7 @@ func installUnprivileged(path string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = proc.Command("security", "add-trusted-cert", "-r", "trustRoot",
-			"-k", os.Getenv("HOME")+"/Library/Keychains/login.keychain-db", path)
+		cmd = installLoginKeychainCommand(path)
 	case "windows":
 		cmd = proc.Command("certutil", "-addstore", "-f", "Root", path)
 	case "linux":
@@ -50,6 +53,11 @@ func installUnprivileged(path string) error {
 		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func installLoginKeychainCommand(path string) *exec.Cmd {
+	return proc.Command("security", "add-trusted-cert", "-r", "trustRoot", "-p", "ssl",
+		"-k", os.Getenv("HOME")+"/Library/Keychains/login.keychain-db", path)
 }
 
 type Install struct {
@@ -216,36 +224,127 @@ func darwinLoginKeychain() string {
 func removeTrustedRootsDarwin(confirm func(string, string) bool, fp string) (bool, error) {
 	login := darwinLoginKeychain()
 	removed := false
+	var removalErrors []error
 	hashes, err := darwinCARoots(login, fp)
 	if err != nil {
 		return false, err
 	}
 	for _, h := range hashes {
-		if proc.Command("security", "delete-certificate", "-Z", h, login).Run() == nil {
-			removed = true
+		cert, err := darwinCertificatePEM(login, h)
+		if err != nil {
+			removalErrors = append(removalErrors, err)
+			continue
 		}
+		path, cleanup, err := writeRemovalCertificate(cert)
+		if err != nil {
+			removalErrors = append(removalErrors, err)
+			continue
+		}
+		_, trustErr := proc.Command("security", "remove-trusted-cert", path).CombinedOutput()
+		if trustErr != nil {
+			cleanup()
+			removalErrors = append(removalErrors, fmt.Errorf("could not remove login-keychain trust settings for %s: %w", h, trustErr))
+			continue
+		}
+		_, deleteErr := proc.Command("security", "delete-certificate", "-t", "-Z", h, login).CombinedOutput()
+		cleanup()
+		if deleteErr != nil {
+			removalErrors = append(removalErrors, fmt.Errorf("could not remove login-keychain certificate %s: %w", h, deleteErr))
+			continue
+		}
+		removed = true
 	}
 
 	const sys = darwinSystemKeychain
 	hashes, err = darwinCARoots(sys, fp)
 	if err != nil {
-		return removed, err
+		return removed, errors.Join(errors.Join(removalErrors...), err)
 	}
 	if len(hashes) == 0 {
-		return removed, nil
+		return removed, errors.Join(removalErrors...)
 	}
 	if confirm == nil || !confirm("Remove CARE's certificate?",
 		"Remove CARE's security certificate from this computer. Approve the system permission prompt to continue.") {
-		return removed, nil
+		return removed, errors.Join(removalErrors...)
 	}
 	cmds := make([]string, 0, len(hashes))
+	var cleanups []func()
+	defer func() {
+		for _, cleanup := range cleanups {
+			cleanup()
+		}
+	}()
 	for _, h := range hashes {
-		cmds = append(cmds, "security delete-certificate -Z "+h+" "+sys)
+		cert, err := darwinCertificatePEM(sys, h)
+		if err != nil {
+			return removed, errors.Join(errors.Join(removalErrors...), err)
+		}
+		path, cleanup, err := writeRemovalCertificate(cert)
+		if err != nil {
+			return removed, errors.Join(errors.Join(removalErrors...), err)
+		}
+		cleanups = append(cleanups, cleanup)
+		cmds = append(cmds, darwinRemoveCertificateCommand(h, path, sys, true))
 	}
-	if err := elevate.Run(strings.Join(cmds, "; "), true); err != nil {
-		return removed, err
+	if err := elevate.Run(strings.Join(cmds, " && "), true); err != nil {
+		return removed, errors.Join(errors.Join(removalErrors...), err)
 	}
-	return true, nil
+	return true, errors.Join(removalErrors...)
+}
+
+func darwinCertificatePEM(keychain, fp string) ([]byte, error) {
+	raw, err := proc.Command("security", "find-certificate", "-a", "-p", "-c", CommonName, keychain).Output()
+	if err != nil {
+		return nil, fmt.Errorf("could not export certificate %s from %s: %w", fp, keychain, err)
+	}
+	return certificatePEMByFingerprint(raw, fp)
+}
+
+func certificatePEMByFingerprint(raw []byte, fp string) ([]byte, error) {
+	for len(raw) > 0 {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			break
+		}
+		raw = rest
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		candidate := pem.EncodeToMemory(block)
+		if SHA1Hex(string(candidate)) == strings.ToUpper(fp) {
+			return candidate, nil
+		}
+	}
+	return nil, fmt.Errorf("certificate %s was not found in the keychain export", fp)
+}
+
+func writeRemovalCertificate(cert []byte) (string, func(), error) {
+	file, err := os.CreateTemp("", "care-root-removal-*.crt")
+	if err != nil {
+		return "", nil, fmt.Errorf("could not prepare certificate trust cleanup: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if _, err := file.Write(cert); err != nil {
+		_ = file.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("could not prepare certificate trust cleanup: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("could not prepare certificate trust cleanup: %w", err)
+	}
+	return path, cleanup, nil
+}
+
+func darwinRemoveCertificateCommand(fp, certPath, keychain string, system bool) string {
+	args := "security remove-trusted-cert "
+	if system {
+		args += "-d "
+	}
+	args += elevate.ShQuote(certPath) + " && security delete-certificate -t -Z " +
+		fp + " " + elevate.ShQuote(keychain)
+	return args
 }
 
 func darwinCARoots(keychain, fp string) ([]string, error) {

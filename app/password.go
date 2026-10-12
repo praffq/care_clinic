@@ -13,6 +13,9 @@ func ValidatePassword(password string) error {
 	if n > 20 {
 		return fmt.Errorf("Password must be 20 characters or fewer.")
 	}
+	if len(password) > 72 {
+		return fmt.Errorf("Password must be 72 UTF-8 bytes or fewer.")
+	}
 	var hasUpper, hasLower, hasDigit bool
 	for _, r := range password {
 		switch {

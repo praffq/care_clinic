@@ -205,6 +205,19 @@ func (s *syncer) syncRoot(ctx context.Context, root string) error {
 			guest[e.Path] = fileState{Size: e.Size, MtimeUs: e.MtimeNs / 1000}
 		}
 	}
+	// A Windows VM starts with an empty guest tree if its data disk was
+	// recreated. Never interpret that as deletion of every mirrored host file.
+	if len(guest) == 0 && len(host) > 0 {
+		for rel := range host {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := s.pushFile(ctx, filepath.Join(root, filepath.FromSlash(rel)), path.Join(groot, rel)); err != nil {
+				return fmt.Errorf("restore guest mirror %s: %w", rel, err)
+			}
+		}
+		return s.saveState(root, host)
+	}
 	last := s.loadState(root)
 	next := map[string]fileState{}
 	names := map[string]bool{}

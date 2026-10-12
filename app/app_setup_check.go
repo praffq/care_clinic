@@ -83,7 +83,7 @@ func (a *App) validateSetup(name, password, backupDir string) []SetupIssue {
 		add("admin", "Keep the recovery codes outside CARE's own folders.", err.Error())
 	}
 	if err := ValidatePassword(password); err != nil {
-		add("admin", "Choose a password with 8 to 20 characters, upper and lowercase letters, and a number.", err.Error())
+		add("admin", "Choose a password with 8 to 20 characters, no more than 72 UTF-8 bytes, upper and lowercase letters, and a number.", err.Error())
 	}
 	// Multiple causes can point to the same screen; keep one actionable row.
 	seen := make(map[string]bool)

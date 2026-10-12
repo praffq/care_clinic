@@ -78,6 +78,9 @@ func TestMacUpdateHelperWaitsBeforeReplacingAndReportsFailure(t *testing.T) {
 			if !strings.Contains(script, required) {
 				t.Errorf("helper missing %q", required)
 			}
+			if !strings.Contains(script, "/bin/rm -rf '/private/update'") {
+				t.Fatal("failed macOS helper must remove its private staging directory")
+			}
 		}
 		if strings.Contains(script, "xattr") || strings.Contains(script, "docker") {
 			t.Fatal("helper must not bypass quarantine or stop the clinic")
@@ -98,18 +101,47 @@ func TestWindowsUpdateHelperUsesExactInstallDirectoryAndWaits(t *testing.T) {
 	for _, required := range []string{
 		"Get-Process -Id 12345", "UninstallString", "Confirm-Download",
 		"SignerCertificate.Subject", "Get-FileHash", "WaitForExit(120000)",
+		"[IO.FileShare]::Read", "$installerGuard.Dispose()",
 		"/S /CAREUPDATE=1 /D=" + filepath.Dir(exe), "-Verb RunAs",
 		"$setup.ExitCode -ne 0", "ProductVersion", "MessageBox", "helper.log",
+		"Start-Transcript -Path $transcript -Force", "Append-Transcript",
+		"[Text.Encoding]::Unicode", "[Text.UTF8Encoding]::new($false)",
+		"[IO.File]::AppendAllText($log, $detail",
+		"Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue",
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("helper missing %q", required)
 		}
 	}
+	if strings.Contains(script, "Start-Transcript -Path $log") {
+		t.Fatal("Windows update helper must not overwrite or mix encodings in the shared diagnostics log")
+	}
 	if strings.Index(script, "WaitForExit(120000)") > strings.Index(script, "$setup = Start-Process") {
 		t.Fatal("installer started before the app exited")
 	}
+	if strings.Index(script, "$installerGuard = [IO.File]::Open") > strings.Index(script, "function Confirm-Download") ||
+		strings.Index(script, "$installerGuard.Dispose()") < strings.Index(script, "$setup = Start-Process") {
+		t.Fatal("the verified installer was not held read-only throughout elevation and execution")
+	}
 	if strings.Contains(script, "Stop-Process") || strings.Contains(script, "docker") {
 		t.Fatal("helper must not kill applications or stop clinic containers")
+	}
+}
+
+func TestWindowsInstallerUsesVersionedRecoveryExecutables(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("build", "windows", "installer", "project.nsi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	if !strings.Contains(script, `StrCpy $CarePrevious "$INSTDIR\.care-update-previous-${INFO_PRODUCTVERSION}.exe"`) {
+		t.Fatal("Windows updates must use a distinct recovery path for each installed version")
+	}
+	if strings.Contains(script, `"$INSTDIR\.care-update-previous.exe"`) {
+		t.Fatal("a fixed recovery path lets a still-running helper block every later update")
+	}
+	if !strings.Contains(script, `Rename "$CarePrevious" "$INSTDIR\${PRODUCT_EXECUTABLE}"`) {
+		t.Fatal("failed replacement must restore its own previous executable")
 	}
 }
 

@@ -7,7 +7,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,6 +49,7 @@ func TestRewriteDockerArgs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q", got)
 	}
+
 	if !reflect.DeepEqual(paths, []string{`C:\care\backups`, `C:\care\key.age`}) {
 		t.Fatalf("paths %q", paths)
 	}
@@ -56,6 +60,18 @@ func TestRewriteDockerArgs(t *testing.T) {
 	cr := []string{"--log-level", "warn", "container", "create", "-v", `C:\x:/x`, "img"}
 	if got, _ := RewriteDockerArgs(cr); got[5] != "/c/x:/x" {
 		t.Fatalf("container create: %q", got)
+	}
+}
+
+func TestRewriteMountPreservesCSVQuotedWindowsSource(t *testing.T) {
+	value := `type=bind,"source=C:\backups\a,b",target=/restore`
+	args, paths := RewriteDockerArgs([]string{"run", "--mount", value, "image"})
+	if !reflect.DeepEqual(paths, []string{`C:\backups\a,b`}) {
+		t.Fatalf("sync paths = %#v", paths)
+	}
+	want := `type=bind,"source=/c/backups/a,b",target=/restore`
+	if len(args) != 4 || args[2] != want {
+		t.Fatalf("rewritten mount = %#v, want field %q", args, want)
 	}
 }
 
@@ -73,6 +89,16 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if c := (Config{CPUs: 16, MemoryMB: 512}).withDefaults(2); c.CPUs != 2 || c.MemoryMB != minMemoryMB {
 		t.Fatalf("%+v", c)
+	}
+}
+
+func TestDarwinBundleMinimumSupportsVirtualizationDataDiskID(t *testing.T) {
+	data, err := os.ReadFile("../../build/darwin/Info.plist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "<string>12.3.0</string>") {
+		t.Fatal("macOS bundle minimum is below the VM data disk identifier requirement")
 	}
 }
 
@@ -221,6 +247,60 @@ func TestSyncThreeWay(t *testing.T) {
 	before := len(g.files)
 	if err := s.run(ctx, nil); err != nil || len(g.files) != before {
 		t.Fatalf("steady state changed: %v", err)
+	}
+}
+
+func TestSyncRestoresAnEmptyGuestWithoutDeletingHostFiles(t *testing.T) {
+	root := t.TempDir()
+	g := &fakeGuest{files: map[string]fakeFile{}}
+	groot := "/guest/install"
+	s := &syncer{g: g, logf: t.Logf, state: t.TempDir(), roots: func() []string { return []string{root} },
+		toGst: func(string) string { return groot }, skipFn: skipSync}
+	hostFile := filepath.Join(root, "backup-state", "last.json")
+	if err := os.MkdirAll(filepath.Dir(hostFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostFile, []byte("host backup state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh VM has an empty tmpfs-backed root even though the host has a
+	// saved three-way sync state from the previous VM.
+	g.files = map[string]fakeFile{}
+	if err := s.run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(hostFile); err != nil || string(got) != "host backup state" {
+		t.Fatalf("host mirror was deleted: %q %v", got, err)
+	}
+	if got := g.files[groot+"/backup-state/last.json"].data; got != "host backup state" {
+		t.Fatalf("guest mirror was not restored: %q", got)
+	}
+}
+
+func TestHelperPublishesStartupFailureBeforeVMIsReady(t *testing.T) {
+	h := &host{status: HostStatus{Running: true, Error: "data disk: unavailable"}}
+	response := httptest.NewRecorder()
+	h.startupRoutes().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var status HostStatus
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || status.Error != "data disk: unavailable" {
+		t.Fatalf("startup status = %d %+v", response.Code, status)
+	}
+	if ready, err := statusOutcome(status); ready || err == nil || !strings.Contains(err.Error(), status.Error) {
+		t.Fatalf("startup error outcome = %t %v", ready, err)
+	}
+}
+
+func TestEnsureStatusDoesNotAcceptDockerBeforeAttachError(t *testing.T) {
+	status := HostStatus{Running: true, Docker: true, Error: "share install: mount failed"}
+	if ready, err := statusOutcome(status); ready || err == nil || !strings.Contains(err.Error(), "mount failed") {
+		t.Fatalf("attach failure status = %t %v", ready, err)
 	}
 }
 

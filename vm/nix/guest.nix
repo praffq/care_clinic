@@ -1,6 +1,7 @@
 { config, lib, pkgs, modulesPath, version, ... }:
 let
   agent = import ./agent.nix { inherit pkgs lib version; };
+  windowsDrives = map (i: builtins.substring i 1 "abcdefghijklmnopqrstuvwxyz") (lib.range 2 25);
 in
 {
   imports = [ "${modulesPath}/profiles/minimal.nix" "${modulesPath}/profiles/headless.nix" ];
@@ -31,6 +32,12 @@ in
     autoResize = true;
     neededForBoot = true;
   };
+  # Windows drive roots are mirrored here; the guest root itself is a tmpfs.
+  # Keep those files across VM restarts so a missing guest listing cannot look
+  # like deletion of the host's installed clinic or backup files.
+  systemd.tmpfiles.rules =
+    (map (drive: "d /var/lib/care-sync/${drive} 0755 root root -") windowsDrives)
+    ++ (map (drive: "L+ /${drive} - - - - /var/lib/care-sync/${drive}") windowsDrives);
   boot.initrd.supportedFilesystems = [ "erofs" "ext4" ];
   boot.initrd.availableKernelModules = [ "virtio_pci" "virtio_blk" "virtio_mmio" ];
   boot.kernelModules = [ "vmw_vsock_virtio_transport" "virtio_net" "virtiofs" "fuse" "qemu_fw_cfg" "virtio_balloon" "overlay" "br_netfilter" ];

@@ -36,10 +36,7 @@ func (a *App) ExportDiagnostics() (err error) {
 		return fmt.Errorf("the logs folder is unavailable")
 	}
 	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return err
-	}
-	if rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel) {
+	if diagnosticsPathInsideLogDir(rel, err) {
 		return fmt.Errorf("save diagnostics outside the logs folder")
 	}
 	metadata := map[string]string{
@@ -56,6 +53,13 @@ func (a *App) ExportDiagnostics() (err error) {
 	}
 	a.logln("Diagnostics saved to " + path)
 	return nil
+}
+
+func diagnosticsPathInsideLogDir(rel string, relErr error) bool {
+	if relErr != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
 func writeDiagnostics(root, dest string, metadata map[string]string) (err error) {

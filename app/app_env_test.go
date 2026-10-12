@@ -146,7 +146,7 @@ func TestSettingsReadsKeepAuthorizationAndLifecycleGuards(t *testing.T) {
 func TestRetentionReadUsesSavedValue(t *testing.T) {
 	a := settingsApp(t)
 	for _, days := range []string{"14", "37", "0"} {
-		want := "DB_BACKUP_RETENTION_PERIOD=" + days + "\n"
+		want := "DB_BACKUP_RETENTION_PERIOD=" + days + "\nADDITIONAL_PLUGS=[]\n"
 		if err := a.WriteEnv("backend", want, settingsPassword); err != nil {
 			t.Fatal(err)
 		}
@@ -154,5 +154,32 @@ func TestRetentionReadUsesSavedValue(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("saved retention was not loaded: %q, %v", got, err)
 		}
+	}
+}
+
+func TestWriteEnvCannotChangePluginsOutsidePluginTransaction(t *testing.T) {
+	a := settingsApp(t)
+	before, err := os.ReadFile(filepath.Join(a.installDir(), "backend.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(before), "ADDITIONAL_PLUGS=[]", `ADDITIONAL_PLUGS='[{"name":"one","package_name":"pkg_one"}]'`, 1)
+	if changed == string(before) {
+		t.Fatal("test did not change ADDITIONAL_PLUGS")
+	}
+	if err := a.WriteEnv("backend", changed, settingsPassword); err == nil || !strings.Contains(err.Error(), "Plugins settings") {
+		t.Fatalf("direct plugin edit was not rejected: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(a.installDir(), "backend.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("rejected plugin edit changed backend.env")
+	}
+
+	otherChange := strings.Replace(string(before), "DB_BACKUP_RETENTION_PERIOD=14", "DB_BACKUP_RETENTION_PERIOD=30", 1)
+	if err := a.WriteEnv("backend", otherChange, settingsPassword); err != nil {
+		t.Fatalf("an unrelated backend setting could not be changed with plugins preserved: %v", err)
 	}
 }

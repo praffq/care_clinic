@@ -248,7 +248,10 @@ case "$1 $2" in
     printf '%s\n' "$CARE_IMAGE_KEY"
     ;;
   'image prune'|'image tag') ;;
-  pull*) [ "$CARE_FAIL_PULL" != yes ] || exit 24 ;;
+  pull*)
+    [ -z "$CARE_FAIL_PULL_MATCH" ] || case "$*" in *"$CARE_FAIL_PULL_MATCH"*) exit 24;; esac
+    [ "$CARE_FAIL_PULL" != yes ] || exit 24
+    ;;
   build*)
     for arg do context=$arg; done
     [ -d "$context" ] || exit 23

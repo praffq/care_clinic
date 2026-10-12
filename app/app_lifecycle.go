@@ -268,6 +268,18 @@ func jobQuitPrompt(label string) quitPrompt {
 		return quitPrompt{"the CARE Clinic update", "Quit during the CARE Clinic update?",
 			"The update stops and the version you have keeps working; you can update again later. " +
 				"If macOS is already replacing the app, that finishes on its own."}
+	case "upgrade-line":
+		return quitPrompt{"a release-line upgrade", "Quit during a CARE release-line upgrade?",
+			"A release-line upgrade can change clinic data. Quitting can interrupt the migration; " +
+				"reopen CARE Clinic and check the clinic before anyone uses it. If recovery is needed, " +
+				"restore the safety backup made for this upgrade."}
+	case "engine-update":
+		return quitPrompt{"the CARE engine update", "Quit while the CARE engine is updating?",
+			"The engine update may stop partway or finish in the background. Reopen CARE Clinic and " +
+				"check the engine status before starting CARE.\n\n" + leftRunning}
+	case "free-space":
+		return quitPrompt{"cleanup", "Quit while CARE is freeing space?",
+			"Cleanup may stop partway. Reopen CARE Clinic and run cleanup again to finish.\n\n" + leftRunning}
 	case "update":
 		return quitPrompt{"the CARE update", "Quit during the CARE update?",
 			"CARE is being updated. Quitting can leave it partly updated; open CARE Clinic again " +

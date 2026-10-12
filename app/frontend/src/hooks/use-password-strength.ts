@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { bridge, logToHost } from "@/lib/bridge";
 
 export const DEFAULT_PW_MESSAGE =
-  "Use 8 to 20 characters with an uppercase letter, a lowercase letter and a number.";
+  "Use 8 to 20 characters and no more than 72 UTF-8 bytes, with an uppercase letter, a lowercase letter and a number.";
 
 export type PasswordStrength = { strong: boolean; message: string };
 

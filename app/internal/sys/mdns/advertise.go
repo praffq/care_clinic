@@ -148,7 +148,10 @@ func ValidateLabel(name string) error {
 	return nil
 }
 
-var virtualIface = []string{"docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "utun", "tun", "tap"}
+var virtualIface = []string{
+	"bridge", "docker", "br-", "veth", "virbr", "vboxnet", "vmnet",
+	"utun", "tun", "tap", "vethernet", "lxdbr", "incusbr", "podman", "cni-",
+}
 
 func lanInterfaces() ([]lanInterface, error) {
 	ifaces, err := net.Interfaces()

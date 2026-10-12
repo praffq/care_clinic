@@ -61,7 +61,7 @@ func pipe(c net.Conn, target dialer) {
 	wg.Wait()
 }
 
-// serverTLS accepts only clients holding the same per-boot certificate.
+// serverTLS accepts only clients holding the same per-install certificate.
 func serverTLS(pem []byte) (*tls.Config, error) {
 	cert, err := tls.X509KeyPair(pem, pem)
 	if err != nil {

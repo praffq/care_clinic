@@ -1,7 +1,6 @@
 package compose
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/lines"
@@ -93,9 +92,6 @@ func (b *Builder) StageLine(id string) (Update, error) {
 	if err != nil {
 		return Update{}, err
 	}
-	if b.stopped() {
-		return Update{}, errors.New("the line upgrade was interrupted")
-	}
 	return u, nil
 }
 
@@ -124,21 +120,34 @@ func (b *Builder) stage(staged map[string]Release, line string) (Update, error) 
 		if next.stopped() {
 			return Update{}, nil
 		}
-		if err := b.updateLock(func(l *Lock) {
-			c := l.Get(s.service)
-			r := rel
-			c.Next = &r
-			l.Set(s.service, c)
-		}); err != nil {
-			return Update{}, err
+		if line == "" {
+			if err := b.updateLock(func(l *Lock) {
+				c := l.Get(s.service)
+				r := rel
+				c.Next = &r
+				l.Set(s.service, c)
+			}); err != nil {
+				return Update{}, err
+			}
 		}
 		*s.dst = rel.Commit
 	}
 	if line != "" && u.Any() {
-		u.Line = line
-		if err := b.updateLock(func(l *Lock) { l.NextLine = line }); err != nil {
+		if next.stopped() {
+			return Update{}, nil
+		}
+		if err := b.updateLock(func(l *Lock) {
+			for service, rel := range staged {
+				c := l.Get(service)
+				r := rel
+				c.Next = &r
+				l.Set(service, c)
+			}
+			l.NextLine = line
+		}); err != nil {
 			return Update{}, err
 		}
+		u.Line = line
 	}
 	return u, nil
 }

@@ -28,18 +28,31 @@ type storageWatch struct {
 }
 
 func (a *App) DiskStatus() storage.InstallResult {
-	docker, err := diskspace.Of(a.dockerDataDir())
+	return diskStatus(a.installDir(), a.dockerDataDir(), a.loadConfig().SetupDone, diskspace.Of)
+}
+
+func diskStatus(installDir, dockerDir string, setupDone bool,
+	measure func(string) (diskspace.Usage, error)) storage.InstallResult {
+	docker, err := measure(dockerDir)
 	if err != nil {
-		return storage.InstallResult{OK: true, Message: "Couldn't measure free space (" + err.Error() + ")"}
+		return unknownDiskStatus(err)
 	}
-	if a.loadConfig().SetupDone {
+	if setupDone {
 		return storage.CheckRunning(docker)
 	}
-	install, err := diskspace.Of(a.installDir())
+	install, err := measure(installDir)
 	if err != nil {
-		install = docker
+		return unknownDiskStatus(err)
 	}
 	return storage.CheckInstall(install, docker)
+}
+
+func unknownDiskStatus(err error) storage.InstallResult {
+	return storage.InstallResult{
+		Message: "Couldn't measure free space: " + err.Error(),
+		How:     "Make sure the drive is available, then check again.",
+		Need:    storage.InstallMinFree,
+	}
 }
 
 func (a *App) dockerDataDir() string {

@@ -119,7 +119,7 @@ func (pr *Provisioner) installDockerLinux() error {
 	}
 	pr.logln("Docker installed. If the check below still fails, log out and back in " +
 		"so this account picks up its new 'docker' group membership.")
-	return pr.waitForDocker(dockerLinuxReadyWait)
+	return pr.waitForDockerAfterInstall(dockerLinuxReadyWait)
 }
 
 func (pr *Provisioner) installComposeLinux(compose Download) error {
@@ -133,5 +133,5 @@ func (pr *Provisioner) installComposeLinux(compose Download) error {
 		return fmt.Errorf("could not install the Docker Compose plugin: %w", err)
 	}
 	pr.logln("Docker Compose plugin installed.")
-	return pr.waitForDocker(dockerLinuxReadyWait)
+	return pr.waitForDockerAfterInstall(dockerLinuxReadyWait)
 }

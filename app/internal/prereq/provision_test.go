@@ -82,3 +82,19 @@ func TestDockerWaitReturnsOnceReady(t *testing.T) {
 		}
 	})
 }
+
+func TestWindowsElevatedCommandFailsOnDeclinedUAC(t *testing.T) {
+	command := windowsElevatedCommand(`C:\Program Files\CARE\setup.exe`, "/quiet", "O’Brien")
+	for _, required := range []string{
+		"$ErrorActionPreference = 'Stop'",
+		"try { $p = Start-Process",
+		"-Verb RunAs",
+		"if ($null -eq $p -or $null -eq $p.ExitCode)",
+		"catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }",
+		"exit [int]$p.ExitCode",
+	} {
+		if !strings.Contains(command, required) {
+			t.Errorf("elevated command is missing %q: %s", required, command)
+		}
+	}
+}

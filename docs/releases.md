@@ -2,12 +2,13 @@
 
 [Documentation index](README.md)
 
-A release starts on its own when a change to `CARE_CLINIC_VERSION` is merged
-into `main`, and can also be started by hand from GitHub Actions. Do not create
-or push a tag to start a build. The workflow reads the selected commit's
-[`deployments/.env`](../deployments/.env), runs CI, packages the CI-built
-applications, creates a tag automatically, and creates a **draft prerelease**.
-Nothing is published to clinic users automatically.
+A release workflow is triggered when a change to `CARE_CLINIC_VERSION` is
+merged into `main`, and can also be started by hand from GitHub Actions. Do not
+create or push a tag to start a build. **The workflow tracked in this checkout
+currently fails during preflight and does not reach packaging.** The remaining
+steps below describe the intended downstream release path after the workflow
+blockers are corrected; they are not evidence that a release can currently be
+built from this branch.
 
 Windows builds are signed through SignPath when the
 [SignPath configuration](#windows-signing-signpath) is present; otherwise they
@@ -17,11 +18,11 @@ credentials it retains Wails' ad-hoc signature only. The release manifest record
 signing status separately for each platform. Do not tell users to disable OS
 protection.
 
-The CARE engine is built and published separately from the desktop app. To change
-the engine version, run the manually started **CARE engine** workflow and copy
-its version and checksums into `deployments/.env`; the desktop release workflow
-verifies the pinned engine and platform downloads before packaging. See the
-[CARE engine guide](vm.md) for the process.
+The CARE engine is separate from the desktop app. This checkout has no tracked
+CARE engine publication workflow, and the tracked desktop release workflow
+does not verify the CARE engine or host-client/QEMU pins. Do not infer that an
+engine asset exists or is verified from the desktop release configuration.
+See the [CARE engine guide](vm.md) for the local build and publication limits.
 
 ## Prepare a version
 
@@ -31,11 +32,16 @@ Current development publishes to `praffq/care_clinic`, not the organization
 repository. The personal macOS release prepared from this branch is `v0.1.16`; its
 assets are an Apple-silicon macOS DMG and `SHA256SUMS`. Windows runtime/packaging
 and an Intel macOS installation have not been validated in this test cycle.
-The fork's automated desktop release is still blocked by the missing
-`qemu-10.1.0-windows-x86_64.zip` asset on the pinned engine release. A
-checksum-pinned, reproducible package is prepared locally; native Windows
-validation and support-asset publication remain pending. The package script
-and validation instructions are in [the engine guide](vm.md#packaging-qemu-for-windows).
+The tracked release workflow currently has stale configuration checks for
+removed CARE image revisions and obsolete desktop dependency pins, so it fails before reaching
+the platform packaging jobs. Its release-identity and prerequisite-verifier
+tests expose those mismatches. After those checks are updated to the
+release-line and CARE-engine/tool pins, the fork's automated desktop release
+still depends on the missing `qemu-10.1.0-windows-x86_64.zip` asset on the
+pinned engine release. A checksum-pinned, reproducible package is prepared
+locally; native Windows validation and support-asset publication remain
+pending. The package script and validation instructions are in
+[the engine guide](vm.md#packaging-qemu-for-windows).
 The Mac
 test releases have therefore been built, ad-hoc signed, packaged and published
 manually after CI. This does not establish a working all-platform release
@@ -76,13 +82,14 @@ the exact file is embedded in the app and attached to the release.
 ### Bump a pinned prerequisite
 
 The desktop release pins are maintained in `deployments/.env`. For the CARE
-engine, first build and publish a version with the manually run
-[CARE engine workflow](vm.md#building-the-engine), then update the corresponding
+engine, build and publish an asset through an approved publishing process, then update the corresponding
 `CARE_VM_*` version and checksum values. Update the `DOCKER_CLI_*`,
 `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, and `QEMU_WINDOWS_*` pins when their
 host-side tools change. Linux continues to use `DOCKER_LINUX_*` and
-`COMPOSE_LINUX_*` static-binary pins. The release workflow verifies these
-pinned files before it packages the app.
+`COMPOSE_LINUX_*` static-binary pins. The current tracked workflow does not
+verify the CARE engine, Docker CLI, Compose or QEMU pins; a workflow-only patch
+with the corrected download checks is available to the GitHub configuration
+owner but is not applied here.
 
 `deployments/.env` is the version source of truth. Do not maintain
 `app/wails.json`'s `info.productVersion` independently. Run
@@ -93,7 +100,7 @@ can package a stale version.
 
 ## Build the release
 
-Merging the version PR into `main` runs **Release CARE Clinic**. Its first
+Merging the version PR into `main` triggers **Release CARE Clinic**. Its first
 job, **Decide whether to release**, compares `CARE_CLINIC_VERSION` with the
 commit before the push: when it changed, the release continues; when only other
 `.env` values changed (an image or prerequisite pin, a CARE line setting), every
@@ -103,6 +110,13 @@ touch `deployments/.env` do not start the workflow at all.
 1. Open **Actions -> Release CARE Clinic** and find the run for the merge.
 2. Wait for every job to finish.
 3. Open the resulting draft in the repository's **Releases** page.
+
+With the current workflow, the run fails earlier: validation requires
+`CARE_BE_REF`/`CARE_FE_REF`, which are absent from `deployments/.env`; if that
+step is corrected alone, the prerequisite job then requires removed
+desktop-installer pins and omits the current engine/tool downloads.
+The release-contract tests reproduce both failures. Apply the separate
+workflow patch through the GitHub configuration owner before using these steps.
 
 To start a release by hand, for example to retry after a failure that needed a
 new commit, select **Run workflow**, choose the approved branch (normally
@@ -124,9 +138,9 @@ succeeds. For `CARE_CLINIC_VERSION=0.1.1`, the tag is `v0.1.1`.
 | Stage | Behavior |
 | --- | --- |
 | Gate | On a push to `main`, continue only when `CARE_CLINIC_VERSION` differs from the previous commit; otherwise skip every job. A manual run always continues. |
-| Validate | Reject malformed/duplicate version values and an existing release version. |
-| Verify prerequisites | Download the pinned CARE engine and platform tools, then compare SHA-256 values before building. Linux Docker Engine and Compose pins are checked as well. |
-| Check and build | Call the same CI workflow used by PRs: lint, race tests, frontend checks, and real macOS/Windows native builds. No separate untested release rebuild. |
+| Validate (current) | Checks the desktop version, then requires removed `CARE_BE_REF`/`CARE_FE_REF`; `CARE_LINES_URL` and `CARE_DEFAULT_LINE` are not validated. This stops the current run. |
+| Verify prerequisites (current) | Expects obsolete desktop dependency values that are absent from the current manifest and checks Linux Docker/Compose downloads only. It does not verify the current CARE engine, QEMU, Docker CLI or macOS/Windows Compose pins. |
+| Downstream packaging (intended) | The workflow defines CI reuse, platform signing, packaging and draft creation, but these jobs are unreachable until preflight is repaired. The separate patch supplies corrected pin validation and macOS virtualization entitlement checks; it has not been applied. |
 | Windows signing | With the SignPath configuration, submit the CI-built `CARE Clinic.exe` and `uninstall.exe` for signing in one request, rebuild the NSIS installer around the signed files with the installer inputs CI produced, and submit the installer for signing. Each request waits for an approver. Without the configuration, both jobs are skipped and the CI installer is used unsigned. |
 | macOS signing | With the existing credentials, sign the app with hardened runtime, notarize/staple it, then sign and notarize/staple the DMG. Otherwise explicitly report ad-hoc signing. |
 | Package | Wrap the CI macOS app in a DMG and copy the signed (or CI-built unsigned) Windows installer. Verify macOS metadata matches the release version. |
@@ -136,7 +150,7 @@ succeeds. For `CARE_CLINIC_VERSION=0.1.1`, the tag is `v0.1.1`.
 Release runs are serialized and do not cancel an active release. CI invoked by
 a release has a separate concurrency group from ordinary PR/main CI.
 
-For version `0.1.1`, the draft has these five assets:
+When the downstream jobs complete, the intended draft has these five assets:
 
 ```text
 CARE-Clinic-0.1.1-macos.dmg
@@ -166,9 +180,9 @@ Damaged downloads are rejected without anyone comparing checksums by hand:
 The draft's notes include a "Verify your download" section with the
 `Get-FileHash` and `shasum -a 256` commands for checking a file by hand.
 
-The combined package is also retained as the `care-release-assets` workflow
-artifact for 14 days. These temporary Actions artifacts are for maintainers;
-the eventual published release assets are the durable downloads.
+The combined package is intended to be retained as the `care-release-assets`
+workflow artifact for 14 days. These temporary Actions artifacts are for
+maintainers; the eventual published release assets are the durable downloads.
 
 ## Review and publish
 

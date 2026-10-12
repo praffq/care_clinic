@@ -8,7 +8,9 @@ CARE Clinic keeps local logs in one private folder:
 
 `care-log.log` records app operations, installation, updates and backups.
 `app-update-helper.log` preserves installer/relaunch diagnostics after the update
-staging directory is removed.
+staging directory is removed. Windows helper transcripts append across attempts
+instead of replacing earlier diagnostics, and are converted to UTF-8 before
+joining the log.
 `engine-host.log` records the VM lifecycle and host connections.
 `engine-console.log` captures serial boot/kernel output.
 `guest-system.log` captures guest system services, including Docker.

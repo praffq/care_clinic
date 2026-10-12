@@ -338,7 +338,7 @@ export function installTestHost() {
       fixtures.recovery = { backup_saved: false, backup_verified: false, codes_saved: false, backup_path: "", codes_path: "", backup_problem: "", codes_problem: "", backup_key_stored: false, backup_key_needs_enrollment: false };
     },
     CanRemoveApp: async () => fixtures.canRemoveApp,
-    ClientPreflight: async () => ({ ...fixtures.preflight }),
+    ClientPreflight: async (_address: string) => ({ ...fixtures.preflight }),
     FindClinic: async (address: string) => {
       if (fixtures.preflight.unfinished_server_setup) throw new Error("this computer has an unfinished clinic setup; remove it in Setup before connecting");
       if (scenario === "client-not-found") throw new Error("could not reach the clinic; check its address, network and main computer");
@@ -389,6 +389,7 @@ export function installTestHost() {
     ValidateDomain: async (name: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.local)?$/i.test(name) ? "" : "Invalid clinic name",
     ValidatePassword: async (password: string) => [...password].length < 8 ? "Password must be at least 8 characters."
       : [...password].length > 20 ? "Password must be 20 characters or fewer."
+      : new TextEncoder().encode(password).length > 72 ? "Password must be 72 UTF-8 bytes or fewer."
       : !/\p{Lu}/u.test(password) || !/\p{Ll}/u.test(password) || !/\p{Nd}/u.test(password) ? "Password must include an uppercase letter, a lowercase letter, and a number." : "",
     ValidateBackupDir: async () => fixtures.folderProblem,
     ChooseFolder: async () => fixtures.folder,

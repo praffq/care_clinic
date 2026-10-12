@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,11 @@ func TestPluginFailuresRestoreConfigurationAndImage(t *testing.T) {
 			}
 			if lockAfter, err := os.ReadFile(filepath.Join(e.InstallDir, compose.LockFile)); err != nil || string(lockAfter) != string(lockBefore) {
 				t.Fatalf("release lock was not restored exactly: %v", err)
+			}
+			if runtime.GOOS != "windows" {
+				if info, err := os.Stat(filepath.Join(e.InstallDir, compose.LockFile)); err != nil || info.Mode().Perm() != 0o644 {
+					t.Fatalf("release lock mode = %v, %v; want 0644", info, err)
+				}
 			}
 			for _, name := range []string{"plugins.json", "plugins-pending.json", pluginRecoveryFile} {
 				if _, err := os.Stat(filepath.Join(e.InstallDir, name)); !errors.Is(err, os.ErrNotExist) {

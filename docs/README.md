@@ -43,7 +43,7 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | "Where does a button click enter Go?" | [Wails application and API](wails-application.md). |
 | "When do I enter my computer password, and what does Cancel do?" | [Permission prompts](desktop-workflows.md#permission-prompts) and [the confirmation protocol](wails-application.md#in-window-permission-confirmations). |
 | "Does Advanced really lock after 15 minutes?" | [Advanced's unlock window](desktop-workflows.md#advanceds-15-minute-unlock). |
-| "Why are actions still locked after the CARE Clinic installer opens?" | [Update handoff and running work](desktop-workflows.md#updates-and-running-work). |
+| "Why does CARE Clinic close while a desktop update is being installed?" | [Update handoff and running work](desktop-workflows.md#updates-and-running-work). |
 | "Why does an operation say something else is running?" | [Concurrency and job protocol](wails-application.md#concurrency-and-job-protocol). |
 | "Which `backend.env` does the editor read?" | [Configuration and settings](configuration-and-settings.md). |
 | "Why did a setting require a rebuild?" | [Applying settings](configuration-and-settings.md#applying-settings) and [the different builds](development-and-release.md#the-different-builds). |

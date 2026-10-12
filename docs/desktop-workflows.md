@@ -59,7 +59,8 @@ screen's time estimate is not a deadline or measured installation progress.
    Checked and Continue stays disabled until the correct file is checked.
 4. **Admin password.** Choose the CARE Clinic password and save the sheet of six
    single-use recovery codes. The password must contain 8 through 20 Unicode
-   characters, including an uppercase letter, lowercase letter and digit.
+   characters and fit bcrypt's 72-byte UTF-8 limit, including an uppercase
+   letter, lowercase letter and digit.
    A reminder asks the administrator to save the password in a password manager
    or write it down somewhere secure before installation starts.
    The sheet can be opened for printing through its associated application.
@@ -329,14 +330,14 @@ versions; a CARE line upgrade does not redesign the desktop interface.
 | --- | --- |
 | Checking, available, or failed check | Continue ordinary work, retry the check, or explicitly start the update. |
 | Downloading, verifying or installing | Keep CARE Clinic open and wait. |
-| External installer opened | Follow the installer. After the native handoff completes, **OK** on start/client/setup or **Done** in Updates acknowledges the handoff and releases the interface lock. |
-| Reopening | Wait for the application to reopen. There is no OK/Done action that releases this state. |
+| Restarting after handoff | Keep CARE Clinic open until it exits. The platform update helper continues the replacement and attempts to reopen the app; this process cannot confirm the installer completed after handoff. |
 | Failed download or installation | Read the short failure message and retry when ready. |
 
-A handoff acknowledgement does not prove the external installer finished and
-does not change the running version to "Up to date". File pickers and restore
-preflight started before an update cannot resume a stale change after
-acknowledgement; repeat the interrupted action explicitly.
+The update job reports its restart handoff before CARE Clinic exits; it does
+not receive an installer-completion acknowledgement and does not change the
+running version to "Up to date". File pickers and restore preflight started
+before an update cannot resume a stale change after the app reopens; repeat
+the interrupted action explicitly.
 
 ## Closing and removing CARE
 

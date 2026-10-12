@@ -45,7 +45,9 @@ func TestLauncherHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	dir, err := os.Getwd()
-	if err != nil || dir != os.Getenv("CARE_LAUNCHER_DIR") {
+	want, statErr := os.Stat(os.Getenv("CARE_LAUNCHER_DIR"))
+	got, dirErr := os.Stat(dir)
+	if err != nil || statErr != nil || dirErr != nil || !os.SameFile(got, want) {
 		os.Exit(90)
 	}
 	fmt.Println("launcher stdout")

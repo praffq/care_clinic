@@ -21,6 +21,12 @@ const KEY = /^[A-Z][A-Z0-9_]*$/;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+function validDate(value) {
+  if (!DATE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+}
+
 function image(where, value, frontend) {
   if (!value || typeof value !== "object") throw new Error(`${where} is missing`);
   if (!COMMIT.test(value.commit ?? "")) throw new Error(`${where}.commit must be a 40-character commit SHA`);
@@ -56,7 +62,9 @@ export function render(source, builds, previous) {
     for (const field of ["min_app_version", "max_app_version"]) {
       if (s[field] && !VERSION.test(s[field])) throw new Error(`${s.id}.${field} must be X.Y.Z`);
     }
-    if (s.supported_until && !DATE.test(s.supported_until)) throw new Error(`${s.id}.supported_until must be YYYY-MM-DD`);
+    if (s.supported_until && !validDate(s.supported_until)) {
+      throw new Error(`${s.id}.supported_until must be a valid YYYY-MM-DD date`);
+    }
     const built = builds[s.id] ?? previous?.lines?.find(l => l.id === s.id);
     if (!built) {
       console.warn(`skipping line ${s.id}: no published images yet`);

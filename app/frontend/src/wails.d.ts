@@ -42,7 +42,7 @@ declare global {
           BeginServerSetup(): Promise<void>;
           ClearRole(): Promise<void>;
           FindClinic(address: string): Promise<ClinicInfo>;
-          ClientPreflight(): Promise<ClientPreflight>;
+          ClientPreflight(address: string): Promise<ClientPreflight>;
           ClientReachable(): Promise<ClientReachability>;
           ConnectClient(address: string): Promise<void>;
           DisconnectClient(): Promise<void>;

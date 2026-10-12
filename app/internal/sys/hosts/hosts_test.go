@@ -1,6 +1,8 @@
 package hosts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -113,6 +115,91 @@ func TestReplaceScriptPreservesWriteFailure(t *testing.T) {
 	}
 }
 
+func TestReplaceScriptDoesNotOverwriteConcurrentHostsEdits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fixture")
+	}
+	p := filepath.Join(t.TempDir(), "hosts")
+	original := "127.0.0.1 localhost\n" + line("care.local") + "\n"
+	if err := os.WriteFile(p, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	step, cleanup, need, err := replaceStep(p, withoutMarker, "test")
+	defer cleanup()
+	if err != nil || !need {
+		t.Fatalf("replaceStep: need = %v, err = %v", need, err)
+	}
+	concurrent := original + "10.0.0.7 printer.lan\n"
+	if err := os.WriteFile(p, []byte(concurrent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := proc.Command("sh", "-c", step.Sh).CombinedOutput(); err == nil {
+		t.Fatalf("stale cleanup unexpectedly succeeded: %s", out)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil || string(got) != concurrent {
+		t.Fatalf("concurrent hosts edits were overwritten: %q, %v", got, err)
+	}
+	if _, err := os.Stat(p + ".care-backup"); !os.IsNotExist(err) {
+		t.Fatalf("stale hosts file was backed up before the freshness check: %v", err)
+	}
+}
+
+func TestReplacePowerShellChecksTheOriginalHostsHash(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hosts")
+	original := "127.0.0.1 care.local # care-clinic\n"
+	if err := os.WriteFile(p, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	step, cleanup, need, err := replaceStep(p, withoutMarker, "test")
+	defer cleanup()
+	if err != nil || !need {
+		t.Fatalf("replaceStep: need = %v, err = %v", need, err)
+	}
+	sum := sha256.Sum256([]byte(original))
+	hash := hex.EncodeToString(sum[:])
+	cleaned, _ := withoutMarker(original)
+	cleanedHash := sha256.Sum256([]byte(cleaned))
+	cleanHash := hex.EncodeToString(cleanedHash[:])
+	if strings.Count(step.PS, "Get-FileHash -LiteralPath") != 2 ||
+		!strings.Contains(step.PS, hash) ||
+		!strings.Contains(step.PS, cleanHash) ||
+		!strings.Contains(step.PS, "hosts file changed since cleanup was prepared") ||
+		!strings.Contains(step.PS, "prepared hosts cleanup changed") {
+		t.Fatalf("PowerShell cleanup does not reject a stale snapshot: %s", step.PS)
+	}
+}
+
+func TestReplaceScriptRejectsChangedStagedCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fixture")
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "hosts")
+	src := filepath.Join(dir, "staged")
+	original := "127.0.0.1 care.local # care-clinic\n"
+	cleaned := ""
+	if err := os.WriteFile(dst, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte(cleaned), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalSum := sha256.Sum256([]byte(original))
+	cleanSum := sha256.Sum256([]byte(cleaned))
+	script := replaceSh(src, dst, hex.EncodeToString(originalSum[:]), hex.EncodeToString(cleanSum[:]))
+	if err := os.WriteFile(src, []byte("changed staged contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := proc.Command("sh", "-c", script).CombinedOutput(); err == nil {
+		t.Fatalf("changed staged cleanup unexpectedly succeeded: %s", out)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != original {
+		t.Fatalf("changed staged cleanup modified hosts: %q, %v", got, err)
+	}
+}
+
 func TestRemoveUnixUsesRemainingState(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
@@ -199,6 +286,30 @@ func TestWithoutHostOrMarker(t *testing.T) {
 		if got != c.want || changed != c.changed {
 			t.Errorf("%s: got %q (%v), want %q (%v)", c.name, got, changed, c.want, c.changed)
 		}
+	}
+}
+
+func TestMarkerMustBeAWholeTrailingCommentToken(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"127.0.0.1 care.local # care-clinic", true},
+		{"127.0.0.1 care.local # care-clinic other", true},
+		{"10.0.0.9 printer.lan # care-clinic-printer", false},
+		{"10.0.0.9 printer.lan # someone mentioned care-clinic", false},
+	} {
+		if got := hasMarker(tc.line); got != tc.want {
+			t.Errorf("hasMarker(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+func TestWithoutMarkerPreservesSimilarUserComments(t *testing.T) {
+	const userLine = "10.0.0.9 printer.lan # care-clinic-printer\n"
+	got, changed := withoutMarker(userLine + "127.0.0.1 care.local # care-clinic\n")
+	if got != userLine || !changed {
+		t.Fatalf("withoutMarker = %q, %v", got, changed)
 	}
 }
 

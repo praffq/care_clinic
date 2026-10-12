@@ -257,25 +257,58 @@ func ClientCertificatePresent(rootPEM string) (bool, error) {
 			return false, errors.New("Windows returned an unknown certificate state")
 		}
 	case "linux":
-		present := false
-		for _, path := range clientAnchors(cert) {
-			data, err := os.ReadFile(path)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return false, fmt.Errorf("could not inspect the clinic certificate: %w", err)
-			}
-			existing, err := clientRoot(string(data), false)
-			if err != nil || !bytes.Equal(existing.Raw, cert.Raw) {
-				return false, fmt.Errorf("the certificate at %s was changed; ask an administrator to check it", path)
-			}
-			present = true
-		}
-		return present, nil
+		return linuxClientCertificatePresent(cert, clientAnchors(cert), linuxTrustBundles)
 	default:
 		return false, errors.New("client certificate setup is not supported on this operating system")
 	}
+}
+
+func linuxClientCertificatePresent(cert *x509.Certificate, anchors, bundles []string) (bool, error) {
+	present := false
+	for _, path := range anchors {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("could not inspect the clinic certificate: %w", err)
+		}
+		existing, err := clientRoot(string(data), false)
+		if err != nil || !bytes.Equal(existing.Raw, cert.Raw) {
+			return false, fmt.Errorf("the certificate at %s was changed; ask an administrator to check it", path)
+		}
+		present = true
+	}
+	if !present {
+		return false, nil
+	}
+	return clientBundleContains(cert.Raw, bundles)
+}
+
+func clientBundleContains(raw []byte, bundles []string) (bool, error) {
+	for _, path := range bundles {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("could not inspect the clinic certificate: %w", err)
+		}
+		for len(data) > 0 {
+			block, rest := pem.Decode(data)
+			if block == nil {
+				break
+			}
+			data = rest
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			if cert, err := x509.ParseCertificate(block.Bytes); err == nil && bytes.Equal(cert.Raw, raw) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func clientAnchors(cert *x509.Certificate) []string {
@@ -294,7 +327,7 @@ func clientCertificateStep(goos, rootPEM, path string, remove bool) (elevate.Ste
 	step := elevate.Step{What: "set up this computer's access to CARE"}
 	switch goos {
 	case "darwin":
-		step.Sh = "security add-trusted-cert -r trustRoot -k " +
+		step.Sh = "security add-trusted-cert -r trustRoot -p ssl -k " +
 			elevate.ShQuote(darwinLoginKeychain()) + " " + elevate.ShQuote(path)
 		if remove {
 			step.Sh = "security delete-certificate -t -Z " + SHA1Hex(rootPEM) + " " + elevate.ShQuote(darwinLoginKeychain())
@@ -554,15 +587,37 @@ func ApplyClientTrust(rootPEM string, extra []elevate.Step) ([]CARoot, error) {
 	}
 	present, err = ClientCertificatePresent(rootPEM)
 	if err != nil {
-		return stale, err
+		return nil, err
 	}
 	if !present {
 		if userErr != nil {
-			return stale, fmt.Errorf("could not install the clinic certificate; approve the request when your computer asks and try again: %w", userErr)
+			return nil, fmt.Errorf("could not install the clinic certificate; approve the request when your computer asks and try again: %w", userErr)
 		}
-		return stale, errors.New("the clinic certificate was not installed; ask the computer administrator for help")
+		return nil, errors.New("the clinic certificate was not installed; ask the computer administrator for help")
 	}
-	return stale, nil
+	remaining, err := OtherCARoots(SHA1Hex(rootPEM))
+	if err != nil {
+		return nil, fmt.Errorf("the clinic certificate was installed, but CARE could not confirm removal of older clinic certificates: %w", err)
+	}
+	return confirmedRemovals(stale, remaining), nil
+}
+
+func confirmedRemovals(before, after []CARoot) []CARoot {
+	remaining := make(map[string]struct{}, len(after))
+	for _, root := range after {
+		remaining[rootKey(root)] = struct{}{}
+	}
+	removed := make([]CARoot, 0, len(before))
+	for _, root := range before {
+		if _, stillPresent := remaining[rootKey(root)]; !stillPresent {
+			removed = append(removed, root)
+		}
+	}
+	return removed
+}
+
+func rootKey(root CARoot) string {
+	return strings.ToUpper(strings.ReplaceAll(root.Fingerprint, " ", "")) + "\x00" + root.Store
 }
 
 func writeTempCertificate(rootPEM string) (string, func(), error) {

@@ -54,7 +54,7 @@ func probeHostname(ctx context.Context, host string, link lanInterface) error {
 		}
 		var reply dns.Msg
 		if err := reply.Unpack(buf[:n]); err != nil {
-			return fmt.Errorf("invalid hostname response: %w", err)
+			continue
 		}
 		if matchesHostname(&reply, query, link.ips) {
 			return nil

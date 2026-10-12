@@ -27,18 +27,24 @@ func TestBundleOfAcceptsInstalledBundleOnly(t *testing.T) {
 	}
 }
 
-func TestOtherPIDsIgnoresOwnProcess(t *testing.T) {
-	own := "\"CARE Clinic.exe\",\"4242\",\"Console\",\"1\",\"80,000 K\"\r\n"
-	both := own + "\"CARE Clinic.exe\",\"77\",\"Console\",\"1\",\"90,000 K\"\r\n"
-	none := "INFO: No tasks are running which match the specified criteria.\r\n"
+func TestOtherPIDsIgnoresOwnProcessAndVMHost(t *testing.T) {
+	own := `[{"pid":4242,"commandLine":"CARE Clinic.exe"}]`
+	helper := own[:len(own)-1] + `,{"pid":77,"commandLine":"CARE Clinic.exe --vm-host"}]`
+	gui := own[:len(own)-1] + `,{"pid":88,"commandLine":"CARE Clinic.exe"}]`
 	if otherPIDs(own, 4242) {
 		t.Error("the uninstall process itself was treated as another instance")
 	}
-	if !otherPIDs(both, 4242) {
+	if otherPIDs(helper, 4242) {
+		t.Error("the detached engine helper was treated as another app window")
+	}
+	if !otherPIDs(gui, 4242) {
 		t.Error("a second CARE Clinic process was not detected")
 	}
-	if otherPIDs(none, 4242) {
-		t.Error("tasklist's no-match message was treated as a process")
+	if !otherPIDs(`[{"pid":99}]`, 4242) {
+		t.Error("a matching process with an unreadable command line must be treated conservatively")
+	}
+	if otherPIDs(`[]`, 4242) {
+		t.Error("an empty process list was treated as another instance")
 	}
 }
 

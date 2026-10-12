@@ -85,6 +85,7 @@ InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}" # Default i
 ShowInstDetails show # This will always show the installation details.
 
 Var CareUpdate
+Var CarePrevious
 
 Function .onInit
    !insertmacro wails.checkArchitecture
@@ -109,7 +110,8 @@ FunctionEnd
 # or clinic setup, and never schedule replacement for a later reboot.
 Function CareInPlaceUpdate
     IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 updateFailed
-    IfFileExists "$INSTDIR\.care-update-previous.exe" updateFailed 0
+    StrCpy $CarePrevious "$INSTDIR\.care-update-previous-${INFO_PRODUCTVERSION}.exe"
+    IfFileExists "$CarePrevious" updateFailed 0
     IfFileExists "$INSTDIR\.care-update-new" updateFailed 0
     ClearErrors
     SetOutPath "$INSTDIR\.care-update-new"
@@ -118,19 +120,19 @@ Function CareInPlaceUpdate
     IfErrors stageFailed
     SetOutPath $INSTDIR
     ClearErrors
-    Rename "$INSTDIR\${PRODUCT_EXECUTABLE}" "$INSTDIR\.care-update-previous.exe"
+    Rename "$INSTDIR\${PRODUCT_EXECUTABLE}" "$CarePrevious"
     IfErrors stageFailed
     ClearErrors
     Rename "$INSTDIR\.care-update-new\${PRODUCT_EXECUTABLE}" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     IfErrors restorePrevious
     SetRegView 64
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
-    Delete "$INSTDIR\.care-update-previous.exe"
+    Delete "$CarePrevious"
     RMDir "$INSTDIR\.care-update-new"
     SetErrorLevel 0
     Return
   restorePrevious:
-    Rename "$INSTDIR\.care-update-previous.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    Rename "$CarePrevious" "$INSTDIR\${PRODUCT_EXECUTABLE}"
   stageFailed:
     SetOutPath $INSTDIR
     Delete "$INSTDIR\.care-update-new\${PRODUCT_EXECUTABLE}"
@@ -192,7 +194,7 @@ Function un.onInit
     ${If} $0 == 0
         Return
     ${ElseIf} $0 == 3
-        MessageBox MB_OK|MB_ICONEXCLAMATION "CARE Clinic is still open. Quit it, then run the uninstaller again." /SD IDOK
+        MessageBox MB_OK|MB_ICONEXCLAMATION "CARE Clinic or its engine is still running. Close CARE Clinic and try again." /SD IDOK
     ${ElseIf} $0 == 4
         MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "The uninstaller is running as a different Windows account, so it cannot check the clinic setup of the account that uses CARE Clinic.$\r$\n$\r$\nIf that account runs a clinic server or is connected to a clinic, choose No, sign in to it, and uninstall from CARE Clinic first.$\r$\n$\r$\nRemove the app anyway?" /SD IDYES IDYES removeAnyway
     ${Else}

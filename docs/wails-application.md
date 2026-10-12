@@ -113,6 +113,8 @@ and unconfirmed/error states retain the warning.
 | `start`, `restart` | Starting can take minutes while Docker comes up; open the app again to try once more. |
 | `restore`, `uninstall`, `update`, rebuilds | Quitting can leave data or the installation half-changed; the message says which action to run again after reopening. |
 | `upgrade-line` | Check the line/update status after reopening; a safety backup precedes migration, and returning to an older line requires restore. |
+| `engine-update` | Reopen CARE Clinic and check the engine status before starting CARE; an update command may finish in the background. |
+| `free-space` | Cleanup may stop partway; reopen CARE Clinic and run it again to finish. |
 | `apply-plugins` | Reopen CARE Clinic and start CARE to recover the previous plugin configuration after an interrupted apply or rollback. |
 | `app-update` | The current version keeps working. A bundle swap already handed to macOS finishes on its own. |
 | `backup-now` | The unfinished backup is unusable; earlier backups are unaffected. |
@@ -411,13 +413,12 @@ to warn that the computer will ask for permission.
 The shared [CARE Clinic update controller](../app/frontend/src/hooks/use-app-update.ts)
 drives the start/client cards, the pre-install wizard rail, failed-install offer
 and installed server's Updates tab. It is absent while clinic installation runs.
-Successful native completion in an `installer` or `restarting` phase keeps the
-global busy state under **Finish the CARE Clinic update**. For an external
-installer, OK (start/client/setup) or Done (Updates) becomes available only after
-the matching successful `care-done(0, "app-update")`. That acknowledgement releases
-the handoff; it does not claim installation finished or that the running
-version changed. A `restarting` phase has no acknowledgement and remains locked
-until reopening. Unrelated completion events cannot release either guard.
+The backend's final update phase is `restarting`: it hands off to the platform
+updater and closes the current app. There is no installer-completion
+acknowledgement from that external process, so the update handoff remains
+guarded until CARE Clinic is reopened. Failed updates stay visible with the
+actual error, and the current app remains usable when handoff fails before
+restart.
 It checks automatically and supports manual retries, download progress, and
 update installation without a CARE Clinic admin password, Docker or a clinic
 connection. The OS may still request permission to replace the application.
@@ -444,7 +445,7 @@ macOS replaces the bundle in place (`app_selfupdate.go`), so the operator never 
 
 Replacing the bundle while the old binary is still running is safe on macOS: the process keeps its mapped executable, and the frontend is embedded in the binary. When the app runs from a location it can't replace (the mounted disk image or an App Translocation copy), `appremoval.Target` refuses and the update falls back to opening the disk image for a manual drag.
 
-The password policy in [`password.go`](../app/password.go) is 8 through 20 Unicode characters, with at least one uppercase letter, lowercase letter, and digit. Setup, change and recovery enforce it for the CARE Clinic admin password. There is no backup password.
+The password policy in [`password.go`](../app/password.go) is 8 through 20 Unicode characters and no more than 72 UTF-8 bytes, with at least one uppercase letter, lowercase letter, and digit. The byte limit matches bcrypt's input limit. Setup, change and recovery enforce it for the CARE Clinic admin password. There is no backup password.
 
 `ClinicAction` accepts only:
 
@@ -593,7 +594,7 @@ original text.
 | `setup-failed` | `SetupFailure` | Sent before failed setup completion. Reports whether the current attempt can be retried without cleanup and whether the failed command reported a recent network/download interruption. Only the active setup consumes it; raw command diagnostics stay in the log. |
 | `uninstalled` | `true` | Normal uninstall completed its cleanup and local state removal. |
 | `care-update` | `{backend, frontend, newer_line?}` | Same-line images have been staged, or a newer compatible line is available. Raises the panel update offer. |
-| `app-update-progress` | `{phase, done, total}` | `InstallAppUpdate` progress. `phase` is `downloading` (with bytes `done` of `total`, throttled to every 200 ms), `verifying`, `installing`, `restarting`, or `installer` (the Windows installer or the fallback disk image was opened). Drives the shared CARE Clinic update card; the controller and native job state guard conflicting actions. |
+| `app-update-progress` | `{phase, done, total}` | `InstallAppUpdate` progress. The backend emits `downloading` (with bytes `done` of `total`, throttled to every 200 ms), `verifying`, `installing`, and `restarting`; `restarting` is the final handoff before this app exits. The external installer does not send a completion acknowledgement. |
 | `care-check` | `{running, found, error?}` | Check/build activity. Only a completed, error-free check with `found=false` means up to date. |
 | `client-connect-progress` | `finding`, `connecting`, `checking`, or `opening` | Real boundaries of client connection work. Trust/cleanup is not marked complete before administrator operations finish. |
 | `quit-requested` | `{id, title, message}` | A running-job close request for the registered frontend dialog. Only its current ID can be answered. |

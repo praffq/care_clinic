@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,4 +152,45 @@ func TestCancelledRunDoesNotWaitForInheritedOutputPipes(t *testing.T) {
 	if time.Since(started) >= 800*time.Millisecond {
 		t.Fatal("an inherited output pipe kept the cancelled command open")
 	}
+}
+
+func TestLoginShellPathDoesNotWaitForInheritedOutputPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("login-shell PATH probing is not used on Windows")
+	}
+	shell, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "child.pid")
+	profile := "sleep 15 &\nprintf '%s' \"$!\" > " + shellQuote(pidPath) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".bash_profile"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", shell)
+	t.Setenv("HOME", dir)
+	started := time.Now()
+	_ = loginShellPathWithTimeout(500 * time.Millisecond)
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Fatalf("background process kept the PATH probe open for %s", elapsed)
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("shell did not start its background child: %v", err)
+	}
+	pid, err := strconv.Atoi(string(pidData))
+	if err != nil {
+		t.Fatalf("invalid background process id %q: %v", pidData, err)
+	}
+	child, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Kill()
+	_ = child.Release()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

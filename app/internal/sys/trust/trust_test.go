@@ -16,6 +16,55 @@ import (
 	"time"
 )
 
+func TestMacRootTrustInstallIsConstrainedToSSLPolicy(t *testing.T) {
+	const certPath = "/Users/example/clinic root.crt"
+	system := installShFor("darwin", certPath)
+	if !strings.Contains(system, "add-trusted-cert -d -r trustRoot -p ssl") {
+		t.Fatalf("system trust command is missing the SSL policy: %s", system)
+	}
+	login := installLoginKeychainCommand(certPath)
+	if !hasArgumentPair(login.Args, "-p", "ssl") {
+		t.Fatalf("login trust command is missing the SSL policy: %v", login.Args)
+	}
+}
+
+func TestMacTrustRemovalClearsTrustSettingsBeforeDeletingCertificate(t *testing.T) {
+	system := darwinRemoveCertificateCommand("AB12", "/tmp/care root.crt", darwinSystemKeychain, true)
+	if !strings.HasPrefix(system, "security remove-trusted-cert -d '/tmp/care root.crt' && ") ||
+		!strings.HasSuffix(system, "security delete-certificate -t -Z AB12 '"+darwinSystemKeychain+"'") {
+		t.Fatalf("system trust removal does not clear trust settings before certificate deletion: %s", system)
+	}
+	login := darwinRemoveCertificateCommand("AB12", "/tmp/care root.crt", darwinLoginKeychain(), false)
+	if strings.Contains(login, "remove-trusted-cert -d") ||
+		!strings.HasPrefix(login, "security remove-trusted-cert '/tmp/care root.crt' && ") {
+		t.Fatalf("login trust removal used the wrong trust domain: %s", login)
+	}
+}
+
+func TestMacCertificateExportSelectsExactFingerprint(t *testing.T) {
+	unrelated := certPEM(t, "unrelated")
+	wanted := certPEM(t, CommonName)
+	got, err := certificatePEMByFingerprint(append(unrelated, wanted...), SHA1Hex(string(wanted)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if SHA1Hex(string(got)) != SHA1Hex(string(wanted)) {
+		t.Fatalf("export selected certificate %s, want %s", SHA1Hex(string(got)), SHA1Hex(string(wanted)))
+	}
+	if _, err := certificatePEMByFingerprint(unrelated, SHA1Hex(string(wanted))); err == nil {
+		t.Fatal("missing certificate fingerprint was accepted")
+	}
+}
+
+func hasArgumentPair(args []string, key, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLinuxRemovalChecksEveryAnchor(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

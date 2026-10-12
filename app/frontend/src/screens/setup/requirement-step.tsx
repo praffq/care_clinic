@@ -102,7 +102,7 @@ export function RequirementStep({ page, checks, busy, tool, download, actionErro
             <div className="on-data-row">
               <span className={softwareTone === "bad" ? "on-tile on-bad" : "on-tile"}>{softwareActive ? <Spinner /> : softwareStatus?.ok ? <Check /> : <Download />}</span>
               <div className="on-grow"><strong>{engine}</strong>
-                <p>{SOFTWARE_DESCRIPTIONS.docker}</p>
+                <p>{softwareStatus && !softwareStatus.ok ? softwareStatus.message : SOFTWARE_DESCRIPTIONS.docker}</p>
                 {softwareActive ? <p role="status">{download?.phase === "downloading" ? `${diskSize(download.done)}${download.total > 0 ? ` of ${diskSize(download.total)}` : ""} downloaded`
                   : download?.phase === "verifying" ? "Checking the downloaded file"
                   : download?.phase === "complete" ? "Downloaded — installing now"
@@ -117,7 +117,7 @@ export function RequirementStep({ page, checks, busy, tool, download, actionErro
               : <>Keep this computer connected to the internet. {platform === "linux" ? "Your computer may ask for permission." : "CARE installs and manages its own engine."} {previewNeeded ? downloadInfo ? `${engine} download: ${diskSize(downloadInfo.size)}.` : sizeError ? "The download size couldn't be checked." : "Checking the download size…" : ""}</>}
             <div className="on-actions">
               <Button variant="primary" disabled={busy || !!previewNeeded && !downloadInfo} onClick={() => onAction("software")}>
-                {checks.software.value?.dockerPlan?.action === "open" ? `Start ${engine}` : checks.software.value?.dockerPlan?.action === "manual" ? `Get ${engine}` : softwarePlan?.label || `Install ${engine}`}
+                {checks.software.value?.dockerPlan?.action === "open" ? `Start ${engine}` : softwarePlan?.label || `Install ${engine}`}
               </Button>
               {footer()}
             </div>

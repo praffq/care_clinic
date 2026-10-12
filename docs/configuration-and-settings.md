@@ -45,7 +45,7 @@ flowchart LR
 
 These are conventions, not hard-coded assumptions about every user's home or environment. The actual paths come from the functions above.
 
-The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); other platforms use `<user home>/Desktop/care-db-backups`. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
+The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); Linux uses the `XDG_DESKTOP_DIR` setting in `user-dirs.dirs`, falling back to `<user home>/Desktop`, and other platforms use `<user home>/Desktop`. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
 
 The installed kit contains the following recognizable parts:
 
@@ -449,11 +449,11 @@ The **Updates** tab shows both update mechanisms without a CARE Clinic admin pas
 | CARE | Current release line, support date, running/staged commits, newer compatible lines, and check status. | Check now; retry; install staged fixes; explicitly upgrade to a newer line after a safety backup. |
 | CARE Clinic | Installed and newest published GitHub versions, notes, and any line-compatibility block. | Download and launch the verified installer only when the current line permits its app version. |
 
-CARE Clinic's shared controller remains guarded after native completion while
-an installer/restart handoff is unresolved. Only a completed external-installer
-handoff can be acknowledged with Done in Updates (OK before installation or on
-clients). A restarting phase waits for reopening. Acknowledgement does not
-update the running version or claim the external installer succeeded.
+CARE Clinic's shared controller remains guarded through the native
+installer/restart handoff. The backend reports `restarting` immediately before
+the app exits; it receives no installer-completion acknowledgement and has no
+persistent external-installer state. Reopening CARE Clinic and checking the
+installed version—not the handoff event—is how to confirm the update.
 Interrupted picker/preflight work is invalidated rather than resumed when the
 guard is released; see [the update protocol](wails-application.md).
 

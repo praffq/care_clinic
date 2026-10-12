@@ -294,13 +294,14 @@ into `main`, or the commit selected for a manual run):
 | Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
 | CARE release lines | An HTTPS `CARE_LINES_URL` and `CARE_DEFAULT_LINE`; CARE image digests are published separately in `lines.json`. |
 
-Release checks cover manifest identity, existing release versions and the
-pinned CARE engine, platform tools and Linux Docker/Compose downloads. The engine
-itself is published separately by the manually run **CARE engine** workflow;
-see the [release runbook](releases.md) and [engine build guide](vm.md#building-the-engine).
-Maintainers do not need to edit Wails metadata or create tags. See the [release
-runbook](releases.md) for preparing, building, reviewing, publishing, and
-recovering a release.
+The tracked release workflow is currently blocked before packaging: it still
+requires removed image-revision values and obsolete desktop dependency pins,
+and its prerequisite check does not verify the CARE engine or host-client/QEMU pins.
+The corresponding release-contract tests fail against that workflow. A
+workflow-only patch is prepared for the GitHub configuration owner; `.github/`
+is intentionally unchanged in this checkout. See the [release runbook](releases.md)
+for the exact blockers and the [engine build guide](vm.md) for the current
+publication boundary.
 
 ### Testing the updater
 
@@ -337,8 +338,8 @@ missing, and a PR branch push does not trigger a duplicate push workflow.
 
 | Job/check | What it does |
 | --- | --- |
-| Lint | Formatting, the Wails/internal boundary, pinned Actionlint workflow validation, and golangci-lint v2.13.2 through its v9 action. |
-| Go tests | Clean-checkout `go build ./...` and the full race-enabled test suite, including the release identity/CI gate contracts. Node, PostgreSQL fixture tools, OpenSSL, Python, and Compose must be available rather than silently skipping their tests. Git remains a CI checkout/module-drift tool, not a clinic prerequisite. |
+| Lint | Formatting, the Wails/internal boundary, Actionlint v1.7.12 workflow validation, and golangci-lint v2.13.2 through its version-tagged action. |
+| Go tests | Clean-checkout `go build ./...` and the race-enabled suite for the `app/` Go module. It does not run the separate `vm/agent` module or the Python QEMU packaging tests. The release-contract tests detect the stale workflow pins and currently fail until the workflow patch is applied. |
 | Frontend | Node 22, `npm ci`, binding checks, TypeScript, and the Vite production build. Uploads the built frontend for native builds. |
 | Native builds | After the first three jobs pass: actual Wails macOS universal and Windows/amd64 builds for CARE Clinic. Windows must produce an NSIS installer with NSIS 3.12 from [`install-nsis`](../.github/actions/install-nsis/action.yml), and its version metadata must match `wails.json` and `.env`; the bare application and the generated installer inputs are uploaded separately so a release can sign the application before rebuilding the installer. |
 | CI | Stable aggregate check; fails if any required job failed, was cancelled, or was skipped. Configure this check in branch protection. |
@@ -356,14 +357,20 @@ and ST1005 for operator-facing sentence-style errors. Correctness checks are
 not disabled to make CI pass.
 
 CI has read-only repository permissions, no signing secrets, explicit timeouts,
-and seven-day **unsigned** build artifacts. macOS bundles are zipped with
+and seven-day **unsigned** build artifacts. Its macOS build currently does not
+apply or assert the virtualization entitlement required by the CARE engine.
+The versioned third-party Action references are not immutable commit pins. A
+workflow-only patch covering these gaps is awaiting the GitHub configuration
+owner; do not treat the patch as applied. macOS bundles are zipped with
 `ditto` to retain executable bits and symlinks. These are maintainer preview
 builds, not clinic-ready signed releases. The intermediate frontend artifact is
 kept for one day.
 
-The Go suite runs on Linux. Native builds prove compilation and packaging on the
-other platforms, not successful administrator prompts, certificate installation,
-browser trust, or real clinic Wi-Fi behavior. Network mDNS tests remain opt-in.
+The Go suite runs on Linux. CI does not cross-vet the Windows/macOS source, test
+the guest agent or QEMU packager, or assert that a macOS build can boot the VM.
+Native builds prove compilation and packaging on the other platforms, not
+successful administrator prompts, certificate installation, browser trust, or
+real clinic Wi-Fi behavior. Network mDNS tests remain opt-in.
 PostgreSQL tests create an isolated fixture; CI does not start the clinic's
 Compose stack, build upstream CARE images, or contact a production database.
 
@@ -482,10 +489,34 @@ Both the ordinary and signed-uninstaller packaging variants use this same path.
 SHA-256 remains download integrity, not independent publisher authentication.
 Ad-hoc macOS and unsigned Windows preview releases remain supported. An
 installation with a macOS signing team cannot change teams or downgrade to
-ad-hoc signing; Gatekeeper must approve its replacement. A valid Authenticode
-installation requires a valid installer with the same publisher subject.
-Certificate/publisher migrations need a separately reviewed migration, not a
-relaxed updater check. No quarantine-removal command is used.
+ad-hoc signing; Gatekeeper must approve its replacement. For a Windows
+installation whose executable has valid Authenticode, the updater requires a
+valid installer with the same certificate subject. The current SignPath
+Foundation certificate is shared across projects, so subject equality preserves
+signer continuity but does **not** establish CARE Clinic project identity. Do
+not describe a certificate thumbprint as project identity; that needs a
+project-specific signing attestation or equivalent provenance. Certificate or
+publisher migrations need a separately reviewed migration, not a relaxed
+updater check. No quarantine-removal command is used.
+
+The Windows updater holds the verified installer open with read-only sharing
+from its hash check through elevated execution. Other processes can read it, but
+cannot replace or modify it between verification and launch.
+
+Windows in-place updates use a version-specific
+`.care-update-previous-<version>.exe` recovery path. A detached `--vm-host`
+process can keep an older executable locked after replacement; that leftover
+is retained, while later updates use a different path and are not blocked by
+it. Failed replacements restore their own previous executable. Locked
+leftovers are not automatically pruned, so they may accumulate until the
+owning process exits and a later cleanup policy is added. An existing
+`.care-update-previous.exe` from an older installer is left untouched and no
+longer blocks updates made by this installer.
+
+Update-helper staging is removed on normal completion and caught failures.
+Abrupt termination can still leave `update-*` directories in the OS cache;
+there is no age-based sweeper because it cannot safely distinguish abandoned
+staging from an update still in progress.
 
 Before publishing, test upgrades **on disposable installed copies**, including
 custom paths and spaces, writable and administrator-owned macOS folders,

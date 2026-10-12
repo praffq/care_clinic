@@ -174,6 +174,10 @@ func (pr *Provisioner) installEngineThen(beforeStop func() error) error {
 	if err != nil {
 		return err
 	}
+	return pr.installEngineDownloads(downloads, beforeStop)
+}
+
+func (pr *Provisioner) installEngineDownloads(downloads []Download, beforeStop func() error) error {
 	files := make([]string, 0, len(downloads))
 	defer func() {
 		for _, f := range files {

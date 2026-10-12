@@ -72,7 +72,7 @@ settings may be forgotten.
 | Pause the clinic | `ClinicAction("stop", ...)` delegates to `Clinic.Stop()`. | Compose stops services. | Containers, all volumes, images/cache, installed files, backups, keys, saved settings, and native configuration. |
 | Remove an installed clinic | `RunUninstall(...)` delegates to `Clinic.Uninstall(options)`. | Live project containers, volumes, and networks; native changes; installed files. Optional known images/cache and owned backup files. App also handles autostart and saved state. | Backups when not selected for removal; images/cache and CARE engine state when not selected; unrelated Docker software; normal diagnostic logs. |
 | Recover from failed first setup | `CleanupFailedInstall()` delegates to a specific `Clinic.Uninstall` option set. | Partial project resources, native changes, installed files, saved secret/config. A matching exported certificate is removed only if it is unused and the final file-deletion phase is reached. | Downloaded images/cache and backup data. Required backup certificates remain. |
-| Clean old installation residue | The UI's "Remove everything" path is `PurgeResidue(confirmed)`, delegating to `Clinic.Purge()`. | Owned project resources even without a kit, known images/cache, native changes, installed kit. App additionally removes old logs and saved state. | Backups and their backup certificate. The desktop executable, Docker installations, and unrelated user files are not an OS-package uninstall target. |
+| Clean old installation residue | The UI's "Remove everything" path is `PurgeResidue(confirmed)`, delegating to `Clinic.Purge()`. | Owned project resources when Docker is available, known images/cache when Docker is available, native changes, installed kit. App additionally removes old logs and saved state. | Backups and their backup certificate. If Docker is absent, its resources and images cannot be inspected or removed. The desktop executable, Docker installations, and unrelated user files are not an OS-package uninstall target. |
 
 ### Removing the desktop app
 
@@ -91,8 +91,9 @@ the job to finish, quits, and then:
 - **Windows** starts the installed `uninstall.exe` through `Start-Process`, so
   Windows shows its usual administrator prompt; the app itself runs without
   elevation and could not start it directly. The uninstaller then runs the check
-  below and finds nothing set up. Declining the prompt leaves the app installed
-  and says so.
+  below and finds nothing set up. Its "still open" check counts another desktop
+  process but not the detached `--vm-host` engine helper. Declining the prompt
+  leaves the app installed and says so.
 
 Dragging the app to the Trash on macOS skips all of this. This checkout does not
 ship standalone uninstall scripts. Restore the desktop application under the
@@ -602,13 +603,18 @@ The two layers have different scopes:
 
 [`purge.go`](../app/internal/clinic/purge.go) runs:
 
-1. A complete project inspection. Fail closed on errors.
+1. Check for the Docker CLI. If it is available, complete a project inspection
+   and fail closed on inspection errors. If it is absent, skip Docker-side
+   cleanup and continue with native settings and installed files; Docker
+   resources cannot be inspected or removed until Docker is available again.
 2. `PreserveBackupCertificate`, unconditionally for this backup-retaining path.
 3. If the installed Compose file exists and is regular, capture Caddy's root
    and attempt Compose down. Log a down error and continue toward verified
    fallback cleanup. Other stat/non-regular errors still fail.
-4. `TeardownProject`, **regardless of whether the Compose file existed**.
-5. Known-image removal and shared build-cache pruning.
+4. When the Docker CLI is available, run `TeardownProject`,
+   **regardless of whether the Compose file existed**.
+5. When Docker is available, remove known images and prune the shared build
+   cache.
 6. Shared trust/hosts/network reversion.
 7. Autostart removal, when enabled.
 8. Join image, native, and autostart failures; return before file deletion if

@@ -44,6 +44,7 @@ for (const test of cases) {
   let failed = false;
   try {
     vm.runInNewContext(validator, {
+      URL,
       require: name => {
         if (name !== "fs") throw new Error("Unexpected module");
         return {
@@ -101,6 +102,43 @@ for (const result of ["success", "failure", "cancelled", "skipped"]) {
 	cmd.Dir = "../../.."
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("required CI gate failed: %v\n%s", err, output)
+	}
+}
+
+func TestCIIncludesGuestAndQEMUPackagingRegressions(t *testing.T) {
+	data, err := os.ReadFile("../../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	for _, required := range []string{
+		"cd ../vm/agent && go test -race",
+		"python3 -m unittest discover -s vm",
+		"GOOS=windows GOARCH=amd64 go vet ./...",
+		"GOOS=darwin GOARCH=amd64 go vet ./...",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("CI is missing %q", required)
+		}
+	}
+}
+
+func TestThirdPartyActionsUseImmutableSHAs(t *testing.T) {
+	for _, file := range []string{"../../../.github/workflows/ci.yml", "../../../.github/workflows/release.yml"} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range regexp.MustCompile(`(?m)^\s*uses:\s+([^#\s]+)`).FindAllStringSubmatch(string(data), -1) {
+			ref := match[1]
+			if strings.HasPrefix(ref, "./") {
+				continue
+			}
+			parts := strings.Split(ref, "@")
+			if len(parts) != 2 || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(parts[1]) {
+				t.Errorf("%s uses mutable action ref %q", file, ref)
+			}
+		}
 	}
 }
 
@@ -191,6 +229,7 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 	for _, required := range []string{
 		"--options runtime", `notarize "$dmg"`, `xcrun stapler validate "$app"`,
 		`xcrun stapler validate "$dmg"`, `if: always() && env.SIGN_MACOS == 'true'`,
+		"--entitlements app/build/darwin/entitlements.plist",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("macOS signing contract is missing %q", required)

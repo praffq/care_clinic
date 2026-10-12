@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,8 +53,24 @@ func (a *App) WriteEnv(name, content, adminPassword string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := dotenv.Parse(strings.NewReader(content)); err != nil {
+		nextEnv, err := dotenv.Parse(strings.NewReader(content))
+		if err != nil {
 			return errors.New("the environment file has invalid syntax; use KEY=value assignments and balanced quotes")
+		}
+		if name == "backend" {
+			current, err := os.ReadFile(p)
+			if err != nil {
+				return fmt.Errorf("could not check the saved plugin configuration: %w", err)
+			}
+			currentEnv, err := dotenv.Parse(strings.NewReader(string(current)))
+			if err != nil {
+				return fmt.Errorf("could not check the saved plugin configuration: %w", err)
+			}
+			currentPlugs, hadCurrentPlugs := currentEnv["ADDITIONAL_PLUGS"]
+			nextPlugs, hasNextPlugs := nextEnv["ADDITIONAL_PLUGS"]
+			if hadCurrentPlugs != hasNextPlugs || currentPlugs != nextPlugs {
+				return errors.New("change backend plugins through the Plugins settings so CARE can stage and recover the change safely")
+			}
 		}
 		return atomicfile.Write(p, []byte(content), 0o600)
 	})

@@ -207,7 +207,11 @@ func (e *Clinic) recoverPlugins(state *pluginRecovery) error {
 		path := filepath.Join(e.InstallDir, name)
 		var err error
 		if saved.Exists {
-			err = atomicfile.WritePrivate(path, saved.Data)
+			mode := os.FileMode(0o600)
+			if name == compose.LockFile {
+				mode = 0o644
+			}
+			err = atomicfile.Write(path, saved.Data, mode)
 		} else {
 			err = os.Remove(path)
 			if errors.Is(err, os.ErrNotExist) {

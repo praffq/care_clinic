@@ -5,7 +5,7 @@
 //
 // On macOS the host reaches it over vsock. On Windows, QEMU forwards loopback
 // TCP ports to it and both ends prove themselves with a certificate the host
-// generates per boot and hands over through QEMU's fw_cfg.
+// generates per install and hands over through QEMU's fw_cfg.
 package main
 
 import (
@@ -45,6 +45,7 @@ func main() {
 
 func run(credsFile string) error {
 	api := newAPI(dockerSocket)
+	defer api.closeIdleConnections()
 	srv := &http.Server{Handler: api.routes(), ReadHeaderTimeout: 10 * time.Second}
 	errs := make(chan error, 4)
 

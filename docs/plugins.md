@@ -129,6 +129,11 @@ flowchart TD
 
 The saved list lives in `plugins.json` in the install directory, next to `backend.env`. It uses mode `0600` and is replaced atomically. It is the source of truth: `ADDITIONAL_PLUGS` and the `PlugConfig` rows are both derived from it. Each item has the same shape as `plugin` in the catalog, plus `catalog: true` when it came from the catalog.
 
+The advanced environment editor may change other backend values, but its native
+`WriteEnv` binding rejects additions, removals, or edits to `ADDITIONAL_PLUGS`.
+Use the **Plugins** tab to stage plugin changes so image and configuration
+rollback remain available.
+
 When the file does not exist, `ReadPlugins` builds the list from `ADDITIONAL_PLUGS`. Each entry becomes a backend-only custom plugin. This carries over installations from before the file existed. The first successful apply keeps the new list file; a failed apply restores its absence.
 
 New-clinic `Clinic.Setup` calls `InitializeDefaults` before building images. If `plugins.json` is absent, it preserves those legacy backend entries, adds catalog entries marked `default: true` (without replacing an existing ID), and persists the list. If a list already exists, it is left untouched, including an empty list. Reads, restarts, rebuilds and upgrades never initialize defaults. Existing clinics must explicitly add CARE Onboarding; removing it and saving keeps it removed.

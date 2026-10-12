@@ -134,7 +134,8 @@ The [`App`](../app/app.go) owns:
 | `jobMu`, `closing` | Coordination of conflicting operations and the closing transition. |
 | `confirmationMu`, pending confirmation and readiness | One permission request at a time, explicit answers, and cancellation on frontend loss or shutdown. |
 | Quit request state | ID-scoped running-job close confirmation, independent of the job it is asking about. |
-| `adv`, `advMu`, `advStop` | mDNS advertiser ownership and watcher shutdown. |
+| `adv*`, `advHelper` | Native Linux advertisement and the helper ownership handoff/fallback watcher; the persistent VM helper owns macOS/Windows host advertisement. |
+| `dockerCheckMu`, `dockerCheck` | Coalesces overlapping Docker status probes; mutating operations still perform fresh readiness checks. |
 
 These locks solve different problems. Protecting the `Config` struct does not make a Docker operation safe to overlap with uninstall. Conversely, serializing destructive jobs does not eliminate concurrent status checks or advertiser activity.
 
@@ -149,7 +150,7 @@ separately; a password reset cannot reconstruct its private key. Restore also
 has its own durable journal and staging resources. `config.json` is not a
 complete inventory of everything the application owns.
 
-Plugin changes also use a private durable recovery journal and a pinned backend image until runtime readiness is verified. See [configuration](configuration-and-settings.md) for locations, [restore](backups-and-restore.md) for its journal, and [plugin transactions](plugins.md#save-and-apply) for configuration/image recovery and its database-migration limits.
+The VM helper's `advertisement.json` stores desired host-name settings so advertising survives the desktop window. Plugin changes also use a private durable recovery journal and a pinned backend image until runtime readiness is verified. See [configuration](configuration-and-settings.md) for locations, [restore](backups-and-restore.md) for its journal, and [plugin transactions](plugins.md#save-and-apply) for configuration/image recovery and its database-migration limits.
 
 ### External state
 
@@ -232,10 +233,10 @@ successful `care-done`, in either order. The installation display derives
 milestones from real log lines rather than inventing a measured percentage.
 
 [`use-app-update.ts`](../app/frontend/src/hooks/use-app-update.ts) keeps the
-Desktop update handoff guarded after its native job finishes. Only a completed
-external-installer handoff has an explicit acknowledgement; a restarting app
-stays guarded until reopening. The panel's live update guard also invalidates
-older file-selection and restore-preflight work, so acknowledging an update
+desktop update handoff guarded after its native job finishes. The backend
+reports the restart handoff, then the current app exits; it receives no
+installer-completion acknowledgement. The panel's live update guard also
+invalidates older file-selection and restore-preflight work, so reopening
 cannot revive an abandoned action.
 
 Advanced's fixed 15-minute unlock is another UI policy, not a native session

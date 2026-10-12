@@ -117,8 +117,8 @@ export function ClientScreen() {
     return () => { live = false; window.clearTimeout(timer); };
   }, [phase, savedAddress, operation, update.active, pollAttempt, log]);
 
-  const readPreflight = async () => {
-    const result = await bridge.ClientPreflight();
+  const readPreflight = async (target: string) => {
+    const result = await bridge.ClientPreflight(target);
     setPreflight(result);
     if (result.unfinished_server_setup) {
       throw new Error("this computer has an unfinished clinic setup; remove it in Setup before connecting");
@@ -133,7 +133,7 @@ export function ClientScreen() {
     setFound(null);
     setPhase("finding");
     try {
-      await readPreflight();
+      await readPreflight(normaliseHost(address));
       const result = await bridge.FindClinic(normaliseHost(address));
       setAddress(result.host.replace(/\.local$/i, ""));
       setFound(result);
@@ -153,7 +153,7 @@ export function ClientScreen() {
     setProgress("finding");
     setPhase("connecting");
     try {
-      await readPreflight();
+      await readPreflight(target);
       await bridge.ConnectClient(target);
       setSavedAddress(target);
       setEstablished(true);

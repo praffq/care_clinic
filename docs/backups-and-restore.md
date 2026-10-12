@@ -154,7 +154,9 @@ reconstructed.
 
 `Store.Dir` is the installation directory. `Store.BackupDir` is the selected
 backup destination. With no configured override, the default is
-`care-db-backups` inside the Windows Desktop known folder on Windows, or
+`care-db-backups` inside the Windows Desktop known folder on Windows,
+`XDG_DESKTOP_DIR/care-db-backups` on Linux (falling back to
+`<user home>/Desktop` when no valid user-dir setting exists), or
 `<user home>/Desktop/care-db-backups` on other platforms, from
 [`Clinic.backupDir`](../app/internal/clinic/clinic.go).
 Windows respects OneDrive and administrator redirection; it does not assume

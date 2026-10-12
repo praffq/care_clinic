@@ -171,6 +171,31 @@ func TestLinuxAnchorsListOnlyOtherCARoots(t *testing.T) {
 	}
 }
 
+func TestLinuxClientCertificateRequiresTheRootInTheGeneratedBundle(t *testing.T) {
+	root := certPEM(t, CommonName)
+	cert, err := clientRoot(string(root), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	anchor := filepath.Join(dir, "care-client.crt")
+	bundle := filepath.Join(dir, "ca-bundle.crt")
+	if err := os.WriteFile(anchor, root, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present, err := linuxClientCertificatePresent(cert, []string{anchor}, []string{bundle})
+	if err != nil || present {
+		t.Fatalf("incomplete install = %v, %v; want not present", present, err)
+	}
+	if err := os.WriteFile(bundle, append(certPEM(t, "unrelated root"), root...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present, err = linuxClientCertificatePresent(cert, []string{anchor}, []string{bundle})
+	if err != nil || !present {
+		t.Fatalf("completed install = %v, %v; want present", present, err)
+	}
+}
+
 func TestRemoveOtherRootsStepsTargetFingerprintsNotTheCommonName(t *testing.T) {
 	const stale = "1122334455667788990011223344556677889900"
 	for _, goos := range []string{"darwin", "windows", "linux"} {
@@ -206,6 +231,19 @@ func TestRemoveOtherRootsStepsTargetFingerprintsNotTheCommonName(t *testing.T) {
 				t.Fatalf("%s split removal wrongly: admin %d, user %d", goos, len(admin), len(user))
 			}
 		})
+	}
+}
+
+func TestApplyClientTrustReportsOnlyRootsConfirmedRemoved(t *testing.T) {
+	removed := CARoot{Fingerprint: "AABB", Store: "/keychain/login"}
+	stillThere := CARoot{Fingerprint: "CCDD", Store: "/keychain/login"}
+	otherStore := CARoot{Fingerprint: "AABB", Store: "/keychain/system"}
+	got := confirmedRemovals(
+		[]CARoot{removed, stillThere, otherStore},
+		[]CARoot{stillThere, otherStore},
+	)
+	if !slices.Equal(got, []CARoot{removed}) {
+		t.Fatalf("confirmedRemovals = %+v, want only %+v", got, removed)
 	}
 }
 
@@ -263,7 +301,7 @@ func TestProbeClientSeparatesSilenceFromAnUntrustedAnswer(t *testing.T) {
 	}
 }
 
-func TestClientRemovalTargetsOnlyItsCertificate(t *testing.T) {
+func TestClientCertificateStepsInstallAndRemoveOnlyOwnedCertificate(t *testing.T) {
 	root := string(certPEM(t, CommonName))
 	cert, err := clientRoot(root, false)
 	if err != nil {
@@ -273,6 +311,9 @@ func TestClientRemovalTargetsOnlyItsCertificate(t *testing.T) {
 		step, err := clientCertificateStep(goos, root, "/tmp/clinic certificate.crt", false)
 		if err != nil || !strings.Contains(step.Sh+step.PS, "/tmp/clinic certificate.crt") {
 			t.Fatalf("%s install: %+v, %v", goos, step, err)
+		}
+		if goos == "darwin" && !strings.Contains(step.Sh, "-p ssl") {
+			t.Fatalf("macOS client trust is missing the SSL-only policy: %s", step.Sh)
 		}
 		step, err = clientCertificateStep(goos, root, "", true)
 		if err != nil {

@@ -13,6 +13,22 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+func TestVirtualInterfacesAreNotTreatedAsLAN(t *testing.T) {
+	for _, name := range []string{
+		"bridge100", "vEthernet (Default Switch)", "lxdbr0", "incusbr0",
+		"podman0", "cni-podman0", "docker0", "br-123",
+	} {
+		if !isVirtual(name) {
+			t.Errorf("%q should be excluded", name)
+		}
+	}
+	for _, name := range []string{"en0", "Ethernet", "wlan0", "eth0"} {
+		if isVirtual(name) {
+			t.Errorf("%q should remain eligible", name)
+		}
+	}
+}
+
 // This opt-in check uses real multicast sockets without advertising a clinic's name.
 func TestHostnameOverLAN(t *testing.T) {
 	if os.Getenv("CARE_MDNS_NETWORK_TEST") != "1" {

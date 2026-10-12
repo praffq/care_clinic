@@ -7,7 +7,7 @@ using CARE Clinic in client mode on the clinic Wi-Fi. The core clinic can run
 without internet after installation. Updates, externally hosted plugins such
 as CARE Onboarding, and configured online services still need connectivity.
 
-**Download:** [releases](https://github.com/ohcnetwork/care_desktop/releases)
+**Download:** [releases](https://github.com/praffq/care_clinic/releases)
 — `.dmg` for macOS (Apple Silicon and Intel), `-setup.exe` for Windows 64-bit.
 
 **Previously hosted CARE on this computer, but now cannot open another clinic?**

@@ -242,9 +242,7 @@ func failureTitle(label string) string {
 
 func (a *App) ClinicAction(action, adminPassword string) (err error) {
 	defer a.logError(&err)
-	switch action {
-	case "start", "stop", "restart", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "backup-now", "update", "free-space", "engine-update":
-	default:
+	if !clinicActionAllowed(action) {
 		return errors.New("action not allowed: " + action)
 	}
 	return a.run(func() error {
@@ -286,6 +284,15 @@ func (a *App) ClinicAction(action, adminPassword string) (err error) {
 	}, false, action)
 }
 
+func clinicActionAllowed(action string) bool {
+	switch action {
+	case "start", "stop", "restart", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "backup-now", "update", "free-space", "engine-update":
+		return true
+	default:
+		return false
+	}
+}
+
 // ensureDockerReady stops a stopped container engine from reaching the clinic
 // operations as an unexplained subprocess failure such as "inspect local
 // images: exit status 1". The plan decides what can be offered, so this names
@@ -298,10 +305,13 @@ func (a *App) ensureDockerReady() error {
 		return err
 	}
 	plan := p.DockerPlan()
+	status := prereq.DockerCheck(a.engine().Runner())
+	if err := noActionDockerError(plan, status); err != nil {
+		return err
+	}
 	if plan.Action == prereq.ActionNone {
 		return nil
 	}
-	status := prereq.DockerCheck(a.engine().Runner())
 	if plan.Action != prereq.ActionOpen {
 		return fmt.Errorf("%s CARE needs it to run the clinic; set it up from the requirements check", status.Message)
 	}
@@ -314,6 +324,13 @@ func (a *App) ensureDockerReady() error {
 		return errors.New(status.Message)
 	}
 	return p.OpenDocker()
+}
+
+func noActionDockerError(plan prereq.ToolPlan, status prereq.Status) error {
+	if plan.Action == prereq.ActionNone && !status.OK {
+		return errors.New(status.Message)
+	}
+	return nil
 }
 
 func actionFunc(e *clinic.Clinic, action string) func() error {

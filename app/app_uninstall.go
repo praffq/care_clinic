@@ -58,7 +58,7 @@ func (a *App) reportUninstall(removeImages bool) error {
 	}
 	var items []string
 	for _, t := range after.Traces {
-		if t.ID == "config" || t.ID == "secret" || (t.ID == "images" && !removeImages) {
+		if t.ID == "config" || (t.ID == "images" && !removeImages) {
 			continue
 		}
 		items = append(items, t.Label+": "+t.Detail)

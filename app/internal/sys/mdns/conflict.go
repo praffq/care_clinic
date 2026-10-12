@@ -172,7 +172,7 @@ func queryConflicts(ctx context.Context, conn *net.UDPConn, host string, ownIPs 
 			}
 			var reply dns.Msg
 			if err := reply.Unpack(buf[:n]); err != nil {
-				return fmt.Errorf("invalid hostname response: %w", err)
+				continue
 			}
 			if reply.Id != 0 && reply.Id != queries[0].Id && reply.Id != queries[1].Id {
 				continue

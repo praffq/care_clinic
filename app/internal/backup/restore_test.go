@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -442,6 +443,30 @@ func TestCommittedRestoreNeverRollsBackNewWrites(t *testing.T) {
 	}
 	if load().Files != "writes-after-activation" {
 		t.Fatal("cleanup changed live files")
+	}
+}
+
+func TestCommittedRestoreFailureExplainsThatDataRemainsCommitted(t *testing.T) {
+	s := &Store{}
+	err := s.restoreFailure(&restoreJournal{ID: "restore-test", Phase: "committed"}, errors.New("health check failed"))
+	if err == nil {
+		t.Fatal("committed restore failure was not reported")
+	}
+	for _, phrase := range []string{"was committed", "remain in place", "will not be rolled back", "Start CARE Clinic"} {
+		if !strings.Contains(err.Error(), phrase) {
+			t.Errorf("committed restore failure lacks %q: %v", phrase, err)
+		}
+	}
+}
+
+func TestUncommittedRestoreFailureStillExplainsRecovery(t *testing.T) {
+	s := &Store{}
+	err := s.restoreFailure(&restoreJournal{ID: "restore-test", Phase: "prepared"}, errors.New("journal write failed"))
+	if err == nil || !strings.Contains(err.Error(), "Start CARE to recover safely") {
+		t.Fatalf("uncommitted restore failure lost recovery guidance: %v", err)
+	}
+	if strings.Contains(err.Error(), "was committed") {
+		t.Fatalf("uncommitted restore was described as committed: %v", err)
 	}
 }
 

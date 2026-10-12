@@ -72,8 +72,16 @@ type ToolPlan struct {
 }
 
 func (pr *Provisioner) DockerPlan() ToolPlan {
-	if DockerCheck(pr.run).OK {
+	status := DockerCheck(pr.run)
+	if status.OK {
 		return ToolPlan{URL: dockerHelpURL()}
+	}
+	if dockerNeedsLogin(status.Message) {
+		return ToolPlan{
+			Action: ActionManual, Label: "See logout instructions",
+			URL:    "https://github.com/ohcnetwork/care_clinic/blob/main/docs/native-integrations.md#linux-docker-provisioning",
+			Detail: status.Message,
+		}
 	}
 	if vm.Supported() {
 		return pr.enginePlan()
@@ -127,8 +135,8 @@ func (pr *Provisioner) InstallDocker() (string, error) {
 		if err := pr.installDockerLinux(); err != nil {
 			return "", err
 		}
-		return "Docker is installed.\n\nIf the check still fails, log out and back in so your user " +
-			"picks up the docker group, then choose Check again.", nil
+		return "Docker is installed. If this login session cannot access Docker, log out and back in " +
+			"so your account picks up the docker group, then choose Check again.", nil
 	default:
 		return "", fmt.Errorf("installing Docker isn't supported on %s - install it from %s", runtime.GOOS, dockerHelpURL())
 	}
@@ -147,6 +155,30 @@ func (pr *Provisioner) OpenDocker() error {
 
 func (pr *Provisioner) waitForDocker(limit time.Duration) error {
 	return waitForDockerReady(limit, func() bool { return DockerCheck(pr.run).OK }, pr.logln)
+}
+
+func (pr *Provisioner) waitForDockerAfterInstall(limit time.Duration) error {
+	return waitForDockerReadyOrLoginRefresh(limit, func() Status { return DockerCheck(pr.run) }, pr.logln)
+}
+
+func waitForDockerReadyOrLoginRefresh(limit time.Duration, check func() Status, log func(string)) error {
+	deadline := time.Now().Add(limit)
+	for {
+		status := check()
+		if status.OK {
+			log("Docker is ready.")
+			return nil
+		}
+		if dockerNeedsLogin(status.Message) {
+			log(status.Message)
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%s is taking longer than usual to start; it may still be starting. "+
+				"Wait a minute, then run the check again", dockerName())
+		}
+		time.Sleep(min(3*time.Second, time.Until(deadline)))
+	}
 }
 
 func waitForDockerReady(limit time.Duration, ready func() bool, log func(string)) error {
@@ -169,7 +201,8 @@ func (pr *Provisioner) dockerDaemonUp() bool {
 	defer cancel()
 	cmd := proc.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}")
 	cmd.Env = pr.run.Env
-	return cmd.Run() == nil
+	_, err := cmd.Output()
+	return err == nil || dockerSocketPermissionDenied(err)
 }
 
 func hasCommand(name string) bool {
@@ -202,16 +235,7 @@ func currentUsername() string {
 
 func (pr *Provisioner) runElevated(exe string, args ...string) error {
 	if runtime.GOOS == "windows" {
-		ps := "$p = Start-Process " + elevate.PSQuote(exe) + " -Wait -PassThru -Verb RunAs -WindowStyle Hidden"
-		if len(args) > 0 {
-			quoted := make([]string, 0, len(args))
-			for _, a := range args {
-				quoted = append(quoted, elevate.PSQuote(a))
-			}
-			ps += " -ArgumentList " + strings.Join(quoted, ",")
-		}
-		ps += "; exit $p.ExitCode"
-		return proc.Command("powershell", "-NoProfile", "-Command", ps).Run()
+		return proc.Command("powershell", "-NoProfile", "-Command", windowsElevatedCommand(exe, args...)).Run()
 	}
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, elevate.ShQuote(exe))
@@ -219,6 +243,19 @@ func (pr *Provisioner) runElevated(exe string, args ...string) error {
 		parts = append(parts, elevate.ShQuote(a))
 	}
 	return elevate.Run(strings.Join(parts, " "), true)
+}
+
+func windowsElevatedCommand(exe string, args ...string) string {
+	ps := "$ErrorActionPreference = 'Stop'; try { $p = Start-Process " + elevate.PSQuote(exe) +
+		" -Wait -PassThru -Verb RunAs -WindowStyle Hidden"
+	if len(args) > 0 {
+		quoted := make([]string, 0, len(args))
+		for _, a := range args {
+			quoted = append(quoted, elevate.PSQuote(a))
+		}
+		ps += " -ArgumentList " + strings.Join(quoted, ",")
+	}
+	return ps + "; if ($null -eq $p -or $null -eq $p.ExitCode) { throw 'elevated command did not return an exit code' }; exit [int]$p.ExitCode } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
 }
 
 const downloadHeaderTimeout = 30 * time.Second

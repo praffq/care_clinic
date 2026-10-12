@@ -1,14 +1,13 @@
 package appremoval
 
 import (
-	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -78,24 +77,39 @@ func otherInstance() bool {
 	if err != nil {
 		return false
 	}
-	out, err := proc.Command("tasklist", "/FI", "IMAGENAME eq "+filepath.Base(exe), "/FO", "CSV", "/NH").Output()
+	filter := "Name = '" + strings.ReplaceAll(filepath.Base(exe), "'", "''") + "'"
+	query := "$processes = @(Get-CimInstance Win32_Process -Filter " + elevate.PSQuote(filter) +
+		" | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; commandLine = $_.CommandLine } }); " +
+		"ConvertTo-Json -InputObject $processes -Compress"
+	out, err := proc.Command("powershell", "-NoProfile", "-Command", query).Output()
 	if err != nil {
 		return false
 	}
 	return otherPIDs(string(out), os.Getpid())
 }
 
-func otherPIDs(tasklist string, self int) bool {
-	rows, err := csv.NewReader(strings.NewReader(tasklist)).ReadAll()
-	if err != nil {
+type processInfo struct {
+	PID         int     `json:"pid"`
+	CommandLine *string `json:"commandLine"`
+}
+
+func otherPIDs(processesJSON string, self int) bool {
+	var processes []processInfo
+	if err := json.Unmarshal([]byte(processesJSON), &processes); err != nil {
 		return false
 	}
-	for _, row := range rows {
-		if len(row) < 2 {
+	for _, process := range processes {
+		if process.PID == self || (process.CommandLine != nil && isVMHostProcess(*process.CommandLine)) {
 			continue
 		}
-		pid, err := strconv.Atoi(row[1])
-		if err == nil && pid != self {
+		return true
+	}
+	return false
+}
+
+func isVMHostProcess(commandLine string) bool {
+	for _, arg := range strings.Fields(commandLine) {
+		if strings.EqualFold(strings.Trim(arg, `"'`), "--vm-host") {
 			return true
 		}
 	}

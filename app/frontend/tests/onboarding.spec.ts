@@ -237,6 +237,22 @@ test("pasting a valid full clinic address strips only the supported wrapper", as
   expect(await page.evaluate(() => window.careTest.calls.find((call) => call.method === "FindClinic")?.args)).toEqual(["care-hospital.local"]);
 });
 
+test("client preflight checks the address being found and connected", async ({ page }) => {
+  await client(page);
+  await page.getByLabel("Clinic address").fill("care-hospital");
+  await page.getByRole("button", { name: "Find server", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "We found your clinic's server" })).toBeVisible();
+  expect(await page.evaluate(() => window.careTest.calls
+    .filter((call) => call.method === "ClientPreflight").map((call) => call.args)))
+    .toEqual([["care-hospital.local"]]);
+
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(page.getByText("Connected to", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.careTest.calls
+    .filter((call) => call.method === "ClientPreflight").map((call) => call.args)))
+    .toEqual([["care-hospital.local"], ["https://care-hospital.local"]]);
+});
+
 for (const first of ["find", "update"] as const) {
   test(`client discovery and updating cannot race when ${first} starts first`, async ({ page }) => {
     await page.goto("/tests/fixtures/index.html?scenario=available&role=client");
@@ -592,14 +608,17 @@ test("platform-inapplicable steps are omitted without skipping unknown failures"
 
 test("required software shows a missing CARE engine in red", async ({ page }) => {
   await start(page);
-  await page.evaluate(() => { window.careTest.fixtures.docker.ok = false; });
+  await page.evaluate(() => {
+    window.careTest.fixtures.docker.ok = false;
+    window.careTest.fixtures.docker.message = "The CARE engine is not installed.";
+  });
   await page.getByRole("button", { name: "Start setup" }).click();
   await continueTo(page, "Installing what CARE needs");
   await expect(page.getByRole("heading", { name: "Installing what CARE needs" })).toBeVisible();
   const rows = page.locator(".on-data-row");
   const incomplete = rows.filter({ hasText: "Needs setup" });
   const ready = rows.filter({ has: page.getByText("Available", { exact: true }) });
-  await expect(rows.filter({ hasText: "CARE engine" }).locator("p")).toHaveText("Runs the clinic software on this computer.");
+  await expect(rows.filter({ hasText: "CARE engine" }).locator("p")).toHaveText("The CARE engine is not installed.");
   await expect(page.getByText(/^(Ready|Action required)$/)).toHaveCount(0);
   await expect(incomplete).toHaveCount(1);
   await expect(ready).toHaveCount(0);

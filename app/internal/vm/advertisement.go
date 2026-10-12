@@ -193,11 +193,10 @@ func (h *host) refreshAdvertisementWith(ctx context.Context,
 		var available bool
 		available, err = availableClinic(ctx, c)
 		if available && err == nil {
+			name = c.Name
 			status := checkNetwork(proc.Runner{Ctx: ctx})
 			if status.Applicable && !status.OK {
 				err = fmt.Errorf("persistent clinic advertising needs network repair: %s; %s", status.Message, status.How)
-			} else {
-				name = c.Name
 			}
 		}
 	}

@@ -1,11 +1,14 @@
 package elevate
 
 import (
+	"encoding/base64"
 	"errors"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
@@ -39,17 +42,51 @@ func TestUnixStepsGroupCompoundCommands(t *testing.T) {
 	}
 }
 
-func TestWindowsStepsReportChildAndCommandFailures(t *testing.T) {
+func TestWindowsStepsGenerateFailurePropagatingEncodedScript(t *testing.T) {
 	inner := stepScript([]Step{{PS: "Add-Content -Path 'fixture' -Value 'value'"}, {PS: "certutil -addstore Root 'fixture'"}}, true)
 	if !strings.Contains(inner, "$ErrorActionPreference = 'Stop'") ||
-		strings.Count(inner, "if (-not $?) { exit 1 }") != 2 {
+		strings.Count(inner, "$global:LASTEXITCODE = 0") != 2 ||
+		strings.Count(inner, "if (-not $? -or $LASTEXITCODE -ne 0) { exit 1 }") != 2 {
 		t.Fatalf("step failures are not propagated: %s", inner)
 	}
 	outer := elevatedPS(inner)
-	for _, required := range []string{"-Wait -PassThru", "-WindowStyle Hidden", "exit $p.ExitCode", PSQuote(inner)} {
+	for _, required := range []string{"-Wait -PassThru", "-WindowStyle Hidden", "-EncodedCommand", "exit $p.ExitCode"} {
 		if !strings.Contains(outer, required) {
 			t.Errorf("elevated script is missing %q: %s", required, outer)
 		}
+	}
+	if strings.Contains(outer, inner) {
+		t.Fatalf("elevated script passed the raw inner script on its command line: %s", outer)
+	}
+	encoded := encodePowerShell(inner)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := make([]uint16, len(decoded)/2)
+	for i := range units {
+		units[i] = uint16(decoded[i*2]) | uint16(decoded[i*2+1])<<8
+	}
+	if got := string(utf16.Decode(units)); got != inner {
+		t.Fatalf("encoded elevated script round trip = %q, want %q", got, inner)
+	}
+}
+
+func TestPSQuoteEscapesPowerShellQuoteCharacters(t *testing.T) {
+	input := "O'Brien O’Brien O’Brian ‘quoted’ ‚low‛"
+	want := "'O''Brien O’’Brien O’’Brian ‘‘quoted’’ ‚‚low‛‛'"
+	if got := PSQuote(input); got != want {
+		t.Fatalf("PSQuote(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestRunPreservesCommandOutputOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX command fixture")
+	}
+	err := run(proc.Command("sh", "-c", "printf 'teardown failed' >&2; exit 1"))
+	if err == nil || !strings.Contains(err.Error(), "teardown failed") {
+		t.Fatalf("command output was not retained: %v", err)
 	}
 }
 
@@ -59,7 +96,7 @@ func TestEmptyStepsDoNotElevate(t *testing.T) {
 	}
 }
 
-func TestWindowsTeardownAttemptsEveryStep(t *testing.T) {
+func TestWindowsTeardownScriptKeepsAttemptingSteps(t *testing.T) {
 	script := teardownScript([]Step{
 		{PS: "certutil -delstore Root 'missing'"},
 		{PS: "Remove-Item 'hosts-entry'"},
@@ -78,18 +115,25 @@ func TestWindowsTeardownAttemptsEveryStep(t *testing.T) {
 }
 
 func TestUnixTeardownAttemptsEveryStep(t *testing.T) {
-	script := teardownScript([]Step{{Sh: "false"}, {Sh: "printf second"}}, false)
-	if strings.Contains(script, "&&") {
-		t.Fatalf("&& stops at the first failure, which leaves the rest installed: %s", script)
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell fixture")
 	}
-	if strings.Count(script, "|| true") != 2 {
-		t.Fatalf("every step must survive the one before it failing: %s", script)
+	path := t.TempDir() + "/second-step"
+	cmd := proc.Command("sh", "-c", teardownScript([]Step{
+		{Sh: "false"},
+		{Sh: "printf second > " + ShQuote(path)},
+	}, false))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("teardown stopped after the first failure: %v, %q", err, out)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "second" {
+		t.Fatalf("later teardown step did not run: %q, %v", data, err)
 	}
 }
 
-func TestInstallStepsStillStopAtTheFirstFailure(t *testing.T) {
+func TestWindowsInstallStepsGenerateShortCircuitScript(t *testing.T) {
 	script := stepScript([]Step{{PS: "a"}, {PS: "b"}}, true)
-	if !strings.Contains(script, "if (-not $?) { exit 1 }") {
+	if !strings.Contains(script, "if (-not $? -or $LASTEXITCODE -ne 0) { exit 1 }") {
 		t.Fatalf("install must not run step 2 when step 1 failed: %s", script)
 	}
 }
