@@ -27,7 +27,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.refreshInstallDir()
 	a.advStop = make(chan struct{})
-	_ = a.startAdvertise()
+	a.queueAdvertise()
 	go a.watchAdvertise()
 	if a.loadConfig().Role != roleServer {
 		return
@@ -126,6 +126,11 @@ func (a *App) shutdown(context.Context) {
 	if a.advStop != nil {
 		close(a.advStop)
 	}
+	a.advWorkMu.Lock()
+	if a.advCancel != nil {
+		a.advCancel()
+	}
+	a.advWorkMu.Unlock()
 	a.advMu.Lock()
 	a.adv.Stop()
 	a.adv = nil
@@ -283,14 +288,32 @@ func jobQuitPrompt(label string) quitPrompt {
 		"CARE Clinic is in the middle of an operation (see the log). It stops where it is.\n\n" + leftRunning}
 }
 
+func clinicQuitMessage(name string, status vm.HostStatus) string {
+	if persistentNameReady(name, status) {
+		return "The clinic and its network address will keep running through the CARE engine helper while this computer stays on and connected.\n\nQuit CARE Clinic?"
+	}
+	return "The clinic keeps running, but " + name + " may stop working for other devices " +
+		"on the clinic's WiFi while this app is closed. Persistent network advertising has not been confirmed.\n\nQuit anyway?"
+}
+
 func (a *App) askBeforeQuit() quitChoice {
 	if !a.clinicRunning() {
 		return quitLeaveClinicRunning
 	}
 	name := a.loadConfig().MDNSName
+	status := vm.Status(context.Background())
+	if status.AdvertisementSupported {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := vm.RefreshAdvertisement(ctx); err != nil {
+			a.logln("mDNS: quit-time verification failed: " + err.Error())
+			status.Advertisement.Verified = false
+		} else {
+			status = vm.Status(ctx)
+		}
+		cancel()
+	}
 	quit, err := a.askToProceed("Quit CARE Clinic?",
-		"The clinic keeps running, but "+name+" will stop working for other devices "+
-			"on the clinic's WiFi until this app is open again.\n\nQuit anyway?", "Yes")
+		clinicQuitMessage(name, status), "Yes")
 	if err != nil {
 		return quitLeaveClinicRunning
 	}

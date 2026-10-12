@@ -70,6 +70,16 @@ func (a *App) runLockedJob(fn func() error, markSetup bool, label string) error 
 				a.emit("setup-done", true)
 			}
 		}
+		if label == "stop" && err == nil {
+			a.advPaused.Store(true)
+			_ = a.withdrawAdvertise()
+		} else if err == nil {
+			switch label {
+			case "start", "restart", "restore", "update", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "upgrade-line", "setup":
+				a.advPaused.Store(false)
+			}
+		}
+		a.queueAdvertise()
 		if err != nil {
 			a.logln("error: " + err.Error())
 			code = 1
@@ -291,7 +301,7 @@ func (a *App) ensureDockerReady() error {
 	if plan.Action == prereq.ActionNone {
 		return nil
 	}
-	status := a.DockerStatus()
+	status := prereq.DockerCheck(a.engine().Runner())
 	if plan.Action != prereq.ActionOpen {
 		return fmt.Errorf("%s CARE needs it to run the clinic; set it up from the requirements check", status.Message)
 	}
@@ -409,8 +419,10 @@ func (a *App) RunSetup(mdnsName, adminPassword, backupDir string) (err error) {
 				return e.Setup()
 			},
 			start: func() error {
-				if err := a.restartAdvertise(); err != nil {
-					return err
+				if !vm.Supported() {
+					if err := a.startAdvertise(); err != nil {
+						return err
+					}
 				}
 				return e.Start()
 			},

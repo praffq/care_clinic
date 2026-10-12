@@ -25,6 +25,36 @@ async function backup(page: Page) {
   await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
 }
 
+test("network notices do not replace a primary job error or contaminate the next job", async ({ page }) => {
+  await panel(page);
+  await backup(page);
+  await page.evaluate(() => {
+    window.careTest.emit("care-error", "Backup didn't finish", "primary backup failure");
+    window.careTest.emit("care-network-status", "Clinic network advertising could not be verified", "helper handoff failed");
+  });
+  const banner = page.locator(".panel-banner[role=alert]");
+  await expect(banner).toContainText("Backup didn't finish");
+  await expect(banner).not.toContainText("helper handoff");
+  await expect(page.getByText("Clinic network advertising could not be verified", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    window.careTest.fixtures.storage.last_run.state = "failed";
+    window.careTest.emit("care-done", 1, "backup-now");
+  });
+  await expect(banner).not.toContainText("helper handoff");
+  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Dismiss operation message" }).click();
+  await page.getByRole("button", { name: "Back up now", exact: true }).click();
+  await expect.poll(async () => (await calls(page, "ClinicAction")).length).toBe(2);
+  await page.evaluate(() => {
+    window.careTest.emit("care-network-status", "The clinic address is already in use", "duplicate care.local");
+    window.careTest.finishJob("backup-now");
+  });
+  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeEnabled();
+  await expect(banner).toHaveCount(0);
+  await page.evaluate(() => window.careTest.emit("care-network-status", "", ""));
+  await expect(page.getByText("The clinic address is already in use", { exact: true })).toHaveCount(0);
+});
+
 async function quit(page: Page, action = "backing up") {
   await page.evaluate((name) => window.careTest.requestQuit(name), action);
   await expect(dialog(page).getByRole("heading", { name: "CARE is still working", exact: true })).toBeVisible();

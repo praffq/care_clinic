@@ -78,8 +78,9 @@ flowchart TD
 
 There are three different kinds of ownership:
 
-1. **Application lifetime:** the Wails layer owns the in-memory mDNS advertiser,
-   its renewal loop, log delivery to the desktop, and second-instance behavior.
+1. **Application/helper lifetime:** the persistent VM host helper owns server
+   mDNS on macOS/Windows; the Wails layer owns it on Linux/older-helper fallback,
+   synchronizes desired state, delivers logs and handles second instances.
 2. **Clinic data and generated files:** the clinic layer owns the installation
    directory and chooses when to extract Caddy's root certificate for local
    trust. It passes ordinary logging and confirmation callbacks to
@@ -585,9 +586,10 @@ Sources: [app_update.go](../app/app_update.go),
 **Update CARE Clinic** updates the installed desktop, not the clinic server.
 It does not run `docker compose stop/down`, remove clinic files, change backup
 keys, reinstall WebView2, or invoke the application uninstaller. Normal shutdown
-does stop this desktop's mDNS advertiser; clinic containers stay running and
-advertising resumes when the app reopens. Clinic-name discovery can therefore
-be briefly unavailable during the restart.
+stops only a window-owned mDNS advertiser; clinic containers and a capable
+persistent helper's responder stay running. Linux and older helpers can lose
+clinic-name discovery until the window reopens. A desktop upgrade does not
+replace an already running old helper; persistence requires helper restart.
 
 1. Fetch the release and its checksum, download into a private uniquely named
    `CARE Clinic/updates/update-*` directory in the OS user cache, verify SHA-256,
@@ -669,8 +671,9 @@ which staff can enter on their phone. iOS instructions cover profile installatio
 and full trust in Safari; Android instructions cover CA installation in Settings.
 The matching device instructions expand automatically. Desktop clients use the
 native app; no generated script installers are served.
-Old files may remain unused in an installed kit; refreshing routes and mounts
-does not require deleting that directory.
+Older untracked files may remain unused in an installed kit. Refresh removes
+only previously inventoried shipped files absent from the new embedded kit,
+never the whole directory; see [embedded-kit refresh](configuration-and-settings.md#embedded-kit-refresh).
 
 ### Native client setup and trust on first use
 
@@ -984,9 +987,11 @@ than assuming that any certificate-management window is showing it.
 Sources: [advertise.go](../app/internal/sys/mdns/advertise.go),
 [responder.go](../app/internal/sys/mdns/responder.go), and
 [probe.go](../app/internal/sys/mdns/probe.go), and
-[conflict.go](../app/internal/sys/mdns/conflict.go). Renewal is an
-application-lifetime responsibility at the integration boundary in
-[app.go](../app/app.go), not a background loop inside this package.
+[conflict.go](../app/internal/sys/mdns/conflict.go), and the shared
+[manager.go](../app/internal/sys/mdns/manager.go). Renewal is driven by the
+persistent helper in [advertisement.go](../app/internal/vm/advertisement.go)
+or the fallback window in [app.go](../app/app.go), not a background loop
+inside this package.
 
 ### Why this is separate from hosts and trust
 
@@ -1079,7 +1084,7 @@ must have a unique name on its LAN.
 
 The setup wizard saves the chosen name without advertising it. `MDNSStatus(name)`
 checks the address currently shown in the form, not merely the existence of this
-process's advertiser. It sends A and AAAA questions directly to IPv4 mDNS on every
+process's advertiser. For setup and window fallback it sends A and AAAA questions directly to IPv4 mDNS on every
 selected LAN interface, bypassing the system resolver, cached records, and
 `/etc/hosts`. Three query rounds listen for 500 ms each under a two-second overall
 deadline. Live foreign A/AAAA records in answers or additional records block
@@ -1092,7 +1097,9 @@ superseded results, and requires a fresh check before installation. `RunSetup`
 also checks before saving installation credentials or changing installation
 files; `Advertise` checks again before opening responders, including after the
 installation work and on restart. An installed server's status additionally
-requires its own responder to answer.
+requires its own responder to answer. Installed macOS/Windows clinics with a
+capable helper read that helper's current name, availability, conflict and
+self-probe status instead; helper polling performs the live checks.
 
 An offline or sleeping server cannot answer. Multicast isolation, packet loss,
 and peers reachable only through IPv6 transport can also prevent detection;
@@ -1131,20 +1138,22 @@ availability; reordering alone does not trigger a change. Enumeration errors,
 including loss of all usable interfaces, are returned rather than treated as
 an unchanged network.
 
-The application watches every **30 seconds**. It attempts to start a missing
+The shared `mdns.Manager` is driven by helper housekeeping every **15 seconds**
+on macOS/Windows, or by the window every **30 seconds** on Linux/older helpers.
+It attempts to start a missing
 advertiser, restarts when the topology comparison reports a change or error,
 and restarts after **two consecutive failed response probes**. It also checks
 for foreign claims before the own-response probe, withdrawing advertising and
 reporting a conflict if one appears (for example when a sleeping server wakes).
 Retries must pass the availability check before advertising again. A successful
-response probe clears the miss count. Shutdown prevents the watcher from reopening a
-responder. The watcher and advertiser must be stopped with
-application shutdown. The package itself does not automatically restart after
-a WiFi roam, dock change, or firewall change.
+response probe clears the miss count. Shutdown prevents that owner's watcher
+from reopening a responder. Window shutdown leaves a capable helper's responder
+alone; helper stop/exit withdraws it. The package itself does not run a timer;
+the owner drives recovery after WiFi, dock or firewall changes.
 
 ```mermaid
 flowchart TD
-    Tick["Application watcher: every 30 seconds"] --> Have{"Advertiser exists?"}
+    Tick["Helper: 15s / window fallback: 30s"] --> Have{"Advertiser exists?"}
     Have -- No --> Start["Try Advertise with current usable IPv4 addresses"]
     Have -- Yes --> Changed{"IPsChanged reports a change?"}
     Changed -- Yes --> Renew["Stop old responder and start a new one"]
@@ -1162,9 +1171,12 @@ flowchart TD
 ```
 
 Container lifetime and native advertiser lifetime are different. A running
-clinic stack is not by itself an mDNS responder from this package; the desktop
-process owns that service. See [The Wails application](wails-application.md) for
-hide, close, quit, and second-instance behavior.
+clinic stack is not by itself an mDNS responder from this package. A capable
+host helper owns it only after the window's explicit ownership handoff and
+installed-clinic availability checks. The guest never advertises. See
+[persistent clinic-name discovery](vm.md#persistent-clinic-name-discovery) for
+status/error retention, Windows network repair, stop/restart and VM-helper handoff;
+see [The Wails application](wails-application.md) for window lifecycle behavior.
 
 ### Client independence and network limits
 
@@ -1627,7 +1639,7 @@ one package's boolean into another's guarantee.
 | Hosts marker `# care-clinic` | CARE-managed hosts lines across clinic names; preserve unmarked lines. |
 | Root Common Name and known anchors | CARE trust integration on this computer; do not infer that browser-specific or remote trust is gone. |
 | Temporary root PEM | The extraction/preparation operation; preserve it until its consumer has finished, then attempt removal. |
-| mDNS responder | Application lifetime; renew after detected address changes/probe failures and stop on shutdown. |
+| mDNS responder | Persistent host-helper lifetime on macOS/Windows, gated by installed clinic availability; window lifetime on Linux/older helpers. Renew after address/probe failures; withdraw on conflict, clinic stop or owner exit. |
 | `CARE Clinic ` firewall prefix | CARE-owned rule namespace. Repair exact current names; removal can sweep the prefix. |
 | Windows network category | Shared profile state, not an owned rule; no previous-category rollback is recorded. |
 | Autostart plist/value/desktop file | One per-user CARE registration; removing it is not the same as stopping a running application. |

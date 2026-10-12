@@ -70,7 +70,7 @@ settings may be forgotten.
 | Intent | App entry point and engine call | Removed or changed | Intentionally retained |
 | --- | --- | --- | --- |
 | Pause the clinic | `ClinicAction("stop", ...)` delegates to `Clinic.Stop()`. | Compose stops services. | Containers, all volumes, images/cache, installed files, backups, keys, saved settings, and native configuration. |
-| Remove an installed clinic | `RunUninstall(...)` delegates to `Clinic.Uninstall(options)`. | Live project containers, volumes, and networks; native changes; installed files. Optional known images/cache and owned backup files. Optional legacy Rancher Desktop removal (see below). App also handles autostart and saved state. | Backups when not selected for removal; images/cache and CARE engine state when not selected; legacy Rancher Desktop when not selected; normal diagnostic logs. |
+| Remove an installed clinic | `RunUninstall(...)` delegates to `Clinic.Uninstall(options)`. | Live project containers, volumes, and networks; native changes; installed files. Optional known images/cache and owned backup files. App also handles autostart and saved state. | Backups when not selected for removal; images/cache and CARE engine state when not selected; unrelated Docker software; normal diagnostic logs. |
 | Recover from failed first setup | `CleanupFailedInstall()` delegates to a specific `Clinic.Uninstall` option set. | Partial project resources, native changes, installed files, saved secret/config. A matching exported certificate is removed only if it is unused and the final file-deletion phase is reached. | Downloaded images/cache and backup data. Required backup certificates remain. |
 | Clean old installation residue | The UI's "Remove everything" path is `PurgeResidue(confirmed)`, delegating to `Clinic.Purge()`. | Owned project resources even without a kit, known images/cache, native changes, installed kit. App additionally removes old logs and saved state. | Backups and their backup certificate. The desktop executable, Docker installations, and unrelated user files are not an OS-package uninstall target. |
 
@@ -117,20 +117,6 @@ and waits for its exit code:
 
 If the app executable is missing or cannot start, the uninstaller removes the
 files as before. Linux has no packaged build, so there is no equivalent hook.
-
-### Optional legacy Rancher Desktop removal
-
-The uninstall panel offers **Also remove Rancher Desktop left by an older CARE
-Clinic** only when `LegacyRancherInstalled()` detects it on macOS or Windows.
-`RunUninstall` accepts `removeLegacyRancher` and calls
-`Provisioner.RemoveRancherDesktop()` after CARE's own cleanup has succeeded and
-saved state is reset. This is an optional legacy cleanup; it is not part of
-`PurgeResidue()`, and a failure is logged as a warning with manual steps.
-
-The legacy cleanup removes Rancher Desktop and its associated user/system
-files. On macOS it also cleans up matching legacy `socket_vmnet` daemons and
-files. It does not stop or remove the CARE engine. The checkbox is opt-in
-because Rancher Desktop may still serve other projects.
 
 ## 2. Source file roles
 

@@ -187,7 +187,7 @@ during setup: an offline or multicast-isolated device cannot be detected.
 
 Inside the protected job, it rejects an installed or removing clinic, creates the administrator's bcrypt hash, computes and validates the backup destination, and persists the initial configuration. `SetupDone` is still false at this point.
 
-It then unpacks the kit, checks port availability, runs `Clinic.Setup()` with the public backup certificate, restarts name advertising, and runs `Clinic.Start()`. Only the job runner's successful completion path persists `SetupDone=true`.
+It then unpacks the kit, checks port availability, runs `Clinic.Setup()` with the public backup certificate, refreshes name advertising, and runs `Clinic.Start()`. Only the job runner's successful completion path persists `SetupDone=true`. A capable macOS/Windows helper advertises only after that completion and the installed-clinic availability checks; Linux/older-helper window advertising retains the earlier lifecycle.
 
 A failure after configuration or files were created is therefore a partial setup,
 not proof that nothing was installed. While the original process retains the
@@ -199,7 +199,12 @@ no longer available, the UI explains the destructive
 
 ## Embedded-kit refresh
 
-`ensureInstallDir()` walks the embedded `install` tree. It skips the placeholder, creates directories, writes shell scripts as executable, and copies other kit files with ordinary file modes.
+`ensureInstallDir()` walks and validates the embedded `install` tree. It skips
+placeholders, creates directories and publishes each file through the existing
+atomic-file helper: a fully written and synced sibling temporary file replaces
+the target, rather than truncating it in place. Shell scripts use `0755`, other
+managed kit files `0644`, and newly created user environments use private `0600`
+files (with the existing Windows private DACL helper).
 
 Its preservation allow-list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other kit files are refreshed from the executable. This includes `.env`, so the shipped pins do not become an independently editable runtime release mechanism.
 
@@ -215,9 +220,34 @@ Writes go through a process-wide mutex and a temporary file renamed into place, 
 
 Facility setup lives in the [CARE Onboarding frontend plugin](onboarding.md); its assets are not bundled into the kit. Existing `plugins.json` choices are preserved and catalog defaults are initialized only during new-clinic setup.
 
-Refresh copies the current kit but is not a general recursive deletion or a migration framework for all generated files. Similarly, preserving environments means a new template key is not automatically merged into an existing environment.
+Private `.kit-files.json` records the exact app-managed paths successfully
+shipped by refresh. Only a previously recorded file absent from the new embedded
+kit is obsolete; a file being unused by code is not deletion proof. After all
+copies complete, refresh atomically records the union of previous and current
+managed files, removes obsolete regular files, then publishes the current-only
+inventory. Copy failure does not prune. Cleanup/finalization failure retains
+the union so retry can finish even if some old files are already gone.
 
-The startup refresh is skipped for incomplete setup, incomplete removal, and pending restore. A pending restore must keep the configuration its recovery metadata expects.
+An upgrade without an inventory **does not guess prior ownership**: unknown
+older files remain, and only the current shipped files become tracked.
+Environment files, keys/secret material, backup state, restore/plugin recovery
+records, plugin selections and release-line state are protected from cleanup.
+Unknown files and empty directories remain; there is no recursive deletion.
+Invalid paths, symlinks within the installation, non-regular file targets and
+damaged/unsupported inventories fail explicitly. File-to-directory transitions
+also fail rather than deleting a directory or guessing its contents.
+
+Atomicity is **per file**, not a transaction over the entire kit. An interruption
+between files can leave a mixture of old and new complete files until the next
+successful refresh. Existing job serialization and restore/plugin-recovery gates
+remain in place. This is not a generated-file migration framework. Preserving
+`backend.env` and `frontend.env` means new template keys/defaults are not merged:
+operators keep their settings and secrets, but additions/removals/renames need an
+explicit migration policy before automation can safely change existing clinics.
+
+The startup refresh is skipped for incomplete setup, incomplete removal, and
+pending restore or plugin recovery. Recovery metadata errors also prevent
+refresh; the saved configuration must remain available for recovery.
 
 ## Advanced access and authorization
 
@@ -447,6 +477,12 @@ The active plugin list is stored in `plugins.json` beside `backend.env`. Its bac
 ## Changing the backup destination
 
 `SetBackupDir` takes a selected parent and appends `care-db-backups`. It validates placement and writability, checks for another installation's recovery data, and inspects whether the backup sidecar is running.
+
+Placement excludes the installation, saved-settings and log directories, resolving
+existing symlink ancestors. Protecting the installation alone does not protect its
+parent settings directory; Windows settings and installation roots may also be
+separate. The saved private recovery-file location is checked once, independently
+of those protected roots, and must remain outside the backup destination.
 
 Before saving the new path it copies the public backup certificate to the destination without overwriting a different certificate. The private recovery file is never copied into the backup folder. After saving, it recreates the backup sidecar only if it was running. If that restart fails, it attempts to restore the previous configuration and sidecar, reporting rollback errors as well.
 

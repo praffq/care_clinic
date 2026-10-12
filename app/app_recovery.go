@@ -40,6 +40,14 @@ func (a *App) GetSetupRecoveryStatus() (status SetupRecoveryStatus, err error) {
 	return setupRecoveryStatus(cfg), nil
 }
 
+func (a *App) GetAdminRecoveryCodesPath() (path string, err error) {
+	defer a.logError(&err)
+	if err := a.requireServer(); err != nil {
+		return "", err
+	}
+	return a.loadConfig().AdminRecoveryPath, nil
+}
+
 func (a *App) GetAdminRecoveryCodeCount() (count int, err error) {
 	defer a.logError(&err)
 	if err := a.requireServer(); err != nil {

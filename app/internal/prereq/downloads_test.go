@@ -82,7 +82,7 @@ func TestInterruptedDownloadDiscardsPartialFileAndRetries(t *testing.T) {
 	defer server.Close()
 	var events []DownloadProgress
 	pr := &Provisioner{Progress: func(p DownloadProgress) { events = append(events, p) }}
-	d := Download{Name: "Rancher-test.dmg", URL: server.URL, SHA256: hex.EncodeToString(sum[:])}
+	d := Download{Name: "engine-test.zip", URL: server.URL, SHA256: hex.EncodeToString(sum[:])}
 	path, err := pr.download(d)
 	if path != "" || !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "download connection interrupted:") {
 		t.Fatalf("a broken connection lost its cause or interruption classification: path=%q, err=%v", path, err)
@@ -119,7 +119,7 @@ func TestInterruptedDownloadDiscardsPartialFileAndRetries(t *testing.T) {
 func TestDownloadConnectionFailureBeforeHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	server.Close()
-	d := Download{Name: "Rancher-test.dmg", URL: server.URL}
+	d := Download{Name: "engine-test.zip", URL: server.URL}
 	if _, err := inspectDownload(d); err == nil || !strings.Contains(err.Error(), "download connection interrupted:") {
 		t.Fatalf("preview connection failure wasn't classified: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStalledDownloadIsAnInterruptionNotUserCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 	pr := &Provisioner{}
-	path, err := pr.download(Download{Name: "Rancher-test.dmg", URL: server.URL})
+	path, err := pr.download(Download{Name: "engine-test.zip", URL: server.URL})
 	if path != "" || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "download connection interrupted:") {
 		t.Fatalf("a stalled download looked like an unrelated cancellation: path=%q, err=%v", path, err)
 	}
@@ -166,8 +166,8 @@ func TestDownloadPreviewOnlyRequestsHeaders(t *testing.T) {
 		w.Header().Set("Content-Length", "734003200")
 	}))
 	defer server.Close()
-	info, err := inspectDownload(Download{Name: "Rancher.dmg", URL: server.URL + "/redirect"})
-	if err != nil || info.Name != "Rancher.dmg" || info.Size != 734003200 {
+	info, err := inspectDownload(Download{Name: "engine.zip", URL: server.URL + "/redirect"})
+	if err != nil || info.Name != "engine.zip" || info.Size != 734003200 {
 		t.Fatalf("incorrect preview: %+v, %v", info, err)
 	}
 	if strings.Join(methods, ",") != "HEAD,HEAD" {

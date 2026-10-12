@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 )
 
 // HostStatus is what the helper reports on its control socket.
@@ -30,7 +31,9 @@ type HostStatus struct {
 	PID       int    `json:"pid"`
 	WebPorts  []int  `json:"web_ports,omitempty"`
 	// Logs is empty when the helper predates guest log collection.
-	Logs string `json:"logs,omitempty"`
+	Logs                   string                   `json:"logs,omitempty"`
+	AdvertisementSupported bool                     `json:"advertisement_supported"`
+	Advertisement          mdns.AdvertisementStatus `json:"advertisement"`
 }
 
 // Guest log collection states reported in HostStatus.Logs.
@@ -41,13 +44,18 @@ const (
 )
 
 type host struct {
-	m       machine
-	g       *guest
-	man     Manifest
-	logf    func(string, ...any)
-	stopReq chan struct{}
-	once    sync.Once
-	sync    *syncer
+	m                    machine
+	g                    *guest
+	man                  Manifest
+	logf                 func(string, ...any)
+	stopReq              chan struct{}
+	once                 sync.Once
+	sync                 *syncer
+	advertiseMu          sync.Mutex
+	advertiser           advertisementManager
+	advertiseCancelMu    sync.Mutex
+	advertiseCancel      context.CancelFunc
+	advertiseWithdrawing bool
 
 	mu     sync.Mutex
 	status HostStatus
@@ -109,6 +117,9 @@ func runHost(logf func(string, ...any)) error {
 		g:      newGuest(func(ctx context.Context) (net.Conn, error) { return m.dial(ctx, vsockControl) }),
 		status: HostStatus{Running: true, Version: man.Version, PID: os.Getpid(), Logs: LogsConnecting},
 	}
+	h.advertiser = mdns.NewManager(func(line string) { logf("%s", line) })
+	h.status.AdvertisementSupported = true
+	defer h.stopAdvertisement()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go h.collectLogs(ctx)
@@ -142,6 +153,7 @@ func runHost(logf func(string, ...any)) error {
 		return fmt.Errorf("the VM stopped unexpectedly; see %s", ConsoleLog())
 	}
 	cancel()
+	h.stopAdvertisement()
 	h.shutdown()
 	return nil
 }
@@ -232,6 +244,7 @@ func (h *host) housekeeping(ctx context.Context) {
 	last := time.Now()
 	for {
 		h.refresh(ctx)
+		h.refreshAdvertisement(ctx)
 		if h.sync != nil {
 			if err := h.sync.run(ctx, nil); err != nil {
 				h.logf("sync: %v", err)
@@ -289,7 +302,16 @@ func (h *host) routes() http.Handler {
 		writeJSON(w, s)
 	})
 	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, r *http.Request) {
+		h.stopAdvertisement()
 		h.once.Do(func() { close(h.stopReq) })
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /advertisement", func(w http.ResponseWriter, r *http.Request) {
+		h.refreshAdvertisement(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /advertisement/withdraw", func(w http.ResponseWriter, r *http.Request) {
+		h.withdrawAdvertisement()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {

@@ -51,7 +51,6 @@ async function openAdvanced(page: Page) {
   await page.evaluate(({ backend, frontend, code }) => {
     const fixtures = window.careTest.fixtures;
     fixtures.env = { backend, frontend };
-    fixtures.legacyRancherInstalled = true;
     fixtures.canRemoveApp = true;
     fixtures.recoveryCodes[0] = code;
   }, { backend: backendEnvironment, frontend: frontendEnvironment, code: recoveryCode });
@@ -82,7 +81,7 @@ async function fillNewPassword(page: Page, scope = root(page)) {
   await scope.getByLabel("Confirm new CARE Clinic admin password", { exact: true }).fill(nextPassword);
 }
 
-async function openRemoval(page: Page, checkboxCount = 4) {
+async function openRemoval(page: Page, checkboxCount = 3) {
   await root(page).getByRole("button", { name: "Uninstall…", exact: true }).click();
   await expect(dialog(page)).toBeVisible();
   await expect(dialog(page).getByRole("checkbox")).toHaveCount(checkboxCount);
@@ -678,8 +677,6 @@ test("removal is typed, all extras default off, cancellation clears choices, and
   const remove = dialog(page).getByRole("button", { name: "Delete everything", exact: true });
   await expect(remove).toBeDisabled();
   for (const checkbox of await dialog(page).getByRole("checkbox").all()) await expect(checkbox).not.toBeChecked();
-  await expect(dialog(page)).toContainText("Also remove Rancher Desktop left by an older CARE Clinic");
-  await expect(dialog(page)).toContainText("Earlier versions of CARE Clinic used Rancher Desktop. Leave this off if other programs on this computer use it.");
   await expect(dialog(page)).toContainText("Also remove downloaded images and the CARE engine disk");
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("delete");
   await expect(remove).toBeDisabled();
@@ -712,9 +709,9 @@ test("removal submits exact opt-ins once and remains busy until native completio
   expect(await count(page, "RunUninstall")).toBe(1);
   expect(await page.evaluate(() => {
     const call = window.careTest.calls.find((entry) => entry.method === "RunUninstall")!;
-    return { images: call.args[0], backups: call.args[1], legacyRancher: call.args[2],
-      passwordMatches: call.args[3] === window.careTest.fixtures.adminPassword };
-  })).toEqual({ images: true, backups: false, legacyRancher: false, passwordMatches: true });
+    return { images: call.args[0], backups: call.args[1],
+      passwordMatches: call.args[2] === window.careTest.fixtures.adminPassword };
+  })).toEqual({ images: true, backups: false, passwordMatches: true });
   await page.evaluate(() => window.careTest.release("RunUninstall"));
   await expect(dialog(page)).toBeHidden();
   await expect(root(page).getByRole("button", { name: "Uninstall…", exact: true, includeHidden: true })).toBeDisabled();
@@ -727,7 +724,7 @@ test("removal submits exact opt-ins once and remains busy until native completio
 test("unavailable removal options fail closed and an immediate rejection keeps the dialog open", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
-  await page.evaluate(() => window.careTest.failNext("LegacyRancherInstalled", "private native lookup failure"));
+  await page.evaluate(() => window.careTest.failNext("CanRemoveApp", "private native lookup failure"));
   await root(page).getByRole("button", { name: "Uninstall…", exact: true }).click();
   await expect(dialog(page)).toContainText("Removal options couldn't be checked");
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
@@ -1042,23 +1039,3 @@ test("an external panel blocker arriving during fresh reads prevents subsequent 
   expect(await count(page, "WriteEnv")).toBe(1);
   expect(await count(page, "ClinicAction")).toBe(1);
 });
-
-for (const installed of [false, true]) {
-  test(`legacy Rancher removal is ${installed ? "an explicit opt-in" : "hidden when absent"}`, async ({ page }) => {
-    await openAdvanced(page);
-    await unlock(page);
-    await page.evaluate((installed) => {
-      window.careTest.fixtures.legacyRancherInstalled = installed;
-      window.careTest.fixtures.finishJobs = false;
-    }, installed);
-    await openRemoval(page, installed ? 4 : 3);
-    const option = dialog(page).getByRole("checkbox", { name: /Also remove Rancher Desktop left by an older CARE Clinic/ });
-    await expect(option).toHaveCount(installed ? 1 : 0);
-    if (installed) await option.check();
-    await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-    await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
-    await expect.poll(() => count(page, "RunUninstall")).toBe(1);
-    expect(await page.evaluate(() => window.careTest.calls.find((call) => call.method === "RunUninstall")!.args[2])).toBe(installed);
-    expect(await page.evaluate(() => window.careTest.logs.some((line) => line.includes("--legacy-rancher")))).toBe(installed);
-  });
-}

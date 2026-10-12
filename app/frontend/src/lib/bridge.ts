@@ -66,6 +66,7 @@ export type CareEvent =
   | "care-log"
   | "care-done"
   | "care-error"
+  | "care-network-status"
   | "setup-done"
   | "setup-failed"
   | "uninstalled"

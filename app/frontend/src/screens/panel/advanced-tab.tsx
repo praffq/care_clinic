@@ -245,9 +245,8 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
   const [open, setOpen] = useState(false);
   const [removeBackups, setRemoveBackups] = useState(false);
   const [removeImages, setRemoveImages] = useState(false);
-  const [removeLegacyRancher, setRemoveLegacyRancher] = useState(false);
   const [removeApp, setRemoveApp] = useState(false);
-  const [capabilities, setCapabilities] = useState<{ legacyRancher: boolean; app: boolean } | null>(null);
+  const [capabilities, setCapabilities] = useState<{ app: boolean } | null>(null);
   const [checking, setChecking] = useState(false);
   const [working, setWorking] = useState(false);
   const [confirmation, setConfirmation] = useState("");
@@ -263,8 +262,8 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     setProblem(null);
     setCapabilities(null);
     try {
-      const [legacyRancher, app] = await Promise.all([bridge.LegacyRancherInstalled(), bridge.CanRemoveApp()]);
-      if (version === checkVersion.current) setCapabilities({ legacyRancher, app });
+      const app = await bridge.CanRemoveApp();
+      if (version === checkVersion.current) setCapabilities({ app });
     } catch (cause) {
       if (version === checkVersion.current) setProblem(advancedProblem(cause, "Removal options couldn't be checked",
         "No removal has started. Try checking again before continuing."));
@@ -276,7 +275,6 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     setConfirmation("");
     setRemoveBackups(false);
     setRemoveImages(false);
-    setRemoveLegacyRancher(false);
     setRemoveApp(false);
     setCapabilities(null);
     setProblem(null);
@@ -304,7 +302,7 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     clearOperationError();
     setOpen(false);
     try {
-      const accepted: unknown = await uninstall(removeImages, removeBackups, capabilities.legacyRancher && removeLegacyRancher,
+      const accepted: unknown = await uninstall(removeImages, removeBackups,
         adminPassword, capabilities.app && removeApp);
       setConfirmation("");
       if (accepted === true) { setOpen(false); clear(); }
@@ -353,13 +351,6 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
                 <small>{platform === "linux" ? "Other projects on this computer may need to download or build their files again." : "Deletes the CARE engine’s VM disk. CARE will download the software again if you set up another clinic."}</small>
               </span>
             </label>
-            {capabilities?.legacyRancher ? <label className="advanced-check">
-              <Checkbox checked={removeLegacyRancher} disabled={working || blocked}
-                onCheckedChange={(checked) => setRemoveLegacyRancher(checked === true)} />
-              <span>Also remove Rancher Desktop left by an older CARE Clinic
-                <small>Earlier versions of CARE Clinic used Rancher Desktop. Leave this off if other programs on this computer use it.</small>
-              </span>
-            </label> : null}
             {capabilities?.app ? <label className="advanced-check">
               <Checkbox checked={removeApp} disabled={working || blocked} onCheckedChange={(checked) => setRemoveApp(checked === true)} />
               <span>Also remove the CARE Clinic app</span>

@@ -24,6 +24,10 @@ func (e *ConflictError) Error() string {
 // CheckAvailable bypasses the system resolver, including its cache and hosts file.
 // Silence only means that no reachable device claimed the name during this check.
 func CheckAvailable(name string) error {
+	return CheckAvailableContext(context.Background(), name)
+}
+
+func CheckAvailableContext(ctx context.Context, name string) error {
 	if err := ValidateLabel(name); err != nil {
 		return err
 	}
@@ -31,7 +35,7 @@ func CheckAvailable(name string) error {
 	if err != nil {
 		return fmt.Errorf("could not check the clinic address: %w", err)
 	}
-	return checkAvailable(Label(name)+".local.", links, probeConflict)
+	return checkAvailableContext(ctx, Label(name)+".local.", links, probeConflict)
 }
 
 // Resolve returns the LAN address of another device answering for name. It uses
@@ -51,10 +55,14 @@ func Resolve(name string) (net.IP, error) {
 }
 
 func checkAvailable(host string, links []lanInterface, probe func(context.Context, string, lanInterface, []net.IP) error) error {
+	return checkAvailableContext(context.Background(), host, links, probe)
+}
+
+func checkAvailableContext(parent context.Context, host string, links []lanInterface, probe func(context.Context, string, lanInterface, []net.IP) error) error {
 	if len(links) == 0 {
 		return fmt.Errorf("could not check the clinic address: no LAN interface available")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	var ownIPs []net.IP
 	for _, link := range links {
@@ -73,7 +81,12 @@ func checkAvailable(host string, links []lanInterface, probe func(context.Contex
 	}
 	var firstErr error
 	for range links {
-		err := <-results
+		var err error
+		select {
+		case err = <-results:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		var conflict *ConflictError
 		if errors.As(err, &conflict) {
 			return conflict

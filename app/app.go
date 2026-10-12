@@ -15,6 +15,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -55,12 +56,23 @@ type App struct {
 	confirmationSequence uint64
 	confirmation         *pendingConfirmation
 
-	advMu    sync.Mutex
-	adv      *mdns.Advertiser
-	advError error
-	advStop  chan struct{}
+	advMu          sync.Mutex
+	adv            *mdns.Manager
+	advError       error
+	advStop        chan struct{}
+	advWorkMu      sync.Mutex
+	advWake        chan struct{}
+	advCancel      context.CancelFunc
+	advGeneration  uint64
+	advWithdrawing bool
+	advHelper      bool
+	advPaused      atomic.Bool
+	emitEvent      func(string, ...any)
 
 	store storageWatch
+
+	dockerCheckMu sync.Mutex
+	dockerCheck   *dockerStatusCall
 
 	osUninstall  bool
 	removeTarget string
@@ -108,6 +120,10 @@ func (a *App) logln(msg string) {
 }
 
 func (a *App) emit(event string, data ...any) {
+	if a.emitEvent != nil {
+		a.emitEvent(event, data...)
+		return
+	}
 	if a.ctx != nil {
 		wruntime.EventsEmit(a.ctx, event, data...)
 	}
@@ -171,116 +187,233 @@ func (a *App) reportError(label, detail string) {
 
 // Failures are logged and conflicts are shown here; background callers retry.
 func (a *App) startAdvertise() error {
+	return a.startAdvertiseContext(context.Background())
+}
+
+func (a *App) startAdvertiseContext(parent context.Context) (result error) {
 	a.advMu.Lock()
 	defer a.advMu.Unlock()
+	defer func() {
+		if result != nil && parent.Err() == nil {
+			a.reportAdvertiseError(result)
+		}
+	}()
+	if parent.Err() != nil {
+		return parent.Err()
+	}
 	select {
 	case <-a.advStop:
 		return nil
 	default:
 	}
-	if a.adv != nil {
-		return nil
+	// Keep settings writers from being overwritten by an older watcher snapshot.
+	a.cfgMu.RLock()
+	cfg, err := normalizeRole(a.cfg)
+	if err == nil && vm.Supported() && cfg.Role == roleServer {
+		err = vm.SaveAdvertisement(vm.AdvertisementConfig{
+			Enabled: cfg.SetupDone && !cfg.Removing && cfg.MDNSName != "",
+			Name:    cfg.MDNSName, InstallDir: a.installDir(),
+		})
 	}
-	cfg := a.loadConfig()
+	a.cfgMu.RUnlock()
+	if err != nil {
+		a.adv.Stop()
+		a.adv = nil
+		return err
+	}
 	name := cfg.MDNSName
+	if a.advPaused.Load() {
+		return a.reportAdvertisementStatus(mdns.AdvertisementStatus{})
+	}
+	if vm.Supported() && cfg.Role == roleServer {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		s := vm.Status(ctx)
+		if !s.Running {
+			a.advHelper = false
+			a.adv.Stop()
+			a.adv = nil
+			if err := vm.SetAdvertisementOwner(true); err != nil {
+				return err
+			}
+			return a.reportAdvertisementStatus(mdns.AdvertisementStatus{})
+		}
+		if s.AdvertisementSupported {
+			a.advHelper = true
+			a.adv.Stop()
+			a.adv = nil
+			if err := vm.SetAdvertisementOwner(true); err != nil {
+				return err
+			}
+			if err := vm.RefreshAdvertisement(ctx); err != nil {
+				return err
+			}
+			s = vm.Status(ctx)
+			if !s.Running || !s.AdvertisementSupported {
+				err := errors.New("persistent clinic advertising could not be confirmed with the CARE engine helper")
+				return err
+			}
+			if parent.Err() != nil {
+				return parent.Err()
+			}
+			return a.reportAdvertisementStatus(s.Advertisement)
+		}
+		a.advHelper = false
+		if err := vm.SetAdvertisementOwner(false); err != nil {
+			return err
+		}
+		// A replacement helper may have started during the older-helper handoff.
+		// Recheck after revoking ownership before opening a window responder.
+		s = vm.Status(ctx)
+		if !s.Running || s.AdvertisementSupported {
+			a.adv.Stop()
+			a.adv = nil
+			err := errors.New("CARE engine helper changed during network advertising handoff; retrying on the next check")
+			return err
+		}
+	}
 	if cfg.Role != roleServer || name == "" || cfg.Removing || (!cfg.SetupDone && cfg.AdminPwHash == "") {
+		a.adv.Stop()
+		a.adv = nil
+		return a.reportAdvertisementStatus(mdns.AdvertisementStatus{})
+	}
+	if a.adv == nil {
+		a.adv = mdns.NewManager(a.logln)
+	}
+	s := a.adv.RefreshContext(parent, name)
+	if parent.Err() != nil {
+		a.adv.Stop()
+		return parent.Err()
+	}
+	return a.reportAdvertisementStatus(s)
+}
+
+// Caller holds advMu; status from the helper carries conflict identity separately.
+func (a *App) reportAdvertisementStatus(s mdns.AdvertisementStatus) error {
+	if s.Error == "" {
+		if a.advError != nil {
+			a.emit("care-network-status", "", "")
+		}
 		a.advError = nil
 		return nil
 	}
-	adv, err := mdns.Advertise(name, a.logln)
-	if err != nil {
-		a.reportAdvertiseError(err)
-		return err
-	}
-	a.adv = adv
-	a.advError = nil
-	return nil
+	err := errors.New(s.Error)
+	a.notifyAdvertisement(err, s.Conflict)
+	return err
 }
 
 func (a *App) restartAdvertise() error {
+	err := a.withdrawAdvertise()
+	a.queueAdvertise()
+	return err
+}
+
+func (a *App) withdrawAdvertise() error {
+	a.advWorkMu.Lock()
+	a.advGeneration++
+	a.advWithdrawing = true
+	if a.advCancel != nil {
+		a.advCancel()
+	}
+	a.advWorkMu.Unlock()
 	a.advMu.Lock()
+	defer func() {
+		a.advMu.Unlock()
+		a.advWorkMu.Lock()
+		a.advWithdrawing = false
+		a.advWorkMu.Unlock()
+	}()
 	a.adv.Stop()
 	a.adv = nil
-	a.advMu.Unlock()
-	return a.startAdvertise()
+	if vm.Supported() && (a.advHelper || a.loadConfig().Role == roleServer) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		status := vm.Status(ctx)
+		if status.Running && !status.AdvertisementSupported {
+			a.advHelper = false
+			return nil
+		}
+		if !status.Running && !a.advHelper {
+			return nil
+		}
+		if err := vm.WithdrawAdvertisement(ctx); err != nil {
+			a.reportAdvertiseError(err)
+			return err
+		}
+	}
+	return nil
 }
 
 // Caller holds advMu. Report a continuing conflict once, not every watcher tick.
 func (a *App) reportAdvertiseError(err error) {
+	var conflict *mdns.ConflictError
+	a.notifyAdvertisement(err, errors.As(err, &conflict))
+}
+
+func (a *App) notifyAdvertisement(err error, conflict bool) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
 	if a.advError != nil && a.advError.Error() == err.Error() {
 		return
 	}
-	var previous, conflict *mdns.ConflictError
-	continuingConflict := errors.As(a.advError, &previous) &&
-		errors.As(err, &conflict) && previous.Host == conflict.Host
 	a.advError = err
 	a.logln("mDNS: " + err.Error())
-	if errors.As(err, &conflict) && !continuingConflict {
-		a.reportError(failureTitle("network-name"), err.Error()+
-			"\n\nNetwork advertising is paused. Ask your clinic administrator to resolve the duplicate addresses. No clinic data has been changed.")
+	title := "Clinic network advertising could not be verified"
+	if conflict {
+		title = failureTitle("network-name")
 	}
+	a.emit("care-network-status", title, err.Error())
 }
 
 func (a *App) advRunning() bool {
 	a.advMu.Lock()
 	defer a.advMu.Unlock()
-	return a.adv != nil
+	return a.adv != nil && a.adv.Status().Running
 }
 
 func (a *App) watchAdvertise() {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	misses := 0
 	for {
 		select {
 		case <-a.advStop:
 			return
 		case <-t.C:
-			a.advMu.Lock()
-			adv := a.adv
-			a.advMu.Unlock()
-			if adv == nil {
-				_ = a.startAdvertise()
+			a.queueAdvertise()
+		case <-a.advWake:
+			a.advWorkMu.Lock()
+			if a.advWithdrawing {
+				a.advWorkMu.Unlock()
 				continue
 			}
-			changed, err := adv.IPsChanged()
-			if err != nil {
-				a.logln("mDNS: couldn't inspect the LAN (" + err.Error() + ")")
+			ctx, cancel := context.WithCancel(context.Background())
+			a.advCancel = cancel
+			generation := a.advGeneration
+			a.advWorkMu.Unlock()
+			_ = a.startAdvertiseContext(ctx)
+			cancel()
+			a.advWorkMu.Lock()
+			if a.advGeneration == generation {
+				a.advCancel = nil
 			}
-			if changed || err != nil {
-				misses = 0
-				_ = a.restartAdvertise()
-				continue
-			}
-			if err := mdns.CheckAvailable(adv.Name()); err != nil {
-				var conflict *mdns.ConflictError
-				inUse := errors.As(err, &conflict)
-				a.advMu.Lock()
-				if a.adv == adv {
-					if inUse {
-						adv.Stop()
-						a.adv = nil
-					}
-					a.reportAdvertiseError(err)
-				}
-				a.advMu.Unlock()
-				if inUse {
-					misses = 0
-					continue
-				}
-			}
-			if err := adv.Resolves(); err == nil {
-				misses = 0
-				continue
-			} else {
-				a.logln("mDNS: hostname probe failed (" + err.Error() + ")")
-			}
-			misses++
-			if misses >= 2 {
-				misses = 0
-				a.logln("mDNS: " + adv.Name() + ".local stopped resolving - re-advertising.")
-				_ = a.restartAdvertise()
-			}
+			a.advWorkMu.Unlock()
 		}
+	}
+}
+
+func (a *App) queueAdvertise() {
+	a.advWorkMu.Lock()
+	defer a.advWorkMu.Unlock()
+	a.advGeneration++
+	if a.advCancel != nil {
+		a.advCancel()
+	}
+	if a.advWake == nil {
+		a.advWake = make(chan struct{}, 1)
+	}
+	select {
+	case a.advWake <- struct{}{}:
+	default:
 	}
 }

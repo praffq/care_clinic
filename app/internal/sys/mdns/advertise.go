@@ -19,6 +19,10 @@ type Advertiser struct {
 }
 
 func Advertise(name string, logf func(string)) (*Advertiser, error) {
+	return AdvertiseContext(context.Background(), name, logf)
+}
+
+func AdvertiseContext(ctx context.Context, name string, logf func(string)) (*Advertiser, error) {
 	name = Label(name)
 	if err := ValidateLabel(name); err != nil {
 		return nil, err
@@ -27,11 +31,15 @@ func Advertise(name string, logf func(string)) (*Advertiser, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkAvailable(name+".local.", links, probeConflict); err != nil {
+	if err := checkAvailableContext(ctx, name+".local.", links, probeConflict); err != nil {
 		return nil, err
 	}
 	a := &Advertiser{name: name, links: links}
 	for _, link := range links {
+		if err := ctx.Err(); err != nil {
+			a.Stop()
+			return nil, err
+		}
 		server, err := newResponder(name, link, logf)
 		if err != nil {
 			a.Stop()
@@ -69,10 +77,18 @@ func (a *Advertiser) Resolves() error {
 }
 
 func (a *Advertiser) resolves(query func(context.Context, string, lanInterface) error) error {
+	return a.resolvesContext(context.Background(), query)
+}
+
+func (a *Advertiser) ResolvesContext(ctx context.Context) error {
+	return a.resolvesContext(ctx, probeHostname)
+}
+
+func (a *Advertiser) resolvesContext(parent context.Context, query func(context.Context, string, lanInterface) error) error {
 	if a == nil || a.stopped() {
 		return fmt.Errorf("name responder is stopped")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	results := make(chan error, len(a.links))
 	for _, link := range a.links {

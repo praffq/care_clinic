@@ -28,7 +28,7 @@ The application coordinates existing tools rather than replacing them:
 | Cache and task broker | Redis. |
 | Uploaded files | Silo, retaining the Compose service name `minio`. |
 | HTTPS and reverse proxy | Caddy with the Coraza WAF module. |
-| Local name discovery | An mDNS advertiser in the server desktop process. |
+| Local name discovery | Host-side mDNS in the persistent engine helper on macOS/Windows; server desktop fallback on Linux/older helpers. |
 | Scheduled backups | A shell program in the backup container, not a Go timer. |
 
 Initial provisioning and image construction need external downloads. An already

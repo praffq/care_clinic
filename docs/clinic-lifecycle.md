@@ -237,10 +237,12 @@ edits from overlapping a job; an external file editor is outside that gate.
 
 The outer App flow validates input, persists initial configuration with setup
 still incomplete, installs the kit, and checks port availability. It then
-calls `Setup`, starts advertising, and calls
+calls `Setup`, refreshes advertising, and calls
 `Start`. Only after the entire callback succeeds does the App persist
 `SetupDone=true`. See [configuration and settings](configuration-and-settings.md)
-for that boundary.
+for that boundary. A capable macOS/Windows helper waits for successful setup
+completion and installed-clinic availability before advertising; the
+Linux/older-helper window path retains the earlier timing.
 
 The redesigned wizard calls `ValidateSetup` for Review and `RunSetup` repeats
 preflight under the exclusive native lock. A rejected request stays on Review;
@@ -760,8 +762,9 @@ engine's default `Desktop/care-db-backups` location.
 Client onboarding is native CARE Clinic functionality, described in
 [native integrations](native-integrations.md#native-client-setup-and-trust-on-first-use).
 The public root bootstrap is not the CA's private key. Existing unused setup
-files need not be deleted from installed kits: current routes and mounts no
-longer expose them.
+files are no longer exposed by current routes and mounts. Kit refresh removes
+them only if a prior managed-kit inventory proves they were shipped and they
+are absent from the current embedded kit; older untracked files are retained.
 
 The backup Dockerfile and backup script are described in
 [backups and restore](backups-and-restore.md).

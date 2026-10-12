@@ -82,13 +82,13 @@ All of these files belong to Go `package main`, even though they are organized b
 | Source | Responsibility | Main guide |
 | --- | --- | --- |
 | [`main.go`](../app/main.go) | Embedded filesystems, log initialization, `wails.Run`, callbacks/binding, fatal startup handling. | [Wails application](wails-application.md). |
-| [`app.go`](../app/app.go) | `App` state, construction, log/event delivery, mDNS advertiser ownership and watcher. | [Architecture](architecture.md), [Wails application](wails-application.md). |
+| [`app.go`](../app/app.go) | `App` state, construction, log/event delivery, persistent mDNS ownership handoff and fallback watcher. | [Architecture](architecture.md), [Wails application](wails-application.md). |
 | [`app_lifecycle.go`](../app/app_lifecycle.go) | Startup refresh, shutdown, second launch, close confirmation, bounded stop-for-quit. | [Wails application](wails-application.md). |
 | [`app_confirmation.go`](../app/app_confirmation.go) | ID-scoped permission requests, independent response channel, native fallback and shutdown cancellation. | [Confirmation protocol](wails-application.md#in-window-permission-confirmations). |
 | [`app_quit.go`](../app/app_quit.go) | Registered running-job quit requests and guarded responses. | [Closing the application](wails-application.md#closing-the-application). |
 | [`app_config.go`](../app/app_config.go) | `Config`, OS configuration path, strict initial loading, cached/atomic saves and forgetting state. | [Configuration](configuration-and-settings.md). |
 | [`app_client.go`](../app/app_client.go) | Native client connection, pinned trust/ownership journal, TLS verification, and exact-certificate uninstall with role reset after success. | [Native integrations](native-integrations.md), [Wails application](wails-application.md). |
-| [`app_installdir.go`](../app/app_installdir.go) | Fixed runtime kit path, unpacking/preservation rules, creation of a configured `Clinic`. | [Configuration](configuration-and-settings.md). |
+| [`app_installdir.go`](../app/app_installdir.go) | Fixed runtime kit path, atomic per-file refresh, managed-file inventory and safe obsolete-file cleanup, creation of a configured `Clinic`. | [Configuration](configuration-and-settings.md). |
 | [`app_actions.go`](../app/app_actions.go) | Read/write job gates, async runner, lifecycle/admin guards, setup, action dispatch, failed-install cleanup. | [Wails application](wails-application.md), [clinic lifecycle](clinic-lifecycle.md). |
 | [`app_setup_check.go`](../app/app_setup_check.go) | Review preflight and the same checks repeated under RunSetup's exclusive lock. | [Setup configuration order](configuration-and-settings.md#setup-configuration-order). |
 | [`app_recovery.go`](../app/app_recovery.go) | Recovery-key/code export and verification, replacement, CARE Clinic password changes and offline reset. | [Recovery materials](backups-and-restore.md#3-backup-recovery-file-and-care-clinic-admin-recovery). |
@@ -195,10 +195,10 @@ app/internal/
 |-- prereq/
 |   |-- check.go
 |   |-- engine.go
-|   |-- provision.go
-|   |-- rancher_remove.go
-|   `-- vmnet.go
+|   `-- provision.go
 |-- vm/
+|   |-- advertisement.go
+|   |-- advertisement_test.go
 |   |-- host.go
 |   |-- driver_darwin.go
 |   |-- driver_windows.go
@@ -241,6 +241,8 @@ app/internal/
     |-- mdns/
     |   |-- advertise.go
     |   |-- advertise_test.go
+    |   |-- manager.go
+    |   |-- manager_test.go
     |   |-- hostname_network_test.go
     |   |-- probe.go
     |   `-- responder.go
@@ -270,7 +272,7 @@ app/internal/
 | [`internal/health`](../app/internal/health) | HTTP readiness and port availability. | [Native integrations](native-integrations.md). |
 | [`internal/plugins`](../app/internal/plugins) | Active plugin list (`plugins.json`), inactive draft (`plugins-pending.json`), catalog, validation, derived `ADDITIONAL_PLUGS`, and frontend `PlugConfig` rows. | [Configuration](plugins.md). |
 | [`internal/lines`](../app/internal/lines) | Release-line manifest parsing, validation, cache, line ordering and app-version compatibility. | [Images and release lines](images-and-lines.md). |
-| [`internal/prereq`](../app/internal/prereq) | Docker readiness, CARE engine provisioning, Windows Hypervisor Platform setup, native Linux Docker setup, and optional legacy Rancher Desktop removal. | [Native integrations](native-integrations.md), [CARE engine](vm.md). |
+| [`internal/prereq`](../app/internal/prereq) | Docker readiness, CARE engine provisioning, Windows Hypervisor Platform setup, and native Linux Docker setup. | [Native integrations](native-integrations.md), [CARE engine](vm.md). |
 | [`internal/vm`](../app/internal/vm) | CARE engine host lifecycle, transactional engine/tool updates with rollback ([`update.go`](../app/internal/vm/update.go)), macOS and Windows VM drivers, Docker client configuration, folder sharing/synchronization, networking, and helper process. | [CARE engine](vm.md). |
 | [`internal/release`](../app/internal/release) | Validated desktop release pins, line selection and image identity. | [Development and release](development-and-release.md#release-identity-and-pins). |
 | [`internal/residue`](../app/internal/residue) | Owned-resource inventory, unknown-state errors, old kit location. | [Cleanup](cleanup-and-uninstall.md). |
@@ -284,7 +286,7 @@ app/internal/
 | [`sys/elevate`](../app/internal/sys/elevate) | Interpreter quoting and batching privileged native steps. | [Native integrations](native-integrations.md). |
 | [`sys/hosts`](../app/internal/sys/hosts) | Owned loopback hostname entries and verified removal. | [Native integrations](native-integrations.md). |
 | [`sys/trust`](../app/internal/sys/trust) | Root-CA trust, removal, and native client certificate bootstrap. | [Native integrations](native-integrations.md). |
-| [`sys/mdns`](../app/internal/sys/mdns) | LAN address selection, name advertisement, response probing. | [Native integrations](native-integrations.md). |
+| [`sys/mdns`](../app/internal/sys/mdns) | LAN address selection, name advertisement, response probing and shared manager lifecycle/tests. | [Native integrations](native-integrations.md). |
 | [`sys/netfix`](../app/internal/sys/netfix) | Windows network profiles and application-owned firewall rules. | [Native integrations](native-integrations.md). |
 | [`sys/autostart`](../app/internal/sys/autostart) | Platform login-startup records. | [Native integrations](native-integrations.md). |
 | [`sys/reboot`](../app/internal/sys/reboot) | Restart requirement and restart request. | [Native integrations](native-integrations.md). |

@@ -45,7 +45,6 @@ type Fixtures = {
   recoveryFailures: number;
   recoveryRetryAfter: number;
   canRemoveApp: boolean;
-  legacyRancherInstalled: boolean;
   appRemoved: boolean;
   setupStarted: boolean;
 };
@@ -163,7 +162,6 @@ export function installTestHost() {
     recoveryFailures: 0,
     recoveryRetryAfter: 0,
     canRemoveApp: new URLSearchParams(location.search).get("removable") === "1",
-    legacyRancherInstalled: true,
     appRemoved: false,
     setupStarted: false,
   };
@@ -371,6 +369,10 @@ export function installTestHost() {
       requireServer();
       return fixtures.recoveryCodes.filter(Boolean).length;
     },
+    GetAdminRecoveryCodesPath: async () => {
+      requireServer();
+      return fixtures.recovery.codes_path;
+    },
     BackupDirSpace: async (dir: string): Promise<BackupSpace> => {
       requireServer();
       return {
@@ -559,8 +561,7 @@ export function installTestHost() {
       fixtures.recoveryRetryAfter = 0;
       emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
     },
-    LegacyRancherInstalled: async () => fixtures.legacyRancherInstalled,
-    RunUninstall: async (_images: boolean, _backups: boolean, _legacyRancher: boolean, password: string) => {
+    RunUninstall: async (_images: boolean, _backups: boolean, password: string) => {
       requireServer();
       if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");
       acceptJob("uninstall");

@@ -311,6 +311,14 @@ including clinic name, issue time and usage instructions. The application
 stores only SHA-256 hashes of the normalised codes; spaces, hyphens and case
 do not affect entry. Plaintext codes are never returned through the UI bridge.
 
+The forgot-password form shows the last saved recovery-sheet path, when recorded,
+with a reminder that the file may since have been moved, printed or deleted.
+It refreshes that metadata through the server-only `GetAdminRecoveryCodesPath`
+query on opening, without reading the sheet or PEM. It does not display codes or setup-oriented
+missing-file warnings, and does not block reset if the location lookup fails.
+Lookup failures are logged and shown as a nonblocking hint. Ordinary password
+change does not request this hint; the backup-PEM enrollment warning is unchanged.
+
 Advanced provides **Forgot CARE Clinic password?**, **Change CARE Clinic password** and
 **Replace recovery codes**. A reset atomically changes the bcrypt password hash
 and clears the used code hash. Other codes remain usable. Failed writes leave

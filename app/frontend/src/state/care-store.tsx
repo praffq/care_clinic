@@ -144,7 +144,6 @@ type CareStore = {
   uninstall: (
     removeImages: boolean,
     removeBackups: boolean,
-    removeLegacyRancher: boolean,
     adminPassword: string,
     removeApp?: boolean,
   ) => Promise<boolean>;
@@ -567,7 +566,6 @@ export function CareProvider({ children }: { children: ReactNode }) {
     async (
       removeImages: boolean,
       removeBackups: boolean,
-      removeLegacyRancher: boolean,
       adminPassword: string,
       removeApp = false,
     ) => {
@@ -583,10 +581,10 @@ export function CareProvider({ children }: { children: ReactNode }) {
       lastErrorRef.current = "";
       setOperationError(null);
       log(
-        `\n$ care uninstall${removeImages ? " --images" : ""}${removeBackups ? " --backups" : ""}${removeLegacyRancher ? " --legacy-rancher" : ""} --yes`,
+        `\n$ care uninstall${removeImages ? " --images" : ""}${removeBackups ? " --backups" : ""} --yes`,
       );
       try {
-        await bridge.RunUninstall(removeImages, removeBackups, removeLegacyRancher, adminPassword);
+        await bridge.RunUninstall(removeImages, removeBackups, adminPassword);
         return true;
       } catch (e) {
         log(`error: ${errorText(e)}`);
@@ -837,6 +835,14 @@ export function CareProvider({ children }: { children: ReactNode }) {
           const error = describeOperationError(activeActionRef.current || "operation", detail);
           setOperationError({ ...error, title });
         }
+      }),
+      onCareEvent("care-network-status", (title: string, detail: string) => {
+        if (!title) {
+          toast.dismiss("clinic-network");
+          return;
+        }
+        logFromHost(`Clinic network: ${detail}`);
+        toast.error(title, { id: "clinic-network", description: detail });
       }),
       onCareEvent("setup-failed", (failure: SetupFailure) => {
         if (activeActionRef.current !== "setup" || setupEndedRef.current) return;

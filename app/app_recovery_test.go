@@ -109,6 +109,30 @@ func TestAdminRecoveryCodeCountTracksDurableChanges(t *testing.T) {
 	}
 }
 
+func TestAdminRecoveryCodesPathIsMetadataOnly(t *testing.T) {
+	a := roleApp(t)
+	locked := filepath.Join(t.TempDir(), "unreadable-sheet.txt")
+	if err := os.WriteFile(locked, []byte("must not be returned or parsed"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"", filepath.Join(t.TempDir(), "missing-sheet.txt"), locked, t.TempDir()} {
+		a.cfg = Config{
+			Role: roleServer, SetupDone: true, AdminRecoveryPath: path,
+			BackupCertificate: "not a certificate", BackupRecoveryPath: filepath.Join(t.TempDir(), "missing.pem"),
+		}
+		got, err := a.GetAdminRecoveryCodesPath()
+		if err != nil || got != path {
+			t.Fatalf("metadata lookup inspected recovery files: got %q, want %q, error %v", got, path, err)
+		}
+	}
+	for _, role := range []string{"", roleClient} {
+		a.cfg = Config{Role: role, AdminRecoveryPath: locked}
+		if path, err := a.GetAdminRecoveryCodesPath(); err == nil || path != "" {
+			t.Fatal("non-server exposed recovery metadata")
+		}
+	}
+}
+
 func TestAdminRecoveryFailuresAndAtomicWrite(t *testing.T) {
 	a, codes := recoveryApp(t)
 	before := a.loadConfig()

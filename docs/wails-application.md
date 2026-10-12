@@ -80,11 +80,27 @@ or `plugin_recovery_pending` is true. Overview also offers **Recover clinic**.
 
 ### Advertiser lifetime
 
-`App` owns the mDNS advertiser. Its watcher wakes every 30 seconds, restarts advertising when LAN interfaces/addresses change or enumeration fails, and retries after two consecutive direct-hostname probe failures. Live foreign-name checks run before advertising and on watcher ticks. A conflict withdraws advertising and shows an administrator warning; retries cannot advertise while the conflict is detected. Probe and network errors are logged. It can also recreate an absent advertiser. No name is advertised merely by choosing it in the setup wizard, when the name is empty, during removal, or after application shutdown has begun.
+On macOS/Windows, a capable `--vm-host` owns host-side mDNS for installed,
+available server clinics. `App` synchronizes settings, stops its responder
+before granting ownership and requests verification through one cancellable,
+coalescing worker. Job completion queues work without waiting for health or name
+probes. Stop/removal/name changes cancel stale work and synchronously withdraw;
+the worker re-reads the latest settings and polls every 30 seconds for UI errors.
+The helper monitors every 15 seconds using the
+shared `mdns.Manager`, withdrawing on conflicts, topology loss or two consecutive
+response failures and retrying when conditions recover. Linux and older running
+helpers retain the window-owned manager and 30-second watcher. An unavailable
+helper does not cause a competing window responder. No name is advertised merely
+by choosing it in setup, during removal or by a staff client. See
+[persistent clinic-name discovery](vm.md#persistent-clinic-name-discovery) for
+availability gates, compatibility, Windows repair and status semantics.
 
 `shutdown()` cancels pending permission confirmations, closes the watcher's stop
-channel and stops the advertiser. Stopping the desktop's advertisement is
-distinct from stopping Docker containers.
+channel and stops only a window-owned advertiser. A capable helper's advertisement
+and persisted desired state survive. Stopping the clinic or VM withdraws helper
+advertising. The quit dialog refreshes helper verification and removes the
+LAN-name warning only for a confirmed persistent owner; Linux, older helpers
+and unconfirmed/error states retain the warning.
 
 ### Closing the application
 
@@ -261,8 +277,8 @@ Execution abbreviations: **query** means no `run`/`withJob` helper, **read** mea
 | Method | Result | Execution and contract |
 | --- | --- | --- |
 | `GetState()` | `AppState` | Query. Returns embedded version, role and client URL. Only servers inspect Docker/recovery state and expose server setup/name/status. Restore-journal errors propagate; plugin-journal errors are logged and keep `plugin_recovery_pending=true` so recovery controls remain available. Never exposes the pinned PEM or certificate ownership flag. |
-| `DockerStatus()` | `DockerStatus` | Query. Checks actual Docker/Compose usability. |
-| `MDNSStatus(name)` | `NameStatus` | Query. Checks the requested name for live foreign mDNS claims without using the system resolver. Installed clinics must also have a responding advertiser. Offline/isolated peers cannot be ruled out. |
+| `DockerStatus()` | `DockerStatus` | Query. Checks actual Docker/Compose usability. Concurrent window queries (including `GetState`) share the in-flight bounded check, never a cached completed result. Mutation readiness checks remain fresh. |
+| `MDNSStatus(name)` | `NameStatus` | Query. Setup/window fallback checks live foreign mDNS claims without the system resolver. Installed capable-helper clinics read its current availability, conflict and responder-probe status. Offline/isolated peers cannot be ruled out. |
 | `NetworkStatus()` | `NetworkStatus` | Query. Platform-specific networking inspection. |
 | `FixNetwork()` | `void` | Sync. Runs the native networking repair. |
 | `WindowsVMStatus()` | `WindowsVMStatus` | Query. Windows-only; reports whether Windows Hypervisor Platform is enabled. |
@@ -279,7 +295,6 @@ Execution abbreviations: **query** means no `run`/`withJob` helper, **read** mea
 | `StorageStatus()` | `StorageReport` | Query. Returns the cached storage report or performs the first check. |
 | `RecheckStorage()` | `StorageReport` | Query. Refreshes drive/backup measurements, updates the cache and emits `care-storage`. |
 | `BackupDirSpace(dir)` | `BackupSpace` | Query. Assesses the selected parent plus `care-db-backups`, or the effective default; an unmeasurable destination has an unknown level and explanatory message. |
-| `LegacyRancherInstalled()` | `boolean` | Query. Reports whether optional removal of a Rancher Desktop left by an older CARE Clinic is applicable. It does not remove it. |
 
 #### What the wizard rows owe the operator
 
@@ -363,13 +378,14 @@ to warn that the computer will ask for permission.
 | --- | --- | --- |
 | `ValidatePassword(pw)` | `string` | Query. Empty string means valid; otherwise a policy message. |
 | `ValidateDomain(name)` | `string` | Query. Empty string means a valid clinic label. |
-| `ValidateBackupDir(dir)` | `string` | Query-like validation with filesystem inspection and a temporary write probe. Empty input selects the default destination for validation. |
+| `ValidateBackupDir(dir)` | `string` | Query-like validation with filesystem inspection and a temporary write probe. Rejects destinations in installation, settings or log directories, including symlink aliases, and keeps the private recovery file outside the backup destination. Empty input selects the default destination for validation. |
 | `SetMDNSName(name)` | `void` | Sync. Pre-setup only; rejects installed or removing state and saves the normalized `.local` name. The uninstalled wizard does not advertise it. |
 | `VerifyAdminPassword(pw)` | `boolean` | Query. Compares with the saved desktop bcrypt hash. |
 | `ValidateSetup(mdnsName, adminPassword, backupDir)` | `SetupIssue[]` | Read. Rechecks applicable computer requirements, address availability, backup location, physical recovery materials and password. Returns actionable step IDs/messages for Review. |
 | `RunSetup(mdnsName, adminPassword, backupDir)` | `void` | Validates under the exclusive job lock before accepting the job. Preflight rejection stays on Review; only an accepted installation enters Installing. The worker retains its own lifecycle/recovery/address guards. Advertising rechecks conflicts after setup. |
 | `RetrySetup()` | `void` | Job. Retries the original in-memory setup attempt without cleanup, new credentials or replacement settings. Requires the same configuration and available original recovery files/backup location; rejects installed/removing state. Available only in the original Desktop process. |
 | `GetSetupRecoveryStatus()` | `SetupRecoveryStatus` | Reports saved/verified flags, paths and missing/unreadable/mismatching files, never key material or hashes. The exported sheet must contain all six distinct saved codes; symlinks/non-regular/oversized sheets are rejected. |
+| `GetAdminRecoveryCodesPath()` | `string` | Server-only metadata query for the forgot-password hint. Returns the last saved sheet path without accessing the sheet or PEM, regardless of whether the saved file still exists. |
 | `SaveSetupBackupRecovery(backupDir)` / `VerifySetupBackupRecovery(backupDir)` | `boolean` | Sync. Native export/reselection; false means cancellation. Export is locked after installation starts. |
 | `ReplaceSetupBackupRecovery(backupDir)` | `boolean` | Explicitly generates a replacement for a lost pre-install private key. Requires a new export and verification; never silently replaces an existing key. |
 | `OpenSetupRecoveryCodes()` | `void` | Pre-install only. Verifies the saved sheet and opens it in the OS-associated application for printing; it does not claim to print directly. |
@@ -380,7 +396,7 @@ to warn that the computer will ask for permission.
 | `ResetAdminPassword(code, newPassword)` | `void` | Sync. Rate-limited offline recovery; atomically consumes one code and changes the CARE Clinic password. No CARE web reset. |
 | `CleanupFailedInstall()` | `void` | Sync. Only for incomplete setup. Keeps the clinic address and existing backups, but resets backup-folder/password/recovery configuration. The UI clears those choices only after cleanup succeeds. New setup needs fresh recovery material; old backup keys may still be needed for earlier archives. |
 | `ClinicAction(action, adminPassword)` | `void` | Job. Allow-listed action dispatch; details below. |
-| `RunUninstall(removeImages, removeBackups, removeLegacyRancher, adminPassword)` | `void` | Job. Requires local admin authorization; persists removal state before destructive work. Stops the CARE engine on macOS/Windows; `removeImages` also removes its state folder. The optional legacy removal flag applies only to Rancher Desktop left by an older CARE Clinic. The UI waits for both `uninstalled` and successful `care-done` before returning to Start or requesting desktop-app removal. |
+| `RunUninstall(removeImages, removeBackups, adminPassword)` | `void` | Job. Requires local admin authorization; persists removal state before destructive work. Stops the CARE engine on macOS/Windows; `removeImages` also removes its state folder. Unrelated Docker software is not uninstalled. The UI waits for both `uninstalled` and successful `care-done` before returning to Start or requesting desktop-app removal. |
 | `CareUpdateStatus()` | `ChannelStatus` | Query. The current line, running/staged commits, pending line, support dates, and newer compatible lines, using `line.json` and the cached manifest. |
 | `CheckCareUpdate()` | `void` | Returns at once and checks in the background: fetches the release-line manifest and downloads/prepares newer same-line images under `-next` tags; also reports newer compatible lines. Failure is logged and reported through `care-check.error`, never as "up to date". A check already in flight is joined rather than refused. |
 | `UpgradeCareLine(id)` | `void` | Job (`upgrade-line`). Stable installed server and ready Docker required; refuses an in-flight check. Stages both images of a newer compatible line, takes a pre-update backup, then applies/migrates. Returning to an older line requires restore. |
@@ -571,7 +587,8 @@ original text.
 | `care-log` | One string | A line already written by Go to the host log. Do not write it back to the host again. |
 | `prereq-download-progress` | `name`, `phase`, `done`, `total` | Installer download byte progress; phases are connecting, downloading, verifying, complete and failed. A zero total means unknown. |
 | `care-done` | Number `0` or `1`, followed by a job label for asynchronous jobs | An App job succeeded or failed. Not a detailed subprocess exit code. `app-update` ends the native job without treating an update failure as a clinic-installation failure; unresolved installer/restart handoff remains guarded by the update controller. |
-| `care-error` | A short title and the technical detail | A job failed, or mDNS gave up a contested clinic address. Replaces the native error dialog; the same detail is already in the log. |
+| `care-error` | A short title and the technical detail | A job failed. Replaces the native error dialog; the same detail is already in the log. |
+| `care-network-status` | A short title and technical detail, both empty on recovery | A deduplicated network-advertising notice, independent of the active job, its error and completion. Only confirmed conflicts use the address-in-use title. |
 | `setup-done` | `true` | Setup callback and persistence of `SetupDone` succeeded. Paired with matching job completion, opens Overview without a ready screen. |
 | `setup-failed` | `SetupFailure` | Sent before failed setup completion. Reports whether the current attempt can be retried without cleanup and whether the failed command reported a recent network/download interruption. Only the active setup consumes it; raw command diagnostics stay in the log. |
 | `uninstalled` | `true` | Normal uninstall completed its cleanup and local state removal. |

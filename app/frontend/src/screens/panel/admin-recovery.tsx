@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { usePasswordStrength } from "@/hooks/use-password-strength";
 import { bridge } from "@/lib/bridge";
+import { errorText } from "@/lib/format";
 import { useCare } from "@/state/care-store";
 import {
   AdvancedError, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
@@ -21,7 +22,7 @@ export function AdminPasswordForm({
   onCancel: () => void;
   onWorkingChange?: (working: boolean) => void;
 }) {
-  const { busy } = useCare();
+  const { busy, log } = useCare();
   const lock = useAdvancedLock();
   const id = useId();
   const live = useRef(true);
@@ -31,6 +32,8 @@ export function AdminPasswordForm({
   const [confirm, setConfirm] = useState("");
   const [working, setWorking] = useState(false);
   const [problem, setProblem] = useState<AdvancedProblem | null>(null);
+  const [recoveryPath, setRecoveryPath] = useState("");
+  const [locationFailed, setLocationFailed] = useState(false);
   const [retryAt, setRetryAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const strength = usePasswordStrength(password);
@@ -44,6 +47,21 @@ export function AdminPasswordForm({
     live.current = true;
     return () => { live.current = false; };
   }, []);
+  useEffect(() => {
+    let active = true;
+    setRecoveryPath("");
+    setLocationFailed(false);
+    if (recovering) {
+      void bridge.GetAdminRecoveryCodesPath().then((path) => {
+        if (active) setRecoveryPath(path);
+      }).catch((cause) => {
+        if (!active) return;
+        log(`recovery-sheet location: ${errorText(cause)}`);
+        setLocationFailed(true);
+      });
+    }
+    return () => { active = false; };
+  }, [recovering, log]);
   useEffect(() => {
     if (!retryAt) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -96,6 +114,13 @@ export function AdminPasswordForm({
   return <form className="advanced-admin-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <p>{recovering ? "Use one unused code from your latest sheet. " : ""}
       Your CARE web login and backup recovery file won't change.</p>
+    {recovering && recoveryPath ? <p>
+      Last saved recovery-sheet location: <span className="advanced-path">{recoveryPath}</span>
+      <br />You may have moved, printed, or deleted the file since saving it.
+    </p> : null}
+    {recovering && locationFailed ? <p className="advanced-field-hint" role="status">
+      The last saved recovery-sheet location couldn&apos;t be checked. You can still use an unused code from your latest sheet.
+    </p> : null}
     {recovering ? <AdvancedNotice title="Keep your off-device backup recovery PEM" tone="neutral">
       A code-based reset cannot unlock the local backup key encrypted with your forgotten password.
       Password-only backup key downloads will require re-enrollment from a surviving PEM in Backups.

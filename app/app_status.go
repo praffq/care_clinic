@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +17,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/netfix"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/reboot"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -53,20 +56,54 @@ func (a *App) GetState() (state AppState, err error) {
 		Platform:              runtime.GOOS,
 		SetupDone:             cfg.SetupDone && !cfg.Removing,
 		MDNSName:              cfg.MDNSName,
-		Docker:                prereq.DockerCheck(a.engine().Runner()),
+		Docker:                a.DockerStatus(),
 		RestorePending:        pending,
 		PluginRecoveryPending: pluginPending,
 	}, nil
 }
 
-func (a *App) DockerStatus() prereq.Status  { return prereq.DockerCheck(a.engine().Runner()) }
-func (a *App) LegacyRancherInstalled() bool { return prereq.LegacyRancherInstalled() }
-func (a *App) ClinicHealth() health.Health  { return health.Ping() }
+type dockerStatusCall struct {
+	done   chan struct{}
+	result prereq.Status
+}
+
+func (a *App) DockerStatus() prereq.Status {
+	return a.readDockerStatus(func() prereq.Status { return prereq.DockerCheck(a.engine().Runner()) })
+}
+
+// Share only in-flight queries; subsequent checks always inspect current readiness.
+func (a *App) readDockerStatus(check func() prereq.Status) prereq.Status {
+	a.dockerCheckMu.Lock()
+	if call := a.dockerCheck; call != nil {
+		a.dockerCheckMu.Unlock()
+		<-call.done
+		return call.result
+	}
+	call := &dockerStatusCall{done: make(chan struct{})}
+	a.dockerCheck = call
+	a.dockerCheckMu.Unlock()
+	call.result = check()
+	a.dockerCheckMu.Lock()
+	a.dockerCheck = nil
+	close(call.done)
+	a.dockerCheckMu.Unlock()
+	return call.result
+}
+
+func (a *App) ClinicHealth() health.Health { return health.Ping() }
 
 func (a *App) NetworkStatus() netfix.Status { return netfix.Check(a.engine().Runner()) }
 
 func (a *App) FixNetwork() error {
-	return a.withLabeledJob(jobPrereq, func() error { return netfix.Fix(a.engine().Log) })
+	return a.withLabeledJob(jobPrereq, func() error {
+		if err := netfix.Fix(a.engine().Log); err != nil {
+			return err
+		}
+		if err := a.restartAdvertise(); err != nil {
+			return fmt.Errorf("network repair completed, but clinic advertising could not be verified: %w", err)
+		}
+		return nil
+	})
 }
 
 func (a *App) WindowsVMStatus() prereq.WindowsVMStatus { return prereq.WindowsVMCheck() }
@@ -153,16 +190,16 @@ func (a *App) ValidateBackupDir(dir string) string {
 		}
 		target = filepath.Join(dir, "care-db-backups")
 	}
-	for _, protected := range []string{a.installDir(), a.log.Folder()} {
+	for _, protected := range []string{a.installDir(), filepath.Dir(a.configPath()), a.log.Folder()} {
 		if protected != "" {
 			if err := backup.CheckLocation(target, protected); err != nil {
 				return err.Error()
 			}
-			if recoveryPath := a.loadConfig().BackupRecoveryPath; recoveryPath != "" {
-				if err := backup.CheckLocation(recoveryPath, target); err != nil {
-					return "Keep the backup recovery file separate from the backup folder. Choose another folder."
-				}
-			}
+		}
+	}
+	if recoveryPath := a.loadConfig().BackupRecoveryPath; recoveryPath != "" {
+		if err := backup.CheckLocation(recoveryPath, target); err != nil {
+			return "Keep the backup recovery file separate from the backup folder. Choose another folder."
 		}
 	}
 	e := a.engine()
@@ -188,19 +225,27 @@ func (a *App) ValidateBackupDir(dir string) string {
 	}
 	probe, err := os.CreateTemp(dir, ".care-write-test-*")
 	if err != nil {
-		switch {
-		case errors.Is(err, syscall.EROFS):
-			return "That drive is read-only, so backups can't be written to it. Disk images and USB drives formatted for Windows (NTFS) are read-only on this Mac. Choose a different folder."
-		case errors.Is(err, os.ErrPermission):
-			return "This computer isn't allowed to write to that folder. Choose a different folder."
-		default:
-			return "Couldn't write to that folder: " + err.Error()
-		}
+		return backupWriteProblem(err, runtime.GOOS)
 	}
 	name := probe.Name()
 	_ = probe.Close()
 	_ = os.Remove(name)
 	return a.backupSpaceProblem(target)
+}
+
+func backupWriteProblem(err error, goos string) string {
+	switch {
+	case errors.Is(err, syscall.EROFS):
+		hint := ""
+		if goos == "darwin" {
+			hint = " Disk images and USB drives formatted for Windows (NTFS) can be read-only on this Mac."
+		}
+		return "That drive is read-only, so backups can't be written to it." + hint + " Choose a different folder."
+	case errors.Is(err, os.ErrPermission):
+		return "This computer isn't allowed to write to that folder. Choose a different folder."
+	default:
+		return "Couldn't write to that folder: " + err.Error()
+	}
 }
 
 func (a *App) SetMDNSName(name string) (err error) {
@@ -229,22 +274,53 @@ func (a *App) MDNSStatus(name string) mdns.NameStatus {
 	if name == "" {
 		return mdns.NameStatus{OK: false, Message: "No clinic address chosen yet"}
 	}
+	if err := mdns.ValidateLabel(name); err != nil {
+		return mdns.NameStatus{Message: err.Error()}
+	}
+	cfg := a.loadConfig()
+	if vm.Supported() && cfg.Role == roleServer && cfg.SetupDone {
+		s := vm.Status(context.Background())
+		if s.AdvertisementSupported {
+			return persistentNameStatus(name, s)
+		}
+	}
 	if err := mdns.CheckAvailable(name); err != nil {
 		return mdns.NameStatus{OK: false, Message: err.Error()}
 	}
 	name = mdns.Label(name) + ".local"
-	cfg := a.loadConfig()
 	if !cfg.SetupDone && cfg.AdminPwHash == "" {
 		return mdns.NameStatus{OK: true, Message: "No other device answered for " + name}
 	}
 	a.advMu.Lock()
 	adv := a.adv
 	a.advMu.Unlock()
-	if adv == nil || adv.Name()+".local" != name {
+	if adv == nil {
 		return mdns.NameStatus{OK: false, Message: "Not advertising " + name}
 	}
-	if err := adv.Resolves(); err != nil {
-		return mdns.NameStatus{OK: false, Message: "Could not verify " + name + ": " + err.Error()}
+	s := adv.Status()
+	if s.Error != "" {
+		return mdns.NameStatus{Message: s.Error}
+	}
+	if s.Name+".local" != name || !s.Running || !s.Verified {
+		return mdns.NameStatus{Message: "Not yet verified advertising " + name}
 	}
 	return mdns.NameStatus{OK: true, Message: name + " is being advertised; no conflicting device answered"}
+}
+
+func persistentNameStatus(name string, s vm.HostStatus) mdns.NameStatus {
+	name = mdns.Label(name) + ".local"
+	ad := s.Advertisement
+	if ad.Error != "" {
+		return mdns.NameStatus{Message: ad.Error}
+	}
+	if !persistentNameReady(name, s) {
+		return mdns.NameStatus{Message: "The CARE engine is not yet advertising the available clinic at " + name}
+	}
+	return mdns.NameStatus{OK: true, Message: name + " is advertised by the persistent CARE engine helper"}
+}
+
+func persistentNameReady(name string, s vm.HostStatus) bool {
+	return s.Running && s.AdvertisementSupported && s.Advertisement.Running &&
+		s.Advertisement.Verified && s.Advertisement.Error == "" &&
+		s.Advertisement.Name == mdns.Label(name)
 }

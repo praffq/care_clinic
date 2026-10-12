@@ -72,6 +72,7 @@ declare global {
           SetMDNSName(name: string): Promise<void>;
           VerifyAdminPassword(pw: string): Promise<boolean>;
           GetSetupRecoveryStatus(): Promise<SetupRecoveryStatus>;
+          GetAdminRecoveryCodesPath(): Promise<string>;
           GetAdminRecoveryCodeCount(): Promise<number>;
           SaveSetupBackupRecovery(backupDir: string): Promise<boolean>;
           ReplaceSetupBackupRecovery(backupDir: string): Promise<boolean>;
@@ -106,8 +107,7 @@ declare global {
           InspectBackupFile(path: string): Promise<ImportedBackup>;
           RestoreFromFile(path: string, recoveryFile: string, adminPassword: string): Promise<void>;
           RestoreBackup(dbDump: string, filesArchive: string, recoveryFile: string, adminPassword: string): Promise<void>;
-          LegacyRancherInstalled(): Promise<boolean>;
-          RunUninstall(removeImages: boolean, removeBackups: boolean, removeLegacyRancher: boolean, adminPassword: string): Promise<void>;
+          RunUninstall(removeImages: boolean, removeBackups: boolean, adminPassword: string): Promise<void>;
           OpenURL(url: string): Promise<void>;
           ChooseFolder(title: string): Promise<string>;
           LogPath(): Promise<string>;

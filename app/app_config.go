@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 const appDirName = "care-clinic"
@@ -148,6 +149,14 @@ func (a *App) writeConfigLocked(cfg Config) error {
 		return fmt.Errorf("could not save settings: %w", err)
 	}
 	a.cfg = cfg
+	if vm.Supported() && (cfg.Role == roleServer || cfg.Role == "") {
+		if err := vm.SaveAdvertisement(vm.AdvertisementConfig{
+			Enabled: cfg.Role == roleServer && cfg.SetupDone && !cfg.Removing && cfg.MDNSName != "",
+			Name:    cfg.MDNSName, InstallDir: a.installDir(),
+		}); err != nil {
+			return fmt.Errorf("settings were saved, but persistent clinic advertising could not be synchronized: %w", err)
+		}
+	}
 	return nil
 }
 

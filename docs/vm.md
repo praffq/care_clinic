@@ -5,9 +5,9 @@
 CARE runs as Docker containers. Linux servers run Docker natively. macOS and
 Windows can't run Linux containers directly, so CARE Clinic ships its own small
 Linux virtual machine, the **CARE engine**. It runs only Docker and a tiny agent.
-Earlier versions used Rancher Desktop (and WSL 2 on Windows). The engine
-replaces both: nothing else to install, no separate app in the menu bar, and
-one version that CARE Clinic controls.
+Nothing else needs to be installed manually: there is no separate container
+desktop app in the menu bar, and CARE Clinic controls the engine version.
+Pre-VM installations and migrations are not supported.
 
 ```mermaid
 flowchart LR
@@ -36,8 +36,9 @@ flowchart LR
   the same executable). The helper boots the VM, waits for Docker inside it,
   and exposes it to the computer. Quitting a running clinic offers **Leave
   running** or **Stop**. Stop stops containers and the VM; leaving it running
-  preserves them, but the app's mDNS advertisement stops, so other devices'
-  `.local` access may fail until the app reopens.
+  preserves them. A capable helper also keeps the host-side mDNS responder
+  running after the window quits. Linux and older helpers retain window-owned
+  advertising; the quit dialog warns when persistent advertising is unconfirmed.
 - **Run.** The app points every `docker` / `docker compose` call at the
   engine with `DOCKER_HOST`, `DOCKER_CONFIG` and a `PATH` that puts the
   engine's own CLI first (`vm.Env`). Nothing reads the user's Docker contexts.
@@ -51,6 +52,59 @@ flowchart LR
   restore or plugin rollback takes priority and skips this automatic upgrade
   until recovery completes. The data disk (images, volumes, clinic data) is
   kept. The update is one transaction; see [Engine update rollback](#engine-update-rollback).
+
+### Persistent clinic-name discovery
+
+The host helper, not the Linux guest, advertises an installed server's `.local`
+name. [`advertisement.go`](../app/internal/vm/advertisement.go) atomically saves
+the desired name, install directory, enabled state and ownership grant in private
+`StateDir()/advertisement.json`. Settings changes and removal synchronize this
+record; stopping containers withdraws advertising without forgetting the name.
+Staff clients never enable it.
+
+The window stops its responder **before** granting a capable helper ownership,
+then asks `POST /advertisement` to reload and verify it. Generic settings writes
+preserve that grant. An older running helper retains window ownership; an
+unreachable helper does not trigger a competing window responder. Capability
+and current responder/probe/error/conflict status are returned by `/status`.
+
+The helper requires the installed compose file, Docker readiness, running
+`caddy`, `backend` and `frontend` services belonging to the installed
+`care-clinic` project, and HTTP 200 from the clinic's loopback HTTPS `/ping/`.
+This is an availability check, not proof of trusted TLS, full clinical health
+or remote LAN reachability. Windows also checks existing `netfix` profile and
+port rules; failures report repair details to logs/status, and the app's
+**Fix network** action performs the existing elevated repair.
+
+Helper housekeeping checks availability, interface changes, foreign-name
+conflicts and direct hostname responses every 15 seconds. App jobs queue one
+cancellable, coalescing reconciliation worker, which re-reads the latest settings;
+slow health and name probes do not delay job completion. Stop, removal and name
+changes synchronously cancel probing and withdraw the responder through
+`POST /advertisement/withdraw`, before background verification can resume.
+External container changes can take until the next poll. Conflicts withdraw the responder;
+two consecutive response misses also withdraw it before retry. VM stop and helper
+exit withdraw it immediately. Helper logs persist, and reopening reads current
+status. A quit-time refresh must confirm the matching name and successful probe
+before the leave-running warning is removed.
+
+Networking notices use the separate `care-network-status` channel, deduplicated
+by the window and shown independently from clinic-job errors. A confirmed name
+conflict has a conflict-specific title; helper, ownership and probe failures have
+a generic advertising title. Recovery clears the notice without changing a job's
+result. Setup skips helper reconciliation before clinic installation; native
+Linux retains its deliberate pre-start advertising and preflight conflict check.
+The older-helper capability check concerns a still-running **VM-era** desktop
+executable after an app update, not a pre-VM installation. Restarting that helper
+is necessary to load the new host-side advertising API; replacing the guest image
+alone cannot add it.
+
+Engine update/rollback stops the old helper and withdraws its responder; the
+replacement reuses the persisted desired state and grant, advertising only when
+CARE is available again. A pre-capability helper still needs restarting from a
+new desktop executable to gain persistence: upgrading the guest alone is not
+enough. These paths are covered by isolated tests; real macOS/Windows LAN and
+firewall validation remains necessary.
 
 ### Engine update rollback
 
@@ -146,25 +200,13 @@ CARE with "remove images" deletes the folder.
   Intel VT-x / AMD-V (sometimes called "SVM") in the computer's BIOS/UEFI.
 - **The clinic page doesn't open.** Another program may be using port 80 or
   443 (`engine-host.log` says `port 80: address already in use`). Stop it (common
-  culprits: IIS, Skype, another web server, an old Rancher Desktop) and restart
+  culprits: IIS, Skype, another web server) and restart
   the engine from the app.
 - **Windows firewall prompt.** The first start may ask to allow QEMU. The
   clinic needs it allowed on private networks so other computers can reach it.
 - **Start over.** Quit CARE Clinic, delete the engine state folder and open
   the app again. The setup screen reinstalls the engine. This deletes all
   Docker data, so take a backup first.
-
-## Moving from Rancher Desktop
-
-Earlier CARE Clinic versions kept clinic data in Rancher Desktop's Docker. The
-engine starts with an empty disk, so:
-
-1. On the old version, take a backup (Backups tab).
-2. Install the new version and let it set up the CARE engine.
-3. Restore the backup.
-4. Optionally remove Rancher Desktop: Advanced → Uninstall offers "Also remove
-   Rancher Desktop left by an older CARE Clinic", or uninstall it yourself if
-   nothing else uses it.
 
 ## Building the engine
 
