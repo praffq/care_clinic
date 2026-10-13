@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,8 +22,10 @@ type api struct {
 	docker  string
 	started time.Time
 	// root confines the file API; "/" in the guest, a temp dir in tests.
-	root   string
-	client *http.Client
+	root    string
+	client  *http.Client
+	uploads sync.Mutex
+	space   func(string) (uint64, uint64, error)
 }
 
 func newAPI(dockerSock string) *api {
@@ -33,7 +36,7 @@ func newAPI(dockerSock string) *api {
 		IdleConnTimeout: 30 * time.Second,
 	}
 	return &api{
-		docker: dockerSock, started: time.Now(), root: "/",
+		docker: dockerSock, started: time.Now(), root: "/", space: diskUsage,
 		client: &http.Client{Timeout: 3 * time.Second, Transport: transport},
 	}
 }
@@ -252,12 +255,22 @@ func (a *api) putFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	a.uploads.Lock()
+	defer a.uploads.Unlock()
+	if err := a.checkMirrorSpace(filepath.Dir(p), r.ContentLength); err != nil {
+		mirrorWriteError(w, err)
+		return
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".care-sync-*")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, err = io.Copy(tmp, r.Body)
+	var written int64
+	written, err = a.copyMirrorFile(tmp, r.Body)
+	if err == nil && r.ContentLength >= 0 && written != r.ContentLength {
+		err = fmt.Errorf("incomplete mirrored file: expected %d bytes, received %d", r.ContentLength, written)
+	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
@@ -275,7 +288,7 @@ func (a *api) putFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		_ = os.Remove(tmp.Name())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		mirrorWriteError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

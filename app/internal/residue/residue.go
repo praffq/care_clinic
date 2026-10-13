@@ -14,6 +14,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/netfix"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 type Trace struct {
@@ -44,8 +45,18 @@ func Scan(o Options) (Report, error) {
 // as far as installing an engine, has no Docker-side traces to find; that is an
 // empty result, not an inspection failure.
 func engineAvailable(run proc.Runner) (bool, error) {
+	absent, err := vm.ManagedEngineAbsent()
+	if err != nil {
+		return false, fmt.Errorf("could not inspect the CARE engine files: %w", err)
+	}
+	if absent {
+		return false, nil
+	}
 	if _, err := run.Capture("docker", "--version"); err != nil {
 		if missingCommand(err) {
+			if vm.Supported() {
+				return false, fmt.Errorf("CARE engine files remain but its Docker CLI is missing; recover the engine to inspect retained clinic volumes: %w", err)
+			}
 			return false, nil
 		}
 		return false, fmt.Errorf("could not inspect this computer's clinic containers; start Docker and try again: %w", err)
@@ -162,7 +173,9 @@ func systemTraces(run proc.Runner) ([]Trace, error) {
 	} else if firewall {
 		add("firewall", "Firewall rules", "the clinic's inbound rules are still in place")
 	}
-	if autostart.Enabled() {
+	if present, err := autostart.Present(); err != nil {
+		failed = append(failed, fmt.Errorf("could not inspect CARE's start-at-login entry: %w", err))
+	} else if present {
 		add("autostart", "Start at login", "CARE Clinic is set to open when this computer starts")
 	}
 	return traces, errors.Join(failed...)

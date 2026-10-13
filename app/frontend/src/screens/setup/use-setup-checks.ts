@@ -56,7 +56,7 @@ export function useSetupChecks() {
           }
           case "windows": {
             const [status, restart] = await Promise.all([bridge.WindowsVMStatus(), bridge.RestartPlan()]);
-            const ok = !status.applicable || (status.ok && !restart.needed);
+            const ok = !status.applicable || status.ok;
             update("windows", { value: { status, restart }, state: ok ? "ready" : "blocked", error: "" });
             return ok;
           }

@@ -86,6 +86,24 @@ func HasEntry(host string) bool {
 	return err == nil && hasEntry(string(data), host)
 }
 
+// MappingPresent includes non-loopback mappings, which can redirect a client
+// to the wrong clinic just as a loopback mapping can redirect it to itself.
+func MappingPresent(host string) (bool, error) {
+	data, err := os.ReadFile(path())
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("could not inspect the hosts mapping for %s: %w", host, err)
+	}
+	return hasMapping(string(data), host), nil
+}
+
+func hasMapping(data, host string) bool {
+	_, present := withoutHost(data, host)
+	return present
+}
+
 func addUnprivileged(host string) error {
 	if runtime.GOOS == "windows" {
 		return proc.Command("powershell", "-NoProfile", "-Command", addPS(host)).Run()

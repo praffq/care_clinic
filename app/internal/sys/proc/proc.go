@@ -3,6 +3,7 @@ package proc
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,13 +48,57 @@ func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 // DockerHook, when set, sees every docker command a Runner starts. It may
 // rewrite the arguments and returns a function to call once the command has
 // finished. Windows uses it to map bind-mount paths into the CARE engine and
-// keep the folders it mounts in step.
-var DockerHook func(args []string) ([]string, func())
+// keep the folders it mounts in step. A preparation error stops the command
+// from running and after is not called; a completion error is joined with the command's own result.
+var DockerHook func(args []string) (rewritten []string, after func() error, err error)
 
-func (r Runner) cmd(name string, args ...string) (*exec.Cmd, func()) {
-	after := func() {}
-	if name == "docker" && DockerHook != nil {
-		args, after = DockerHook(args)
+// HookError reports a DockerHook failure before or after a docker command.
+type HookError struct {
+	Stage string // "prepare" or "finish"
+	Err   error
+}
+
+func (e *HookError) Error() string {
+	if e.Stage == "prepare" {
+		return "prepare docker command: " + e.Err.Error()
+	}
+	return "finish docker command: " + e.Err.Error()
+}
+
+func (e *HookError) Unwrap() error { return e.Err }
+
+func noAfter() error { return nil }
+
+func dockerHook(name string, args []string) ([]string, func() error, error) {
+	if name != "docker" || DockerHook == nil {
+		return args, noAfter, nil
+	}
+	out, after, err := DockerHook(args)
+	if err != nil {
+		return nil, nil, &HookError{Stage: "prepare", Err: err}
+	}
+	if after == nil {
+		after = noAfter
+	}
+	return out, func() error {
+		if err := after(); err != nil {
+			return &HookError{Stage: "finish", Err: err}
+		}
+		return nil
+	}, nil
+}
+
+// joinAfter runs after and joins its failure into *err.
+func joinAfter(err *error, after func() error) {
+	if afterErr := after(); afterErr != nil {
+		*err = errors.Join(*err, afterErr)
+	}
+}
+
+func (r Runner) cmd(name string, args ...string) (*exec.Cmd, func() error, error) {
+	args, after, err := dockerHook(name, args)
+	if err != nil {
+		return nil, nil, err
 	}
 	c := Command(name, args...)
 	if r.Ctx != nil {
@@ -61,7 +106,7 @@ func (r Runner) cmd(name string, args ...string) (*exec.Cmd, func()) {
 	}
 	c.Dir = r.Dir
 	c.Env = r.Env
-	return c, after
+	return c, after, nil
 }
 
 func (r Runner) Run(name string, args ...string) error {
@@ -88,9 +133,12 @@ func (r Runner) RunLauncher(timeout time.Duration, name string, args ...string) 
 	return err
 }
 
-func (r Runner) RunWith(extraEnv []string, name string, args ...string) error {
-	cmd, after := r.cmd(name, args...)
-	defer after()
+func (r Runner) RunWith(extraEnv []string, name string, args ...string) (err error) {
+	cmd, after, err := r.cmd(name, args...)
+	if err != nil {
+		return err
+	}
+	defer joinAfter(&err, after)
 	if len(extraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), extraEnv...)
 	}
@@ -163,25 +211,28 @@ func (r Runner) RunWith(extraEnv []string, name string, args ...string) error {
 }
 
 // Capture returns trimmed stdout without streaming.
-func (r Runner) Capture(name string, args ...string) (string, error) {
-	cmd, after := r.cmd(name, args...)
-	defer after()
+func (r Runner) Capture(name string, args ...string) (_ string, err error) {
+	cmd, after, err := r.cmd(name, args...)
+	if err != nil {
+		return "", err
+	}
+	defer joinAfter(&err, after)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
 
-func (r Runner) CaptureIn(timeout time.Duration, extraEnv []string, name string, args ...string) (string, error) {
+func (r Runner) CaptureIn(timeout time.Duration, extraEnv []string, name string, args ...string) (_ string, err error) {
 	parent := r.Ctx
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	after := func() {}
-	if name == "docker" && DockerHook != nil {
-		args, after = DockerHook(args)
+	args, after, err := dockerHook(name, args)
+	if err != nil {
+		return "", err
 	}
-	defer after()
+	defer joinAfter(&err, after)
 	cmd := CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env = r.Dir, r.Env
 	if len(extraEnv) > 0 {
@@ -266,10 +317,19 @@ func loginShellPathWithTimeout(timeout time.Duration) string {
 	defer cancel()
 	out, err := CommandContext(ctx, shell, "-lc",
 		"printf '"+pathMarker+"%s\\n' \"$PATH\"").Output()
-	if err != nil {
+	return pathFromLoginOutput(out, err, ctx.Err())
+}
+
+// pathFromLoginOutput accepts a complete marker line when only exec.ErrWaitDelay
+// is reported: the shell exited normally but a background child kept the pipe.
+// Any other failure, or cancellation, yields no path.
+func pathFromLoginOutput(out []byte, err, ctxErr error) string {
+	if ctxErr != nil || (err != nil && !errors.Is(err, exec.ErrWaitDelay)) {
 		return ""
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	lines := strings.Split(string(out), "\n")
+	// The final element has no terminating newline, so the line is incomplete.
+	for _, line := range lines[:len(lines)-1] {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), pathMarker); ok {
 			return strings.TrimSpace(v)
 		}

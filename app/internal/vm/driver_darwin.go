@@ -22,7 +22,10 @@ type appleVM struct {
 	once   sync.Once
 }
 
-func boot(o bootOptions) (machine, error) {
+func boot(ctx context.Context, o bootOptions) (machine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m := o.manifest
 	bl, err := vz.NewLinuxBootLoader(m.path(m.Kernel),
 		vz.WithInitrd(m.path(m.Initrd)),
@@ -137,9 +140,11 @@ func boot(o bootOptions) (machine, error) {
 		return nil, err
 	}
 	a.vm = v
-	if err := v.Start(); err != nil {
-		a.closeFiles()
-		return nil, fmt.Errorf("%w (is the app signed with the virtualization entitlement?)", err)
+	if err := startBlocking(ctx, func() error { return v.Start() }, func() { _ = a.kill() }, a.closeFiles); err != nil {
+		if ctx.Err() == nil {
+			err = fmt.Errorf("%w (is the app signed with the virtualization entitlement?)", err)
+		}
+		return nil, err
 	}
 	go func() {
 		for s := range v.StateChangedNotify() {

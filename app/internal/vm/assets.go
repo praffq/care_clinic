@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -116,7 +117,25 @@ func pruneEngines(keep string) {
 	}
 }
 
-func installFile(src, dst string) error {
+func installFile(src, dst string) error { return installFileContext(context.Background(), src, dst) }
+
+// ctxReader makes a long copy stop between reads once ctx is cancelled.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+func installFileContext(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -130,11 +149,16 @@ func installFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, ctxReader{ctx, in}); err != nil {
 		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	_ = os.Remove(dst)
@@ -268,9 +292,14 @@ func writeEntry(p string, r io.Reader, mode os.FileMode) error {
 // copies the bundle's small formatted seed; the file is then grown sparsely
 // to the configured size and the guest grows the filesystem to match. It is
 // never shrunk or reformatted.
-func prepareDataDisk(m Manifest, sizeGB int) error {
+func prepareDataDisk(ctx context.Context, m Manifest, sizeGB int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if _, err := os.Stat(dataDisk()); errors.Is(err, os.ErrNotExist) {
-		if err := installFile(m.path("data.img"), dataDisk()); err != nil {
+		// The seed is copied beside the disk and renamed into place, so a
+		// cancelled copy never leaves a truncated data.img behind.
+		if err := installFileContext(ctx, m.path("data.img"), dataDisk()); err != nil {
 			return err
 		}
 		_ = os.Chmod(dataDisk(), 0o600)
@@ -280,6 +309,9 @@ func prepareDataDisk(m Manifest, sizeGB int) error {
 		return err
 	}
 	want := int64(sizeGB) << 30
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if info.Size() < want {
 		makeSparse(dataDisk())
 		return os.Truncate(dataDisk(), want)

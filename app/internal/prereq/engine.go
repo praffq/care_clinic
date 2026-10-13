@@ -365,7 +365,7 @@ func (pr *Provisioner) EnableWindowsVM() (string, error) {
 		return "", fmt.Errorf("could not turn on the Windows Hypervisor Platform; turn it on from "+
 			"Control Panel > Programs > Turn Windows features on or off, then try again: %w", err)
 	}
-	if vm.HypervisorReady() == nil && !reboot.Check().Needed {
+	if vm.HypervisorReady() == nil {
 		pr.logln("The Windows Hypervisor Platform is on.")
 		return "", nil
 	}

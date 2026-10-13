@@ -194,3 +194,25 @@ func TestLoginShellPathDoesNotWaitForInheritedOutputPipes(t *testing.T) {
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
+
+func TestPathFromLoginOutputWaitDelayAndFailures(t *testing.T) {
+	good := []byte("noise\n" + pathMarker + "/a:/b\n")
+	if got := pathFromLoginOutput(good, exec.ErrWaitDelay, nil); got != "/a:/b" {
+		t.Fatalf("wait-delay path = %q", got)
+	}
+	if got := pathFromLoginOutput(good, nil, nil); got != "/a:/b" {
+		t.Fatalf("path = %q", got)
+	}
+	if got := pathFromLoginOutput([]byte(pathMarker+"/a:/b"), exec.ErrWaitDelay, nil); got != "" {
+		t.Fatalf("incomplete marker accepted: %q", got)
+	}
+	if got := pathFromLoginOutput(good, &exec.ExitError{}, nil); got != "" {
+		t.Fatalf("genuine failure accepted: %q", got)
+	}
+	if got := pathFromLoginOutput(good, exec.ErrWaitDelay, context.Canceled); got != "" {
+		t.Fatalf("canceled accepted: %q", got)
+	}
+	if got := pathFromLoginOutput([]byte("none\n"), exec.ErrWaitDelay, nil); got != "" {
+		t.Fatalf("missing marker: %q", got)
+	}
+}

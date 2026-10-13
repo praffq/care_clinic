@@ -7,6 +7,11 @@ CERT=/keys/backup-cert.pem
 STATE_DIR=/state
 
 RET="${DB_BACKUP_RETENTION_PERIOD:-0}"
+RESERVE_KB="${BACKUP_MIN_FREE_KB:-0}"
+case "$RESERVE_KB" in ''|*[!0-9]*)
+	echo "[backup] ERROR: BACKUP_MIN_FREE_KB must be a non-negative number"
+	exit 1 ;;
+esac
 
 if [ "$RET" -eq 0 ]; then
 	RET_DESC="retention 0 - backups are kept forever"
@@ -105,6 +110,7 @@ need_kb() {
 	fi
 	need=$(( peak * 5 / 4 + 262144 ))
 	[ "$need" -ge 1048576 ] || need=1048576
+	need=$(( need + RESERVE_KB ))
 	echo "$need"
 }
 
@@ -118,6 +124,12 @@ check_space() {
 	need=$(need_kb "$1")
 	free=$(free_kb)
 	case "$free" in ''|*[!0-9]*)
+		if [ "$RESERVE_KB" -gt 0 ]; then
+			echo "[backup] ERROR: could not confirm free space on the shared CARE engine disk; no backup was started"
+			SPACE_NEED=$need
+			SPACE_FREE=0
+			return 1
+		fi
 		echo "[backup] WARNING: could not read free space for $BACKUP_DIR - trying anyway"
 		return 0 ;;
 	esac
@@ -135,7 +147,7 @@ disk_full() {
 	case "$free" in ''|*[!0-9]*) return 1 ;; esac
 	SPACE_FREE=$free
 	SPACE_NEED=${SPACE_NEED:-0}
-	[ "$free" -lt 262144 ] || [ "$free" -lt "$SPACE_NEED" ]
+	[ "$free" -lt $(( 262144 + RESERVE_KB )) ] || [ "$free" -lt "$SPACE_NEED" ]
 }
 
 remove_temp() {

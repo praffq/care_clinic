@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 )
@@ -46,6 +47,17 @@ func (g *guest) do(ctx context.Context, method, path string, body io.Reader, out
 	req, err := http.NewRequestWithContext(ctx, method, "http://agent"+path, body)
 	if err != nil {
 		return err
+	}
+	if file, ok := body.(*os.File); ok {
+		info, err := file.Stat()
+		if err != nil {
+			return fmt.Errorf("could not measure mirrored file: %w", err)
+		}
+		offset, err := file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return fmt.Errorf("could not measure mirrored file position: %w", err)
+		}
+		req.ContentLength = info.Size() - offset
 	}
 	resp, err := g.http.Do(req)
 	if err != nil {

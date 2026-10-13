@@ -51,6 +51,7 @@ type host struct {
 	logf                 func(string, ...any)
 	stopReq              chan struct{}
 	once                 sync.Once
+	background           sync.WaitGroup
 	sync                 *syncer
 	advertiseMu          sync.Mutex
 	advertiser           advertisementManager
@@ -102,8 +103,29 @@ func runHost(logf func(string, ...any)) (retErr error) {
 
 	h := &host{
 		logf: logf, stopReq: make(chan struct{}),
-		status: HostStatus{Running: true, PID: os.Getpid(), Logs: LogsConnecting},
+		status: HostStatus{Running: true, PID: os.Getpid(), Logs: LogsConnecting, AdvertisementSupported: true},
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-h.stopReq:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		select {
+		case s := <-sig:
+			logf("engine: %s", s)
+			h.requestStop()
+		case <-ctx.Done():
+		}
+	}()
+
 	startupHandler := h.startupRoutes()
 	var activeHandler atomic.Pointer[http.Handler]
 	initialHandler := startupHandler
@@ -122,10 +144,14 @@ func runHost(logf func(string, ...any)) (retErr error) {
 		if retErr != nil && startupFailed {
 			// Keep a startup failure queryable long enough for the app to report
 			// it instead of waiting for the generic five-minute timeout.
-			time.Sleep(5 * time.Second)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-h.stopReq:
+			}
 		}
 		_ = srv.Close()
 	}()
+	defer h.stopAdvertisement()
 
 	man, err := Installed()
 	if err != nil {
@@ -136,52 +162,45 @@ func runHost(logf func(string, ...any)) (retErr error) {
 	h.status.Version = man.Version
 	h.mu.Unlock()
 	cfg := LoadConfig()
-	if err := prepareDataDisk(man, cfg.DiskGB); err != nil {
+	if h.stopRequested() {
+		return nil
+	}
+	if err := prepareDataDisk(ctx, man, cfg.DiskGB); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		err = fmt.Errorf("data disk: %w", err)
 		h.setError(err)
 		return err
 	}
+	if h.stopRequested() {
+		return nil
+	}
 	logf("engine: booting %s (%d CPUs, %d MB, %d GB disk)", man.Version, cfg.CPUs, cfg.MemoryMB, cfg.DiskGB)
-	m, err := boot(bootOptions{manifest: man, config: cfg, logf: logf})
+	m, err := boot(ctx, bootOptions{manifest: man, config: cfg, logf: logf})
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		err = fmt.Errorf("start VM: %w", err)
 		h.setError(err)
 		return err
 	}
-	h.m, h.man = m, man
-	h.g = newGuest(func(ctx context.Context) (net.Conn, error) { return m.dial(ctx, vsockControl) })
-	h.advertiser = mdns.NewManager(func(line string) { logf("%s", line) })
-	h.status.AdvertisementSupported = true
-	defer h.stopAdvertisement()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go h.collectLogs(ctx)
-
-	if err := h.waitReady(ctx, 4*time.Minute); err != nil {
-		h.setError(err)
-		_ = m.kill()
+	if err := h.bringUp(ctx, m, man, 4*time.Minute, h.attach); err != nil {
+		if errors.Is(err, errStopRequested) {
+			logf("engine: stopped during startup")
+			return nil
+		}
 		return err
 	}
-	if err := h.attach(ctx); err != nil {
-		h.setError(err)
-		h.shutdown()
-		return err
-	}
-	h.mu.Lock()
-	h.status.Docker = true
-	h.mu.Unlock()
 	readyHandler := http.Handler(h.routes())
 	activeHandler.Store(&readyHandler)
 	logf("engine: ready")
 	go h.housekeeping(ctx)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	select {
 	case <-h.stopReq:
 		logf("engine: stop requested")
-	case s := <-sig:
-		logf("engine: %s", s)
 	case <-m.done():
 		logf("engine: VM stopped on its own")
 		return fmt.Errorf("the VM stopped unexpectedly; see %s", ConsoleLog())
@@ -190,6 +209,91 @@ func runHost(logf func(string, ...any)) (retErr error) {
 	h.stopAdvertisement()
 	h.shutdown()
 	return nil
+}
+
+var errStopRequested = errors.New("engine stop requested")
+
+// Shortened by tests.
+var (
+	guestRequestTimeout = 5 * time.Second
+	abortGuestGrace     = 30 * time.Second
+)
+
+func (h *host) requestStop() {
+	h.stopAdvertisement()
+	h.once.Do(func() { close(h.stopReq) })
+}
+
+func (h *host) stopRequested() bool {
+	select {
+	case <-h.stopReq:
+		return true
+	default:
+		return false
+	}
+}
+
+// bringUp waits for the booted machine to serve Docker and attaches it. A stop
+// request (ctx cancellation) at any stage powers the machine down and returns
+// errStopRequested; other failures are published on the status.
+func (h *host) bringUp(ctx context.Context, m machine, man Manifest, limit time.Duration, attach func(context.Context) error) error {
+	h.m, h.man = m, man
+	h.g = newGuest(func(ctx context.Context) (net.Conn, error) { return m.dial(ctx, vsockControl) })
+	h.advertiseMu.Lock()
+	h.advertiser = mdns.NewManager(func(line string) { h.logf("%s", line) })
+	h.advertiseMu.Unlock()
+	h.background.Add(1)
+	go func() {
+		defer h.background.Done()
+		h.collectLogs(ctx)
+	}()
+	if ctx.Err() != nil {
+		h.abortBoot()
+		return errStopRequested
+	}
+	if err := h.waitReady(ctx, limit); err != nil {
+		if ctx.Err() != nil {
+			h.abortBoot()
+			return errStopRequested
+		}
+		h.setError(err)
+		_ = m.kill()
+		return err
+	}
+	if err := attach(ctx); err != nil {
+		if ctx.Err() != nil {
+			h.abortBoot()
+			return errStopRequested
+		}
+		h.setError(err)
+		h.shutdown()
+		return err
+	}
+	h.mu.Lock()
+	h.status.Docker = true
+	h.mu.Unlock()
+	return nil
+}
+
+// abortBoot stops a machine whose guest may not be serving yet: ask politely,
+// and power it off if the guest cannot be reached or does not stop.
+func (h *host) abortBoot() {
+	h.logf("engine: stopping the VM before it was ready")
+	ctx, cancel := context.WithTimeout(context.Background(), guestRequestTimeout)
+	err := h.g.shutdown(ctx)
+	cancel()
+	if err == nil {
+		select {
+		case <-h.m.done():
+			return
+		case <-time.After(abortGuestGrace):
+		}
+	}
+	_ = h.m.kill()
+	select {
+	case <-h.m.done():
+	case <-time.After(10 * time.Second):
+	}
 }
 
 func (h *host) setLogs(state string) {
@@ -204,6 +308,8 @@ func (h *host) setError(err error) {
 	h.mu.Unlock()
 }
 
+var waitReadyPoll = time.Second
+
 func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 	deadline := time.Now().Add(limit)
 	var last error
@@ -211,6 +317,8 @@ func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 		select {
 		case <-h.m.done():
 			return fmt.Errorf("the VM stopped while starting; see %s", ConsoleLog())
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
 		}
 		c, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -224,7 +332,11 @@ func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 			err = errors.New("Docker is still starting")
 		}
 		last = err
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(waitReadyPoll):
+		}
 	}
 	return fmt.Errorf("the engine did not become ready: %v", last)
 }
@@ -328,8 +440,7 @@ func (h *host) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) { h.writeStatus(w) })
 	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, r *http.Request) {
-		h.stopAdvertisement()
-		h.once.Do(func() { close(h.stopReq) })
+		h.requestStop()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /advertisement", func(w http.ResponseWriter, r *http.Request) {
@@ -366,11 +477,19 @@ func (h *host) routes() http.Handler {
 
 func (h *host) startupRoutes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/status" {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/status":
+			h.writeStatus(w)
+		case r.Method == http.MethodPost && r.URL.Path == "/stop":
+			h.requestStop()
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && (r.URL.Path == "/advertisement" || r.URL.Path == "/advertisement/withdraw"):
+			// Nothing is advertised until the engine is healthy; the ready
+			// helper reconciles the persisted settings immediately.
+			w.WriteHeader(http.StatusNoContent)
+		default:
 			http.Error(w, "engine is still starting", http.StatusServiceUnavailable)
-			return
 		}
-		h.writeStatus(w)
 	})
 }
 

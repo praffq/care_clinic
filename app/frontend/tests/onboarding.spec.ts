@@ -823,9 +823,26 @@ for (const clean of [true, false]) {
   });
 }
 
+test("ready Windows virtualization is not blocked by an unrelated pending restart", async ({ page }) => {
+  await start(page, "&platform=windows");
+  await page.evaluate(() => {
+    window.careTest.fixtures.restart.needed = true;
+    window.careTest.fixtures.windowsVM.ok = true;
+  });
+  await page.getByRole("button", { name: "Start setup" }).click();
+  await continueTo(page, "Getting Windows ready");
+  await expect(page.getByRole("heading", { name: "Windows is ready", exact: true })).toBeVisible();
+  await expect(forward(page)).toBeEnabled();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  expect(await calls(page, "RestartNow")).toBe(0);
+});
+
 test("Windows restart can be deferred without bypassing the requirement", async ({ page }) => {
   await start(page, "&platform=windows");
-  await page.evaluate(() => { window.careTest.fixtures.restart.needed = true; });
+  await page.evaluate(() => {
+    window.careTest.fixtures.restart.needed = true;
+    window.careTest.fixtures.windowsVM.ok = false;
+  });
   await page.getByRole("button", { name: "Start setup" }).click();
   await continueTo(page, "Getting Windows ready");
   await expect(page.getByRole("alertdialog")).toBeVisible();
@@ -1287,7 +1304,10 @@ for (const step of ["space", "windows", "software", "cleanup", "network", "addre
     await page.evaluate((target: SetupPage) => {
       const f = window.careTest.fixtures;
       if (target === "space") f.disk.ok = false;
-      if (target === "windows") f.restart.needed = true;
+      if (target === "windows") {
+        f.restart.needed = true;
+        f.windowsVM.ok = false;
+      }
       if (target === "software") f.docker.ok = false;
       if (target === "cleanup") f.residue = { clean: false, traces: [{ id: "volumes", label: "Earlier clinic volumes", detail: "" }] };
       if (target === "network") f.network.ok = false;

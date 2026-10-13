@@ -1,7 +1,7 @@
 { config, lib, pkgs, modulesPath, version, ... }:
 let
   agent = import ./agent.nix { inherit pkgs lib version; };
-  windowsDrives = map (i: builtins.substring i 1 "abcdefghijklmnopqrstuvwxyz") (lib.range 2 25);
+  windowsDrives = map (i: builtins.substring i 1 "abcdefghijklmnopqrstuvwxyz") (lib.range 0 25);
 in
 {
   imports = [ "${modulesPath}/profiles/minimal.nix" "${modulesPath}/profiles/headless.nix" ];

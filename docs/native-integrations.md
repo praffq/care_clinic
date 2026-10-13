@@ -168,7 +168,16 @@ waiting indefinitely. `Run` reports the context error without exposing output.
 Go's default command cancellation targets the child process; this wrapper adds
 no process-group or descendant-tree cancellation guarantee.
 
+The Windows Docker hook returns preparation and completion errors to all runner
+paths. Failed pre-sync prevents Docker execution; failed result sync fails an
+otherwise successful command, and concurrent execution/sync errors are joined.
+These failures are not reduced to log-only warnings.
+
 ### GUI PATH repair
+
+A complete, newline-terminated PATH marker is retained when the login shell
+exited but descendants held inherited pipes through `WaitDelay`. Actual process
+failure, cancellation and incomplete markers are still rejected.
 
 `FixPath` widens the **current process** PATH. The application invokes it during
 construction; see the integration point in [app.go](../app/app.go).
@@ -964,11 +973,10 @@ cryptographic proof; avoid reusing it for unrelated certificates.
   adding the current fingerprint when found. Delete login entries first.
   System entries require the confirmation callback and administrator approval.
   Keychain-command failures are inspection errors, not assumed empty stores.
-- **Windows:** inspect the machine `Root` store using `certutil`, look for the
-  Common Name or current fingerprint, then request elevated deletion by the
-  available fingerprint and by Common Name. Deletion by Common Name is what
-  makes removal work when the captured PEM is gone and the fingerprint is
-  therefore empty. Removal now goes through `elevate.Steps`, alone from
+- **Windows:** enumerate CARE roots in the machine `Root` store and include the
+  captured fingerprint when present, then request elevated deletion of each
+  exact thumbprint. No deletion command uses the Common Name as a target.
+  Enumeration errors keep cleanup incomplete. Removal goes through `elevate.Steps`, alone from
   `Untrust` or batched with the other teardown steps via
   `RemoveStepWindows`; final store inspection is still important.
 - **Linux:** inspect both known anchor paths, including symlink presence, and
@@ -981,16 +989,17 @@ Linux first attempts removal without elevation and rechecks. If trust remains,
 it needs approval for the elevated retry, then checks again. It does not
 arbitrarily edit a generated trust bundle to delete an unknown source entry.
 
-`Untrust` is teardown: it is removing CARE from this computer, so deleting by
-Common Name is correct and, on Windows, is the only thing that works once the
-captured PEM is gone. Client connection is the opposite case — one CARE root is
+`Untrust` is teardown: it is removing CARE from this computer. Common Name is an
+enumeration ownership convention, not cryptographic identity; exact fingerprints
+remain the deletion targets even when the captured PEM is unavailable.
+Client connection is the opposite case — one CARE root is
 arriving while the others leave — and it uses a separate path,
 `trust.OtherCARoots(keep)`, which returns each trusted CARE root as a
 fingerprint plus the store it lives in:
 
 | Platform | What is enumerated | How it is removed |
 | --- | --- | --- |
-| macOS | `security find-certificate -a -Z -c "CARE Clinic Local CA"` in the login and System keychains. | Export each exact fingerprint, run `security remove-trusted-cert [-d] <certificate.pem>` to clear its user/admin trust settings, then delete it with `security delete-certificate -t -Z <fingerprint> <keychain>`. Login cleanup runs as the signed-in user; System cleanup joins one elevated batch. |
+| macOS | `security find-certificate -a -Z -c "CARE Clinic Local CA"` in the login and System keychains. | Login cleanup uses `security delete-certificate -t -Z <fingerprint>` to remove the certificate and user trust settings. System cleanup exports the exact certificate, explicitly clears admin settings with `security remove-trusted-cert -d`, then deletes by fingerprint in one elevated batch. Arbitrary trust-settings errors are not ignored. |
 | Windows | `Get-ChildItem Cert:\LocalMachine\Root` filtered on an exact `CN=CARE Clinic Local CA` subject, returning thumbprints. | `Remove-Item Cert:\LocalMachine\Root\<thumbprint>`, one per certificate. **Not** `certutil -delstore Root <CommonName>`: deleting by name in the same step as the installation would take the new clinic's root with it. |
 | Linux | Every `.crt` in `/usr/local/share/ca-certificates` and `/etc/pki/ca-trust/source/anchors` that parses as a single CARE CA root. Files that are not CARE roots are skipped, not inspected further. | The shared anchor-removal script, which deletes the files and runs whichever of `update-ca-certificates` and `update-ca-trust` exists. |
 
@@ -1050,12 +1059,16 @@ network sockets.
 loopback, point-to-point, and interfaces whose names begin, case-insensitively, with:
 
 ```text
-docker  br-  veth  virbr  vboxnet  vmnet  utun  tun  tap
+docker  veth  virbr  vboxnet  vmnet  utun  tun  tap  lxdbr  incusbr  podman  cni-
 ```
 
 It keeps unicast IPv4 addresses that are neither loopback nor link-local. This
 avoids advertising a Docker bridge, VPN tunnel, or self-assigned link-local
-address as if a tablet could use it.
+address as if a tablet could use it. Docker's `br-` plus 12 hexadecimal digits,
+macOS high-numbered `bridge100`-style interfaces, and known internal/default/NAT
+Hyper-V switches are also excluded. Physical `bridge0`, `br-lan` and external
+Hyper-V switch host interfaces remain eligible; virtual is not synonymous with
+unreachable. Custom-named internal switches can still pass this heuristic.
 
 This is a heuristic, not complete topology discovery:
 
@@ -1443,8 +1456,16 @@ Sources: [diskspace](../app/internal/sys/diskspace/diskspace.go),
 
 `diskspace.Of(path)` walks up to the nearest folder that exists, then reads the
 space available to this user (`statfs` on macOS/Linux, `GetDiskFreeSpaceEx` on
-Windows) and a volume id (device number, or the volume mount path on Windows).
+Windows) and a volume id (filesystem identity, or the volume mount path on Windows).
 The volume id is how two folders are recognised as the same drive.
+On Linux Btrfs, this uses the filesystem-info ioctl UUID, not `statfs.Fsid`,
+which includes the subvolume ID despite shared capacity. Inspection failures
+are explicit; tests do not claim a real mounted Btrfs run on macOS.
+The read-only native regression accepts
+`CARE_TEST_BTRFS_SUBVOLUME_A` and `CARE_TEST_BTRFS_SUBVOLUME_B` pointing to two
+existing subvolumes on one filesystem. It requires different raw statfs
+identities and compares the resulting pool IDs; ordinary folders are not a
+subvolume test. It creates no mounts or subvolumes.
 
 ### Which drives are measured
 
@@ -1594,10 +1615,12 @@ the recorded path.
 `Enabled` checks that the recorded Linux or Windows command matches the current
 executable, or that the macOS plist contains the expected Launch Services
 arguments. It does not prove that the agent has been loaded or verify a
-successful login launch. Its false result can include inspection failure. Unix
-removal treats any initial stat error as already absent; Windows can return an
-error when deleting a nonexistent value. These APIs are not as strict as the
-explicit hosts/trust/firewall residue inspectors.
+successful login launch. Its false result can include inspection failure.
+`Present` and `Remove` separately inspect CARE ownership, so moved executables
+and VM-era direct-executable registrations can still be cleaned up. Unrelated
+entries at the same location are preserved; inspection failures are errors,
+not assumed absence. Linux desktop commands apply both desktop-string and Exec
+quoting layers.
 
 The second-instance boundary matters. [main.go](../app/main.go) configures
 Wails' single-instance lock; [app_lifecycle.go](../app/app_lifecycle.go) responds
@@ -1624,6 +1647,8 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootR
 Either successful query produces a generic Windows restart plan. These keys
 are general servicing/update indicators; they do not prove that Windows
 Hypervisor Platform caused the restart requirement.
+When the required hypervisor already reports ready, these unrelated pending
+restart indicators do not block setup or open the virtualization restart dialog.
 Query failures are treated as no positive signal; there is no separate
 inspection-error status or exhaustive restart detection.
 

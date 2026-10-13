@@ -33,10 +33,8 @@ func (a *App) RunUninstall(removeImages, removeBackups bool, adminPassword strin
 		}); err != nil {
 			return err
 		}
-		if autostart.Enabled() {
-			if err := autostart.Set(false); err != nil {
-				return err
-			}
+		if err := autostart.Remove(); err != nil {
+			return err
 		}
 		if err := a.reportUninstall(removeImages); err != nil {
 			return err

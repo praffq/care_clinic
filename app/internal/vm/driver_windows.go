@@ -46,7 +46,10 @@ func HypervisorReady() error {
 // rather than leaving a VM nobody can reach.
 var vmJob windows.Handle
 
-func boot(o bootOptions) (machine, error) {
+func boot(ctx context.Context, o bootOptions) (machine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := HypervisorReady(); err != nil {
 		return nil, err
 	}
@@ -61,6 +64,9 @@ func boot(o bootOptions) (machine, error) {
 	}
 	args := qemuArgs(m, o.config, creds)
 	cmd := exec.Command(qemuBinary(), args...)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := intoJob(cmd); err != nil {
 		return nil, err
 	}
@@ -79,6 +85,12 @@ func boot(o bootOptions) (machine, error) {
 		_ = out.Close()
 		close(v.doneCh)
 	}()
+	if err := ctx.Err(); err != nil {
+		// Stop arrived while launching: end QEMU before anything uses it.
+		_ = v.kill()
+		<-v.doneCh
+		return nil, err
+	}
 	return v, nil
 }
 

@@ -141,7 +141,7 @@ func TestStagedEngineChecksAndExtracts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(engineDir()), "evil")); !os.IsNotExist(err) {
 		t.Fatal("path traversal entry was extracted")
 	}
-	if err := prepareDataDisk(m, 1); err != nil {
+	if err := prepareDataDisk(context.Background(), m, 1); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(dataDisk()); fi.Size() != 1<<30 {

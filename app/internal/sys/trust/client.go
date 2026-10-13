@@ -264,8 +264,26 @@ func ClientCertificatePresent(rootPEM string) (bool, error) {
 }
 
 func linuxClientCertificatePresent(cert *x509.Certificate, anchors, bundles []string) (bool, error) {
+	present, err := linuxClientAnchorsPresent(cert, anchors)
+	if err != nil || !present {
+		return false, err
+	}
+	return clientBundleContains(cert.Raw, bundles)
+}
+
+func linuxClientAnchorsPresent(cert *x509.Certificate, anchors []string) (bool, error) {
 	present := false
 	for _, path := range anchors {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("could not inspect the clinic certificate: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("the certificate at %s is not a regular owned anchor; ask an administrator to check it", path)
+		}
 		data, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
 			continue
@@ -279,10 +297,7 @@ func linuxClientCertificatePresent(cert *x509.Certificate, anchors, bundles []st
 		}
 		present = true
 	}
-	if !present {
-		return false, nil
-	}
-	return clientBundleContains(cert.Raw, bundles)
+	return present, nil
 }
 
 func clientBundleContains(raw []byte, bundles []string) (bool, error) {
@@ -493,7 +508,7 @@ func linuxCARoots(dirs []string, keep string) ([]CARoot, error) {
 // removeOtherRootsSteps splits removal by the approval each store needs. macOS
 // refuses trust changes to the login keychain from a root script, so those run
 // as the signed-in user; everything else joins the single administrator batch.
-func removeOtherRootsSteps(goos string, roots []CARoot) (admin, user []elevate.Step) {
+func removeOtherRootsSteps(goos string, roots []CARoot, certPaths map[string]string) (admin, user []elevate.Step) {
 	if len(roots) == 0 {
 		return nil, nil
 	}
@@ -504,16 +519,17 @@ func removeOtherRootsSteps(goos string, roots []CARoot) (admin, user []elevate.S
 		for _, root := range roots {
 			cmd := "security delete-certificate -t -Z " + root.Fingerprint + " " + elevate.ShQuote(root.Store)
 			if root.Store == darwinSystemKeychain {
+				cmd = darwinRemoveCertificateCommand(root.Fingerprint, certPaths[rootKey(root)], root.Store, true)
 				system = append(system, cmd)
 			} else {
 				login = append(login, cmd)
 			}
 		}
 		if len(system) > 0 {
-			admin = append(admin, elevate.Step{What: what, Sh: strings.Join(system, "; ")})
+			admin = append(admin, elevate.Step{What: what, Sh: strings.Join(system, " && ")})
 		}
 		if len(login) > 0 {
-			user = append(user, elevate.Step{What: what, Sh: strings.Join(login, "; ")})
+			user = append(user, elevate.Step{What: what, Sh: strings.Join(login, " && ")})
 		}
 	case "windows":
 		var cmds []string
@@ -548,7 +564,12 @@ func ApplyClientTrust(rootPEM string, extra []elevate.Step) ([]CARoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	adminRemove, userRemove := removeOtherRootsSteps(runtime.GOOS, stale)
+	certPaths, cleanup, err := prepareClientRemovalCertificates(runtime.GOOS, stale)
+	defer cleanup()
+	if err != nil {
+		return nil, err
+	}
+	adminRemove, userRemove := removeOtherRootsSteps(runtime.GOOS, stale, certPaths)
 	admin := append(append([]elevate.Step{}, extra...), adminRemove...)
 	user := userRemove
 	if !present {
@@ -572,18 +593,11 @@ func ApplyClientTrust(rootPEM string, extra []elevate.Step) ([]CARoot, error) {
 			return nil, fmt.Errorf("could not install the clinic certificate; approve the administrator prompt and try again: %w", err)
 		}
 	}
-	// A keychain that refuses one deletion must not abandon the installation;
-	// the survivors are reported by the caller's next inspection instead. One
-	// shell for all of it, with the installation last so its exit status is the
-	// one that survives - and so macOS is asked for the trust-settings right
-	// once for the whole sequence rather than once per command.
+	// Still attempt installation after a refused deletion, but preserve every
+	// error so a successful install cannot hide incomplete cleanup.
 	var userErr error
 	if len(user) > 0 {
-		scripts := make([]string, 0, len(user))
-		for _, step := range user {
-			scripts = append(scripts, step.Sh)
-		}
-		userErr = elevate.Run(strings.Join(scripts, "\n"), false)
+		userErr = elevate.Run(clientUserScript(user), false)
 	}
 	present, err = ClientCertificatePresent(rootPEM)
 	if err != nil {
@@ -596,10 +610,56 @@ func ApplyClientTrust(rootPEM string, extra []elevate.Step) ([]CARoot, error) {
 		return nil, errors.New("the clinic certificate was not installed; ask the computer administrator for help")
 	}
 	remaining, err := OtherCARoots(SHA1Hex(rootPEM))
-	if err != nil {
-		return nil, fmt.Errorf("the clinic certificate was installed, but CARE could not confirm removal of older clinic certificates: %w", err)
+	return clientTrustCleanupResult(stale, remaining, err, userErr)
+}
+
+func clientUserScript(steps []elevate.Step) string {
+	scripts := []string{"care_status=0"}
+	for _, step := range steps {
+		scripts = append(scripts, "( "+step.Sh+" ) || care_status=$?")
 	}
-	return confirmedRemovals(stale, remaining), nil
+	scripts = append(scripts, `exit "$care_status"`)
+	return strings.Join(scripts, "\n")
+}
+
+func prepareClientRemovalCertificates(goos string, roots []CARoot) (map[string]string, func(), error) {
+	paths := make(map[string]string)
+	var cleanups []func()
+	cleanup := func() {
+		for _, remove := range cleanups {
+			remove()
+		}
+	}
+	if goos == "darwin" {
+		for _, root := range roots {
+			if root.Store != darwinSystemKeychain {
+				continue
+			}
+			cert, err := darwinCertificatePEM(root.Store, root.Fingerprint)
+			if err != nil {
+				return nil, cleanup, err
+			}
+			path, remove, err := writeRemovalCertificate(cert)
+			if err != nil {
+				return nil, cleanup, err
+			}
+			cleanups = append(cleanups, remove)
+			paths[rootKey(root)] = path
+		}
+	}
+	return paths, cleanup, nil
+}
+
+func clientTrustCleanupResult(stale, remaining []CARoot, inspectErr, cleanupErr error) ([]CARoot, error) {
+	if inspectErr != nil {
+		return nil, fmt.Errorf("the clinic certificate was installed, but CARE could not confirm removal of older clinic certificates: %w", errors.Join(inspectErr, cleanupErr))
+	}
+	removed := confirmedRemovals(stale, remaining)
+	if len(remaining) > 0 || cleanupErr != nil {
+		return removed, fmt.Errorf("the clinic certificate was installed, but removal of older clinic certificates is incomplete: %w",
+			errors.Join(errors.New("older certificate cleanup did not finish cleanly"), cleanupErr))
+	}
+	return removed, nil
 }
 
 func confirmedRemovals(before, after []CARoot) []CARoot {
@@ -638,6 +698,15 @@ func writeTempCertificate(rootPEM string) (string, func(), error) {
 }
 
 func RemoveClientCertificate(rootPEM string) error {
+	if runtime.GOOS == "linux" {
+		cert, err := clientRoot(rootPEM, false)
+		if err != nil {
+			return err
+		}
+		return removeLinuxClientCertificate(cert, clientAnchors(cert), linuxTrustBundles, func(sh string) error {
+			return runClientStep("linux", elevate.Step{What: "remove this computer's access to CARE", Sh: sh})
+		})
+	}
 	present, err := ClientCertificatePresent(rootPEM)
 	if err != nil || !present {
 		return err
@@ -654,6 +723,54 @@ func RemoveClientCertificate(rootPEM string) error {
 		return err
 	}
 	if present {
+		return errors.New("the clinic certificate is still installed; removal is incomplete")
+	}
+	return nil
+}
+
+func removeLinuxClientCertificate(cert *x509.Certificate, anchors, bundles []string, run func(string) error) error {
+	present, err := linuxClientAnchorsPresent(cert, anchors)
+	if err != nil {
+		return err
+	}
+	bundled, err := clientBundleContains(cert.Raw, bundles)
+	if err != nil {
+		return err
+	}
+	if !present && !bundled {
+		return nil
+	}
+	// Recheck exact contents inside the privileged batch, before any deletion.
+	// A changed file or a symlink is not ours to remove.
+	checks := "set -e\n"
+	for _, path := range anchors {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			data = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+		} else if err != nil {
+			return fmt.Errorf("could not inspect the clinic certificate: %w", err)
+		}
+		existing, err := clientRoot(string(data), false)
+		if err != nil || !bytes.Equal(existing.Raw, cert.Raw) {
+			return fmt.Errorf("the certificate at %s was changed; ask an administrator to check it", path)
+		}
+		q := elevate.ShQuote(path)
+		checks += "if [ -e " + q + " ] || [ -L " + q + " ]; then\n" +
+			"[ ! -L " + q + " ] || exit 1\n[ -f " + q + " ] || exit 1\n" +
+			"printf '%s' " + elevate.ShQuote(string(data)) + " | cmp -s - " + q + " || exit 1\nfi\n"
+	}
+	if err := run(checks + linuxRemovalScript(anchors)); err != nil {
+		return fmt.Errorf("could not remove the clinic certificate; approve the administrator prompt and try again: %w", err)
+	}
+	present, err = linuxClientAnchorsPresent(cert, anchors)
+	if err != nil {
+		return err
+	}
+	bundled, err = clientBundleContains(cert.Raw, bundles)
+	if err != nil {
+		return err
+	}
+	if present || bundled {
 		return errors.New("the clinic certificate is still installed; removal is incomplete")
 	}
 	return nil

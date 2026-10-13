@@ -230,24 +230,9 @@ func removeTrustedRootsDarwin(confirm func(string, string) bool, fp string) (boo
 		return false, err
 	}
 	for _, h := range hashes {
-		cert, err := darwinCertificatePEM(login, h)
-		if err != nil {
-			removalErrors = append(removalErrors, err)
-			continue
-		}
-		path, cleanup, err := writeRemovalCertificate(cert)
-		if err != nil {
-			removalErrors = append(removalErrors, err)
-			continue
-		}
-		_, trustErr := proc.Command("security", "remove-trusted-cert", path).CombinedOutput()
-		if trustErr != nil {
-			cleanup()
-			removalErrors = append(removalErrors, fmt.Errorf("could not remove login-keychain trust settings for %s: %w", h, trustErr))
-			continue
-		}
+		// -t deletes user trust settings along with the login certificate.
+		// No separate remove-trusted-cert invocation is needed in this domain.
 		_, deleteErr := proc.Command("security", "delete-certificate", "-t", "-Z", h, login).CombinedOutput()
-		cleanup()
 		if deleteErr != nil {
 			removalErrors = append(removalErrors, fmt.Errorf("could not remove login-keychain certificate %s: %w", h, deleteErr))
 			continue
@@ -394,18 +379,48 @@ func RemoveStepWindows(rootPEM string) (step elevate.Step, need bool, err error)
 }
 
 func removeStepWindows(fp string) (elevate.Step, bool, error) {
-	present, err := windowsRootPresent(fp)
+	return removeStepWindowsWith(fp, windowsCARoots, windowsCertificatePresent)
+}
+
+func windowsCertificatePresent(fp string) (bool, error) {
+	out, err := (proc.Runner{}).Capture("powershell", "-NoProfile", "-Command",
+		"$ErrorActionPreference = 'Stop'; Test-Path -LiteralPath "+
+			elevate.PSQuote(`Cert:\LocalMachine\Root\`+fp))
+	if err != nil {
+		return false, fmt.Errorf("could not inspect the Windows root store: %w", err)
+	}
+	switch strings.TrimSpace(out) {
+	case "True":
+		return true, nil
+	case "False":
+		return false, nil
+	default:
+		return false, errors.New("Windows returned an unknown certificate state")
+	}
+}
+
+func removeStepWindowsWith(fp string, enumerate func() ([]string, error), contains func(string) (bool, error)) (elevate.Step, bool, error) {
+	hashes, err := enumerate()
 	if err != nil {
 		return elevate.Step{}, false, err
 	}
-	if !present {
+	if fp != "" {
+		present, err := contains(fp)
+		if err != nil {
+			return elevate.Step{}, false, err
+		}
+		if present {
+			hashes = appendUnique(hashes, fp)
+		}
+	}
+	if len(hashes) == 0 {
 		return elevate.Step{}, false, nil
 	}
-	cmds := []string{}
-	if fp != "" {
-		cmds = append(cmds, "certutil -delstore Root "+elevate.PSQuote(fp))
+	var cmds []string
+	for _, hash := range hashes {
+		cmds = append(cmds, "Remove-Item -LiteralPath "+
+			elevate.PSQuote(`Cert:\LocalMachine\Root\`+hash)+" -ErrorAction Stop")
 	}
-	cmds = append(cmds, "certutil -delstore Root "+elevate.PSQuote(CommonName))
 	return elevate.Step{
 		What: "remove CARE's security certificate from this computer",
 		PS:   strings.Join(cmds, "; "),

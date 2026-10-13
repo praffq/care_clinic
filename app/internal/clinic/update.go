@@ -100,7 +100,7 @@ func (e *Clinic) UpgradeLine(id string) error {
 	}
 	b := e.Builder()
 	if b.Waiting().Any() {
-		if err := b.DeclineUpdate(); err != nil {
+		if err := b.DiscardPending(); err != nil {
 			return err
 		}
 	}

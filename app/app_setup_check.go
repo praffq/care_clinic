@@ -41,7 +41,7 @@ func (a *App) validateSetup(name, password, backupDir string) []SetupIssue {
 		add("space", "There isn't enough confirmed free space to install CARE. Check this step again.", disk.Message)
 	}
 	hv := a.WindowsVMStatus()
-	if restart := a.RestartPlan(); hv.Applicable && (!hv.OK || restart.Needed) {
+	if restart := a.RestartPlan(); hv.Applicable && !hv.OK {
 		message := "Windows setup needs another look."
 		if restart.Needed {
 			message = "Windows still needs to restart."

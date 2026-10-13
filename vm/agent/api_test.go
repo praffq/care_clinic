@@ -42,6 +42,7 @@ func testServer(t *testing.T) (*httptest.Server, string) {
 	root := t.TempDir()
 	a := newAPI(filepath.Join(root, "missing.sock"))
 	a.root = root
+	a.space = func(string) (uint64, uint64, error) { return 64 << 30, 64 << 30, nil }
 	srv := httptest.NewServer(a.routes())
 	t.Cleanup(srv.Close)
 	return srv, root

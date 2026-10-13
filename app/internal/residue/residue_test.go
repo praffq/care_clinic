@@ -11,6 +11,7 @@ import (
 	"text/template"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 func TestUnavailableDockerIsNotClean(t *testing.T) {
@@ -19,6 +20,7 @@ func TestUnavailableDockerIsNotClean(t *testing.T) {
 	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	markManagedDisk(t)
 	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +78,7 @@ func TestStoppedDockerIsDistinguishedFromAnAbsentOne(t *testing.T) {
 	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	markManagedDisk(t)
 	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +128,7 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	markManagedDisk(t)
 	docker := "#!/bin/sh\ncase \"$1 $2\" in \"images --format\") echo care:clinic ;; esac\n"
 	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(docker), 0o700); err != nil {
 		t.Fatal(err)
@@ -150,6 +154,39 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 }
 
 func noSystemTraces(proc.Runner) ([]Trace, error) { return nil, nil }
+
+func markManagedDisk(t *testing.T) {
+	t.Helper()
+	if !vm.Supported() {
+		return
+	}
+	if err := os.MkdirAll(vm.StateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vm.StateDir(), "data.img"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAbsentManagedEngineDoesNotProbeAnExternalDockerCLI(t *testing.T) {
+	if !vm.Supported() || runtime.GOOS == "windows" {
+		t.Skip("uses isolated macOS managed-engine and POSIX CLI fixtures")
+	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	trace := filepath.Join(root, "docker-called")
+	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\n: > '"+trace+"'\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root)
+	report, err := scan(Options{Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic", InstallDir: filepath.Join(root, "install")}, noSystemTraces)
+	if err != nil || !report.Clean {
+		t.Fatalf("absent managed engine blocked cleanup: %+v %v", report, err)
+	}
+	if _, err := os.Stat(trace); !os.IsNotExist(err) {
+		t.Fatalf("external Docker was probed despite proved managed-engine absence: %v", err)
+	}
+}
 
 func TestSystemTracesClassifySetupResidue(t *testing.T) {
 	if runtime.GOOS == "windows" {

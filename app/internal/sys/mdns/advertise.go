@@ -149,9 +149,16 @@ func ValidateLabel(name string) error {
 }
 
 var virtualIface = []string{
-	"bridge", "docker", "br-", "veth", "virbr", "vboxnet", "vmnet",
-	"utun", "tun", "tap", "vethernet", "lxdbr", "incusbr", "podman", "cni-",
+	"docker", "veth", "virbr", "vboxnet", "vmnet",
+	"utun", "tun", "tap", "lxdbr", "incusbr", "podman", "cni-",
 }
+
+// Docker user networks (br-<12 hex>) and macOS vmnet/Internet Sharing bridges
+// (bridge100 and up) are internal; bridge0, Linux br0/br-lan and Hyper-V
+// external-switch adapters may be the host's real LAN link.
+var internalIfaceRe = regexp.MustCompile(`^(br-[0-9a-f]{12}|bridge[1-9][0-9]{2,})`)
+
+var internalHyperVSwitches = []string{"default switch", "wsl", "nat", "docker", "podman", "internal"}
 
 func lanInterfaces() ([]lanInterface, error) {
 	ifaces, err := net.Interfaces()
@@ -198,6 +205,17 @@ func lanInterfaces() ([]lanInterface, error) {
 
 func isVirtual(name string) bool {
 	lower := strings.ToLower(name)
+	if internalIfaceRe.MatchString(lower) {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(lower, "vethernet"); ok {
+		for _, hint := range internalHyperVSwitches {
+			if strings.Contains(rest, hint) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, prefix := range virtualIface {
 		if strings.HasPrefix(lower, prefix) {
 			return true

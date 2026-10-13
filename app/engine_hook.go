@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"runtime"
 	"time"
@@ -19,20 +20,43 @@ func useEngine() {
 	if runtime.GOOS != "windows" {
 		return
 	}
-	proc.DockerHook = func(args []string) ([]string, func()) {
-		if !vm.MountSensitive(args) {
-			return args, func() {}
+	proc.DockerHook = engineDockerHook(engineSync{
+		sensitive: vm.MountSensitive,
+		rewrite:   vm.RewriteDockerArgs,
+		sync:      vm.Sync,
+		timeout:   10 * time.Minute,
+	})
+}
+
+type engineSync struct {
+	sensitive func(args []string) bool
+	rewrite   func(args []string) (out []string, paths []string)
+	sync      func(ctx context.Context, paths []string) error
+	timeout   time.Duration
+}
+
+// engineDockerHook fails a mount-sensitive docker command when either sync
+// fails, so stale or missing data is never reported as success.
+func engineDockerHook(e engineSync) func([]string) ([]string, func() error, error) {
+	run := func(paths []string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		defer cancel()
+		return e.sync(ctx, paths)
+	}
+	return func(args []string) ([]string, func() error, error) {
+		if !e.sensitive(args) {
+			return args, func() error { return nil }, nil
 		}
-		out, paths := vm.RewriteDockerArgs(args)
-		sync := func(paths []string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer cancel()
-			if err := vm.Sync(ctx, paths); err != nil && appLog != nil {
-				appLog.Writef("engine sync: %s", err)
+		out, paths := e.rewrite(args)
+		if err := run(paths); err != nil {
+			return nil, nil, fmt.Errorf("copy folders into the CARE engine: %w", err)
+		}
+		return out, func() error {
+			if err := run(nil); err != nil {
+				return fmt.Errorf("copy results back from the CARE engine: %w", err)
 			}
-		}
-		sync(paths)
-		return out, func() { sync(nil) }
+			return nil
+		}, nil
 	}
 }
 

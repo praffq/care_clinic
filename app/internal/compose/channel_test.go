@@ -147,6 +147,7 @@ func TestFailedLineUpgradeDoesNotStageOnlyTheFrontend(t *testing.T) {
 	if _, err := b.StageLine("next"); err == nil {
 		t.Fatal("StageLine succeeded despite the backend image download failure")
 	}
+
 	if waiting := b.Waiting(); waiting.Any() || waiting.Line != "" {
 		t.Fatalf("partially staged line upgrade is visible: %+v", waiting)
 	}

@@ -16,7 +16,7 @@ import (
 func TestVirtualInterfacesAreNotTreatedAsLAN(t *testing.T) {
 	for _, name := range []string{
 		"bridge100", "vEthernet (Default Switch)", "lxdbr0", "incusbr0",
-		"podman0", "cni-podman0", "docker0", "br-123",
+		"podman0", "cni-podman0", "docker0", "br-0123456789ab",
 	} {
 		if !isVirtual(name) {
 			t.Errorf("%q should be excluded", name)

@@ -1,10 +1,14 @@
 package compose
 
 import (
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/lines"
 )
+
+var stageMu sync.Mutex
 
 type Update struct {
 	Backend  string `json:"backend"`
@@ -96,6 +100,12 @@ func (b *Builder) StageLine(id string) (Update, error) {
 }
 
 func (b *Builder) stage(staged map[string]Release, line string) (Update, error) {
+	stageMu.Lock()
+	defer stageMu.Unlock()
+	lock := ReadLock(b.dir)
+	if lock.NextLine != "" || line != "" && (lock.Backend.Next != nil || lock.Frontend.Next != nil) {
+		return Update{}, errors.New("a CARE update is already staged; apply or decline it before staging another release line")
+	}
 	var u Update
 	next := b.staging(staged)
 	for _, s := range []struct {
@@ -111,14 +121,14 @@ func (b *Builder) stage(staged map[string]Release, line string) (Update, error) 
 			continue
 		}
 		if next.stopped() {
-			return Update{}, nil
+			return Update{}, errors.New("the CARE update download was interrupted")
 		}
 		b.logln("A newer CARE " + s.service + " is available (" + Short(rel.Commit) + ") - downloading it in the background.")
 		if err := s.ensure(); err != nil {
 			return Update{}, err
 		}
 		if next.stopped() {
-			return Update{}, nil
+			return Update{}, errors.New("the CARE update download was interrupted")
 		}
 		if line == "" {
 			if err := b.updateLock(func(l *Lock) {
@@ -134,7 +144,7 @@ func (b *Builder) stage(staged map[string]Release, line string) (Update, error) 
 	}
 	if line != "" && u.Any() {
 		if next.stopped() {
-			return Update{}, nil
+			return Update{}, errors.New("the CARE update download was interrupted")
 		}
 		if err := b.updateLock(func(l *Lock) {
 			for service, rel := range staged {
@@ -169,6 +179,8 @@ func (b *Builder) Waiting() Update {
 }
 
 func (b *Builder) ApplyPending() (Update, error) {
+	stageMu.Lock()
+	defer stageMu.Unlock()
 	var applied Update
 	err := ModifyLock(b.dir, func(lock *Lock) error {
 		return b.applyPending(lock, &applied)
@@ -219,6 +231,8 @@ func (b *Builder) applyPending(lock *Lock, applied *Update) error {
 }
 
 func (b *Builder) DeclineUpdate() error {
+	stageMu.Lock()
+	defer stageMu.Unlock()
 	return ModifyLock(b.dir, func(lock *Lock) error {
 		lineUpgrade := lock.NextLine != ""
 		lock.NextLine = ""
@@ -231,6 +245,23 @@ func (b *Builder) DeclineUpdate() error {
 			default:
 				c.Declined = c.Next.Commit
 			}
+
+			lock.Set(service, c)
+		}
+		return nil
+	})
+}
+
+// DiscardPending removes the prepared update before staging another line.
+// Declining a routine update intentionally keeps it for the next clinic start.
+func (b *Builder) DiscardPending() error {
+	stageMu.Lock()
+	defer stageMu.Unlock()
+	return ModifyLock(b.dir, func(lock *Lock) error {
+		lock.NextLine = ""
+		for _, service := range []string{Backend, Frontend} {
+			c := lock.Get(service)
+			c.Next = nil
 			lock.Set(service, c)
 		}
 		return nil

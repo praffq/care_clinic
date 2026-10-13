@@ -485,6 +485,13 @@ apply/migration path. Going back requires restoring a backup. The update panel
 shows line support dates; `LineAllowsApp` checks the cached line's
 `min_app_version`/`max_app_version` before a desktop update.
 
+Changing line explicitly discards earlier pending metadata before downloading;
+the ordinary **Not now** path still keeps a routine update for the next start.
+The builder refuses a line change while any pending update remains, before
+overwriting `-next` tags. Staging and applying share a serialization lock.
+Cross-line metadata is published only after both images succeed, and
+interruption returns an explicit error instead of an empty successful update.
+
 CARE updates do not have image-level rollback (plugin application has its own
 [rollback transaction](plugins.md#save-and-apply)). Published digests identify the
 old images; the database still needs the pre-update backup. Explicit rebuilds

@@ -80,6 +80,14 @@ port rules; failures report repair details to logs/status, and the app's
 An otherwise available clinic name remains advertised while repair details
 are surfaced.
 
+During boot, `/status` already reports the helper's advertising capability, but
+no responder runs until readiness and attachment complete. Advertisement refresh
+and withdrawal are acknowledged without probing at this stage. `/stop` cancels
+disk copying, readiness polling and attachment, and shuts down or kills a
+partially started machine before the helper exits. macOS framework start itself
+cannot be interrupted; cancellation releases the caller and stops a machine
+that completes starting later. Single native setup syscalls remain synchronous.
+
 Helper housekeeping checks availability, interface changes, foreign-name
 conflicts and direct hostname responses every 15 seconds. App jobs queue one
 cancellable, coalescing reconciliation worker, which re-reads the latest settings;
@@ -179,6 +187,16 @@ not the disposable guest root. If a guest mirror is unexpectedly empty while
 the host still has files, the helper restores the guest from the host instead
 of interpreting the missing files as host deletions. The Windows mirror shares
 the data disk's capacity with Docker images and clinic data.
+
+All drive letters A-Z use persistent mirror roots. Guest uploads are serialized
+and checked before allocating the full replacement temporary file, then again
+in bounded chunks. They preserve 5 GiB of free space, matching the desktop's
+critical running-space policy. Windows backup estimates reserve the same 5 GiB;
+an unmeasurable shared destination fails rather than claiming a successful
+backup. Sync failure is an operation error, not just a log warning.
+This is headroom mitigation, not a quota: Docker/Postgres can independently
+consume the shared disk, and large backup folders still require enough guest
+capacity as well as host capacity.
 
 ## Where things live
 

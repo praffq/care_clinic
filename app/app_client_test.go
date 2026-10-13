@@ -76,6 +76,7 @@ func TestClientConnectBatchesUnrelatedHostsRepair(t *testing.T) {
 	}{
 		{name: "unrelated old clinic marker", repair: true, batched: true},
 		{name: "host entry without bypass", repair: true, hasEntry: true, repairFirst: true},
+		{name: "nonloopback target mapping without bypass", repair: true, hasEntry: true, repairFirst: true},
 		{name: "host entry with bypass", repair: true, hasEntry: true, bypass: true, batched: true},
 		{name: "no repair needed"},
 	} {

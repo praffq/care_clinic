@@ -238,3 +238,23 @@ func TestTopologyChangesAndNameValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestInternalInterfaceClassification(t *testing.T) {
+	for _, name := range []string{
+		"docker0", "br-0123456789ab", "bridge100", "bridge101", "veth1a2b", "virbr0", "vmnet8",
+		"vEthernet (Default Switch)", "vEthernet (WSL (Hyper-V firewall))", "vEthernet (nat)",
+		"utun3", "tun0", "tap0", "lxdbr0", "podman1", "cni-abc",
+	} {
+		if !isVirtual(name) {
+			t.Errorf("%s should be excluded", name)
+		}
+	}
+	for _, name := range []string{
+		"en0", "eth0", "br0", "br-lan", "bridge0", "bridge", "vEthernet (External)",
+		"vEthernet (Ethernet Switch)", "Ethernet", "wlan0",
+	} {
+		if isVirtual(name) {
+			t.Errorf("%s may be a real LAN link and must be kept", name)
+		}
+	}
+}

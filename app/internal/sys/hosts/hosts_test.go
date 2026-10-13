@@ -35,6 +35,27 @@ func TestHasEntryRequiresLocalAddress(t *testing.T) {
 	}
 }
 
+func TestClientMappingDetectionIncludesWrongNonloopbackTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		want       bool
+	}{
+		{"IPv4 wrong computer", "192.0.2.1 care.local\n", true},
+		{"IPv6 wrong computer", "2001:db8::1 CARE.LOCAL\n", true},
+		{"mixed targets", "127.0.0.1 care.local\n192.0.2.1 care.local\n", true},
+		{"alias", "192.0.2.1 other.local care.local # unrelated owner\n", true},
+		{"loopback", "127.0.0.1 care.local\n", true},
+		{"unrelated CARE marker", "127.0.0.1 other.local # care-clinic\n", false},
+		{"comment only", "# 192.0.2.1 care.local\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasMapping(tc.data, "care.local"); got != tc.want {
+				t.Fatalf("mapping detected=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplaceStepPreservesUnownedLinesAndHandlesEmptyResult(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX shell fixture")

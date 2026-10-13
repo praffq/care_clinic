@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 func (e *Clinic) Project() string { return composeProject }
@@ -24,7 +25,7 @@ func (e *Clinic) Purge() error {
 			return err
 		}
 	} else {
-		e.logln("Docker CLI is not installed; skipping Docker resource, image, and build-cache cleanup.")
+		e.logln("The managed CARE engine is absent or the Docker CLI is missing; skipping Docker resource, image, and build-cache cleanup.")
 	}
 	if err := e.Backups().PreserveBackupCertificate(); err != nil {
 		return err
@@ -62,11 +63,9 @@ func (e *Clinic) Purge() error {
 		failed = append(failed, errors.New(detail))
 	}
 
-	if autostart.Enabled() {
-		e.logln("Removing the start-at-login entry...")
-		if err := autostart.Set(false); err != nil {
-			failed = append(failed, err)
-		}
+	e.logln("Removing CARE's start-at-login entry if present...")
+	if err := autostart.Remove(); err != nil {
+		failed = append(failed, err)
 	}
 
 	if err := errors.Join(failed...); err != nil {
@@ -76,7 +75,14 @@ func (e *Clinic) Purge() error {
 }
 
 func (e *Clinic) dockerCLIAvailable() (bool, error) {
-	_, err := e.capture("docker", "--version")
+	absent, err := vm.ManagedEngineAbsent()
+	if err != nil || absent {
+		return false, err
+	}
+	_, err = e.capture("docker", "--version")
+	if errors.Is(err, exec.ErrNotFound) && vm.Supported() {
+		return false, fmt.Errorf("CARE engine files remain but its Docker CLI is missing; recover the engine before removing retained clinic volumes: %w", err)
+	}
 	return dockerCLIStatus(err)
 }
 

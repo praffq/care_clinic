@@ -609,7 +609,7 @@ export function installTestHost() {
       requireServer();
       const result: SetupIssue[] = [];
       if (!fixtures.disk.ok || !fixtures.disk.need) result.push({ step: "space", message: "Space has run low since you checked." });
-      if (fixtures.windowsVM.applicable && (!fixtures.windowsVM.ok || fixtures.restart.needed)) result.push({ step: "windows", message: "Windows still needs to restart." });
+      if (fixtures.windowsVM.applicable && !fixtures.windowsVM.ok) result.push({ step: "windows", message: "Windows virtualization is not ready yet." });
       if (!fixtures.docker.ok) result.push({ step: "software", message: "The required software is no longer ready." });
       if (!fixtures.residue.clean) result.push({ step: "cleanup", message: "Something from the earlier setup is back." });
       if (fixtures.network.applicable && !fixtures.network.ok) result.push({ step: "network", message: "This network is set to Public again." });

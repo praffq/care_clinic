@@ -29,15 +29,57 @@ func TestMacRootTrustInstallIsConstrainedToSSLPolicy(t *testing.T) {
 }
 
 func TestMacTrustRemovalClearsTrustSettingsBeforeDeletingCertificate(t *testing.T) {
-	system := darwinRemoveCertificateCommand("AB12", "/tmp/care root.crt", darwinSystemKeychain, true)
-	if !strings.HasPrefix(system, "security remove-trusted-cert -d '/tmp/care root.crt' && ") ||
+	system := darwinRemoveCertificateCommand("AB12", "/prepared/care root.crt", darwinSystemKeychain, true)
+	if !strings.HasPrefix(system, "security remove-trusted-cert -d '/prepared/care root.crt' && ") ||
 		!strings.HasSuffix(system, "security delete-certificate -t -Z AB12 '"+darwinSystemKeychain+"'") {
 		t.Fatalf("system trust removal does not clear trust settings before certificate deletion: %s", system)
 	}
-	login := darwinRemoveCertificateCommand("AB12", "/tmp/care root.crt", darwinLoginKeychain(), false)
+	login := darwinRemoveCertificateCommand("AB12", "/prepared/care root.crt", darwinLoginKeychain(), false)
 	if strings.Contains(login, "remove-trusted-cert -d") ||
-		!strings.HasPrefix(login, "security remove-trusted-cert '/tmp/care root.crt' && ") {
+		!strings.HasPrefix(login, "security remove-trusted-cert '/prepared/care root.crt' && ") {
 		t.Fatalf("login trust removal used the wrong trust domain: %s", login)
+	}
+}
+
+func TestWindowsServerRemovalUsesOnlyEnumeratedOrCapturedFingerprints(t *testing.T) {
+	const captured = "AABBCCDDEEFF00112233445566778899AABBCCDD"
+	const other = "1122334455667788990011223344556677889900"
+	for _, tc := range []struct {
+		name, fp                  string
+		found                     []string
+		capturedPresent           bool
+		enumerateErr, containsErr error
+		want                      []string
+		wantError                 bool
+	}{
+		{name: "captured plus enumerated", fp: captured, found: []string{other}, capturedPresent: true, want: []string{other, captured}},
+		{name: "no captured PEM", found: []string{other}, want: []string{other}},
+		{name: "captured absent", fp: captured, found: []string{other}, want: []string{other}},
+		{name: "none"},
+		{name: "enumeration failure", enumerateErr: errors.New("denied"), wantError: true},
+		{name: "captured inspection failure", fp: captured, found: []string{other}, containsErr: errors.New("denied"), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step, need, err := removeStepWindowsWith(tc.fp,
+				func() ([]string, error) { return tc.found, tc.enumerateErr },
+				func(fp string) (bool, error) {
+					if fp == "" || fp != tc.fp {
+						t.Fatalf("unexpected exact lookup: %q", fp)
+					}
+					return tc.capturedPresent, tc.containsErr
+				})
+			if (err != nil) != tc.wantError || need != (len(tc.want) > 0) {
+				t.Fatalf("need=%v err=%v step=%v", need, err, step)
+			}
+			if strings.Contains(step.PS, CommonName) || strings.Contains(step.PS, "delstore") {
+				t.Fatalf("unsafe broad removal: %s", step.PS)
+			}
+			for _, fp := range tc.want {
+				if !strings.Contains(step.PS, `Cert:\LocalMachine\Root\`+fp) {
+					t.Fatalf("missing exact removal for %s: %s", fp, step.PS)
+				}
+			}
+		})
 	}
 }
 

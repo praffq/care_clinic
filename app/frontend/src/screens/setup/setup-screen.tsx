@@ -243,7 +243,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
         await visit(nextAfter(target), mode);
         return;
       }
-      if (target === "windows" && requirements.current.current.windows.value?.restart.needed) {
+      if (!ok && target === "windows" && requirements.current.current.windows.value?.restart.needed) {
         setRestart(requirements.current.current.windows.value.restart);
       }
       return;

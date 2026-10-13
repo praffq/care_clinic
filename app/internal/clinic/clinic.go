@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
@@ -66,6 +67,7 @@ func (e *Clinic) baseEnv() []string {
 	set("FILE_UPLOAD_BUCKET", strings.TrimSpace(benv["FILE_UPLOAD_BUCKET"]))
 	set("FACILITY_S3_BUCKET", strings.TrimSpace(benv["FACILITY_S3_BUCKET"]))
 	set("BACKUP_DIR", e.backupDir())
+	set("CARE_BACKUP_RESERVE_KB", backupReserveKB(runtime.GOOS))
 	if err := vm.SetSyncRoots([]string{e.InstallDir, e.backupDir()}); err != nil {
 		e.logln("Warning: could not record the folders the CARE engine mirrors: " + err.Error())
 	}
@@ -149,13 +151,32 @@ func (e *Clinic) backupDir() string {
 	if e.BackupDir != "" {
 		return e.BackupDir
 	}
-	if desktop, err := proc.DesktopDir(); err == nil {
+	if desktop, err := backupDesktopDir(runtime.GOOS); err == nil {
 		return filepath.Join(desktop, "care-db-backups")
 	} else {
 		e.logln("Warning: could not locate the Desktop; using the legacy backup location: " + err.Error())
 	}
+
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Desktop", "care-db-backups")
+}
+
+func backupDesktopDir(goos string) (string, error) {
+	if goos == "linux" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Desktop"), nil
+	}
+	return proc.DesktopDir()
+}
+
+func backupReserveKB(goos string) string {
+	if goos == "windows" {
+		return "5242880"
+	}
+	return "0"
 }
 
 func (e *Clinic) Label() string { return e.mdnsName() }

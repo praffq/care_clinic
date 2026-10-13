@@ -256,7 +256,11 @@ func (a *App) ConnectClient(address string) error {
 			// second administrator prompt but still connects.
 			at, _ = clinicDialAddress(host)
 		}
-		repairFirst, batched := clientHostRepair(repairHosts, hosts.HasEntry(host), at != "")
+		mapping, err := hosts.MappingPresent(host)
+		if err != nil {
+			return err
+		}
+		repairFirst, batched := clientHostRepair(repairHosts, mapping, at != "")
 		root, err := a.connectRoot(cfg, clinicURL, at, repairFirst)
 		if err != nil {
 			return err
