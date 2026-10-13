@@ -58,7 +58,12 @@ type Pins struct {
 	ComposeMacX8664SHA256     string
 	ComposeWindowsSHA256      string
 	QEMUWindowsVersion        string
+	QEMUWindowsURL            string
 	QEMUWindowsSHA256         string
+	SevenZipWindowsURL        string
+	SevenZipWindowsSHA256     string
+	SevenZipBootstrapURL      string
+	SevenZipBootstrapSHA256   string
 
 	DockerLinuxVersion        string
 	DockerLinuxX8664SHA256    string
@@ -100,7 +105,12 @@ func (p *Pins) envPinMap() []struct {
 		{"COMPOSE_MACOS_X86_64_SHA256", &p.ComposeMacX8664SHA256},
 		{"COMPOSE_WINDOWS_X86_64_SHA256", &p.ComposeWindowsSHA256},
 		{"QEMU_WINDOWS_VERSION", &p.QEMUWindowsVersion},
+		{"QEMU_WINDOWS_URL", &p.QEMUWindowsURL},
 		{"QEMU_WINDOWS_SHA256", &p.QEMUWindowsSHA256},
+		{"SEVENZIP_WINDOWS_URL", &p.SevenZipWindowsURL},
+		{"SEVENZIP_WINDOWS_SHA256", &p.SevenZipWindowsSHA256},
+		{"SEVENZIP_BOOTSTRAP_URL", &p.SevenZipBootstrapURL},
+		{"SEVENZIP_BOOTSTRAP_SHA256", &p.SevenZipBootstrapSHA256},
 		{"DOCKER_LINUX_VERSION", &p.DockerLinuxVersion},
 		{"DOCKER_LINUX_X86_64_SHA256", &p.DockerLinuxX8664SHA256},
 		{"DOCKER_LINUX_AARCH64_SHA256", &p.DockerLinuxAarch64SHA256},
@@ -154,8 +164,13 @@ func Load(env []byte) (*Pins, error) {
 			return nil, fmt.Errorf("%s must be X.Y.Z", key)
 		}
 	}
-	for key, raw := range map[string]string{"CARE_LINES_URL": p.LinesURL, "CARE_VM_BASE_URL": p.CareVMBaseURL} {
-		if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
+	for key, raw := range map[string]string{
+		"CARE_LINES_URL": p.LinesURL, "CARE_VM_BASE_URL": p.CareVMBaseURL,
+		"QEMU_WINDOWS_URL":       p.QEMUWindowsURL,
+		"SEVENZIP_WINDOWS_URL":   p.SevenZipWindowsURL,
+		"SEVENZIP_BOOTSTRAP_URL": p.SevenZipBootstrapURL,
+	} {
+		if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
 			return nil, fmt.Errorf("%s must be an https URL", key)
 		}
 	}
@@ -182,6 +197,8 @@ func Load(env []byte) (*Pins, error) {
 		"COMPOSE_MACOS_X86_64_SHA256":      p.ComposeMacX8664SHA256,
 		"COMPOSE_WINDOWS_X86_64_SHA256":    p.ComposeWindowsSHA256,
 		"QEMU_WINDOWS_SHA256":              p.QEMUWindowsSHA256,
+		"SEVENZIP_WINDOWS_SHA256":          p.SevenZipWindowsSHA256,
+		"SEVENZIP_BOOTSTRAP_SHA256":        p.SevenZipBootstrapSHA256,
 		"DOCKER_LINUX_X86_64_SHA256":       p.DockerLinuxX8664SHA256,
 		"DOCKER_LINUX_AARCH64_SHA256":      p.DockerLinuxAarch64SHA256,
 		"COMPOSE_LINUX_X86_64_SHA256":      p.ComposeLinuxX8664SHA256,

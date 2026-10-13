@@ -28,7 +28,7 @@ See the [CARE engine guide](vm.md) for the local build and publication limits.
 
 ### Personal testing versus the general release workflow
 
-The next personal test build, `0.1.17`, is staged for universal macOS
+The personal test build, `0.1.18`, supports universal macOS
 (Apple silicon and Intel) and Windows x64 with engine `0.1.2`. macOS is ad-hoc
 signed with the virtualization entitlement, not Developer ID signed or
 notarized; Windows is unsigned. The engine bundles were built by the fork's
@@ -39,14 +39,13 @@ unchanged from fork main `572aa5cc8d698e3d2ef3e52b24149535eac8787e`.
 The newly created engine tag was corrected to the actual builder commit after
 the inherited publication step initially selected main.
 
-Desktop publication remains blocked on the Windows QEMU support asset:
-the existing deterministic ZIP has verified checksums, but its 103 bundled
-third-party DLLs do not have a complete corresponding-source/license inventory.
-It is not uploaded. A source-built, dependency-pinned Windows QEMU/WHPX package
-needs an approved builder route; neither the retained distributor ZIP nor
-date-consistent upstream source guesses establish that inventory. Do not publish
-the staged desktop release as install-ready while this dependency URL is absent.
-No installer, clinic, VM, native Windows test or notarization was executed.
+Clinic `0.1.17` was published with a missing Windows QEMU ZIP dependency;
+fresh Windows server setup cannot complete with that version. Use `0.1.18`
+instead. Its setup downloads QEMU and temporary extraction tools directly from
+their distributors with pinned checksums, without CARE hosting those binaries.
+The extractor does not run either installer or change system-wide QEMU settings.
+Engine `0.1.2` remains unchanged. No clinic, VM, native Windows installer test or
+notarization was executed; Windows runtime and WHPX validation remain necessary.
 
 Current development publishes to `praffq/care_clinic`, not the organization
 repository. The personal macOS release prepared from this branch is `v0.1.16`; its
@@ -57,11 +56,10 @@ removed CARE image revisions and obsolete desktop dependency pins, so it fails b
 the platform packaging jobs. Its release-identity and prerequisite-verifier
 tests expose those mismatches. After those checks are updated to the
 release-line and CARE-engine/tool pins, the fork's automated desktop release
-still depends on the missing `qemu-10.1.0-windows-x86_64.zip` asset on the
-pinned engine release. A checksum-pinned, reproducible package is prepared
-locally; native Windows validation and support-asset publication remain
-pending. The package script and validation instructions are in
-[the engine guide](vm.md#packaging-qemu-for-windows).
+must verify the direct `QEMU_WINDOWS_URL` and `SEVENZIP_*` downloads as well as
+the engine/tool pins. A combined owner-only workflow patch is prepared separately;
+actual `.github` files are unchanged. Setup behavior is described in
+[the engine guide](vm.md#downloading-qemu-directly-on-windows).
 The Mac
 test releases have therefore been built, ad-hoc signed, packaged and published
 manually after CI. This does not establish a working all-platform release
@@ -88,7 +86,7 @@ Clinic `0.1.15` already supports it. See [images and lines](images-and-lines.md)
 | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE` | Deliberately chosen image versions; use immutable digests when available. |
 | `CORAZA_VERSION` | The WAF module version used to build the proxy. |
 | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE` | Local output image names. These are not upstream version selectors; normally leave them alone. |
-| `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `DOCKER_LINUX_*`, `COMPOSE_LINUX_*` | Version and SHA-256 pins for the CARE engine, host Docker/Compose clients, Windows QEMU, and native Linux Docker/Compose downloads. See [below](#bump-a-pinned-prerequisite) and the [CARE engine guide](vm.md). |
+| `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, `DOCKER_LINUX_*`, `COMPOSE_LINUX_*` | Version/URL/SHA-256 pins for the CARE engine, host Docker/Compose clients, directly downloaded Windows QEMU/extractors, and native Linux Docker/Compose downloads. See [below](#bump-a-pinned-prerequisite) and the [CARE engine guide](vm.md). |
 
 Publish verified fixes to each maintained release line. Existing clinics retain
 their line in `line.json`; changing the default affects new installs, not the
@@ -104,7 +102,7 @@ the exact file is embedded in the app and attached to the release.
 The desktop release pins are maintained in `deployments/.env`. For the CARE
 engine, build and publish an asset through an approved publishing process, then update the corresponding
 `CARE_VM_*` version and checksum values. Update the `DOCKER_CLI_*`,
-`COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, and `QEMU_WINDOWS_*` pins when their
+`COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*` and `SEVENZIP_*` pins when their
 host-side tools change. Linux continues to use `DOCKER_LINUX_*` and
 `COMPOSE_LINUX_*` static-binary pins. The current tracked workflow does not
 verify the CARE engine, Docker CLI, Compose or QEMU pins; a workflow-only patch

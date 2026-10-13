@@ -31,6 +31,10 @@ func TestDeploymentNamesAReleaseLine(t *testing.T) {
 	}{
 		{"http lines", "CARE_LINES_URL=" + pins.LinesURL, "CARE_LINES_URL=http://example.com/lines.json", false},
 		{"bad line", "CARE_DEFAULT_LINE=" + pins.DefaultLine, "CARE_DEFAULT_LINE=../x", false},
+		{"http QEMU", "QEMU_WINDOWS_URL=" + pins.QEMUWindowsURL, "QEMU_WINDOWS_URL=http://example.com/qemu.exe", false},
+		{"http extractor", "SEVENZIP_WINDOWS_URL=" + pins.SevenZipWindowsURL, "SEVENZIP_WINDOWS_URL=http://example.com/7zip.exe", false},
+		{"missing bootstrap", "SEVENZIP_BOOTSTRAP_URL=" + pins.SevenZipBootstrapURL, "SEVENZIP_BOOTSTRAP_URL=", false},
+		{"bad bootstrap checksum", "SEVENZIP_BOOTSTRAP_SHA256=" + pins.SevenZipBootstrapSHA256, "SEVENZIP_BOOTSTRAP_SHA256=unknown", false},
 		{"prebuilt caddy", "CADDY_WAF_PREBUILT=" + pins.CaddyWafPrebuilt, "CADDY_WAF_PREBUILT=" + digest, true},
 		{"tagged caddy", "CADDY_WAF_PREBUILT=" + pins.CaddyWafPrebuilt, "CADDY_WAF_PREBUILT=caddy:latest", false},
 		{"tagged backup", "BACKUP_PREBUILT=" + pins.BackupPrebuilt, "BACKUP_PREBUILT=postgres:17", false},

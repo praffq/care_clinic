@@ -265,7 +265,7 @@ UI suite because all screens share them.
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
 | CARE release lines | `CARE_LINES_URL` (HTTPS manifest URL); `CARE_DEFAULT_LINE` selects new installs. |
-| Prerequisite downloads | `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `DOCKER_LINUX_*`, and `COMPOSE_LINUX_*` version, URL, and checksum pins. |
+| Prerequisite downloads | `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, `DOCKER_LINUX_*`, and `COMPOSE_LINUX_*` version, URL, and checksum pins. |
 
 `CARE_CLINIC_VERSION` is `X.Y.Z` or `X.Y.Z-dev`. Engine and tool versions
 (`CARE_VM_VERSION`, `DOCKER_CLI_VERSION`, `QEMU_WINDOWS_VERSION`,
@@ -273,6 +273,10 @@ UI suite because all screens share them.
 `*_SHA256` is 64 lowercase hex characters. The CARE engine and host-side tools
 are documented in the [CARE engine guide](vm.md); Linux Docker provisioning is
 covered in [native integrations](native-integrations.md#docker-prerequisites).
+Windows QEMU and its temporary extraction tools download directly from upstream;
+`QEMU_WINDOWS_SHA256` identifies the distributor installer, not a repackaged ZIP.
+Both `SEVENZIP_*_URL` and `SEVENZIP_*_SHA256` pairs are required. No upstream
+installer is run and no third-party binary is hosted by the CARE release.
 
 `CARE_LINES_URL` points to the schema-1 release-line manifest. New clinics use
 `CARE_DEFAULT_LINE`, or the manifest's recommended line. Existing clinics keep

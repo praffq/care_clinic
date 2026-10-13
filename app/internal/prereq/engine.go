@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,8 +58,19 @@ func engineDownloads(p *release.Pins, goos, goarch string) ([]Download, error) {
 		{Name: composeName, URL: composeReleases + p.ComposeLinuxVersion + "/" + composeName, SHA256: composeSum},
 	}
 	if goos == "windows" {
-		qemuName := "qemu-" + p.QEMUWindowsVersion + "-windows-x86_64.zip"
-		all = append(all, Download{Name: qemuName, URL: base + qemuName, SHA256: p.QEMUWindowsSHA256})
+		for _, d := range []Download{
+			{URL: p.QEMUWindowsURL, SHA256: p.QEMUWindowsSHA256},
+			{URL: p.SevenZipBootstrapURL, SHA256: p.SevenZipBootstrapSHA256},
+			{URL: p.SevenZipWindowsURL, SHA256: p.SevenZipWindowsSHA256},
+		} {
+			u, err := url.Parse(d.URL)
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+				u.Fragment != "" || !strings.HasSuffix(strings.ToLower(u.Path), ".exe") {
+				return nil, errors.New("this build has invalid Windows QEMU download URLs")
+			}
+			d.Name = filepath.Base(u.Path)
+			all = append(all, d)
+		}
 	}
 	return all, nil
 }
@@ -178,6 +190,12 @@ func (pr *Provisioner) installEngineThen(beforeStop func() error) error {
 }
 
 func (pr *Provisioner) installEngineDownloads(downloads []Download, beforeStop func() error) error {
+	if len(downloads) != 3 && len(downloads) != 6 {
+		return errors.New("this build has an incomplete CARE engine download list")
+	}
+	if len(downloads) == 6 && (pr.pins == nil || pr.pins.QEMUWindowsVersion == "") {
+		return errors.New("this build has no pinned QEMU version")
+	}
 	files := make([]string, 0, len(downloads))
 	defer func() {
 		for _, f := range files {
@@ -192,8 +210,10 @@ func (pr *Provisioner) installEngineDownloads(downloads []Download, beforeStop f
 		files = append(files, f)
 	}
 	ef := vm.EngineFiles{Engine: files[0], Docker: files[1], Compose: files[2]}
-	if len(files) > 3 {
+	if len(files) == 6 {
 		ef.QEMU = files[3]
+		ef.QEMUBootstrap, ef.QEMUExtractor = files[4], files[5]
+		ef.QEMUVersion = pr.pins.QEMUWindowsVersion
 	}
 	pr.logln("Preparing the " + engineName + "...")
 	staged, err := vm.StageEngineUpdate(ef)

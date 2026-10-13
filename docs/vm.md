@@ -32,7 +32,8 @@ flowchart LR
 - **Install.** The setup screen's Docker step installs the engine: a
   `care-engine-<version>-linux-<arch>.tar.gz` bundle (kernel, initrd, a
   read-only system image and an empty data-disk seed), the `docker` CLI and
-  the `docker compose` plugin, plus QEMU on Windows. Every file comes from a
+  the `docker compose` plugin, plus QEMU and temporary extraction tools directly
+  from their distributors on Windows. Every file comes from a
   version and SHA-256 pinned in `deployments/.env`.
 - **Start.** `vm.Ensure` launches the engine helper (`care-clinic --vm-host`,
   the same executable). The helper boots the VM, waits for Docker inside it,
@@ -250,8 +251,10 @@ The engine is defined in `vm/`:
 - `vm/nix/bundle.nix`: packs the kernel, initrd, system image and data seed
   into the release tarball with a `manifest.json` of checksums.
 - `vm/VERSION`: the engine version.
-- `vm/qemu-windows.json`: the exact upstream Windows installer URL, QEMU
-  version and SHA-512.
+- `deployments/.env`: the upstream Windows installer/extractor URLs and SHA-256
+  pins used by setup.
+- `vm/qemu-windows.json`: the older local packaging tool's installer SHA-512 pin;
+  it is not the runtime download configuration.
 - `vm/package_qemu.py`, `vm/validate_qemu_windows.ps1`: reproducible Windows
   support-bundle packaging and native Windows validation.
 
@@ -275,61 +278,40 @@ docker run --rm -v care-nix-store:/nix -v "$PWD/vm":/src:ro -v "$PWD/out":/out n
 
 This builds for the architecture Docker runs on (arm64 on Apple silicon).
 
-### Packaging QEMU for Windows
+### Downloading QEMU directly on Windows
 
-The Windows driver runs `qemu-system-x86_64.exe` from the ZIP root and passes
-`-L <bundle>/share`. The ZIP must include its DLL dependencies, firmware and
-support directories, not just the executable. The package script retains every
-top-level DLL, `share/`, `lib/` when present, `COPYING`, `COPYING.LIB`, `README.rst`
-and `VERSION`; it excludes other emulators and NSIS installer plugins.
+From Clinic 0.1.18, setup downloads the pinned QEMU installer directly from
+Stefan Weil's distributor, not a repackaged ZIP from the CARE engine release.
+It also downloads the official 7-Zip `7zr.exe` and x64 installer directly from
+`ip7z/7zip`. All three downloads are verified against SHA-256 pins in
+`deployments/.env` before any extractor runs. The download-size preview includes
+all three files. No QEMU or 7-Zip binaries are embedded or hosted by CARE.
 
 The source is Stefan Weil's Windows distribution, linked from
 [QEMU's download page](https://www.qemu.org/download/#windows), not an official
 QEMU-project Windows binary build. The pinned archived installer is
 [20250826 (10.1.0)](https://qemu.weilnetz.de/w64/2025/).
-Its published SHA-512 is checked against the repository pin **before**
-extraction. This establishes consistency with the distributor's HTTPS checksum,
+Its SHA-256 was computed from the installer after checking the distributor's
+published SHA-512. This establishes consistency with the HTTPS checksum,
 not an independent publisher signature; the distributor warns that newer
 installers use an expired signing certificate.
 
-With Python 3 and 7-Zip available:
+Setup treats both installers as archives: `7zr.exe` extracts only `7z.exe` and
+`7z.dll` from the 7-Zip installer; that private extractor then reads QEMU's NSIS
+payload. **Neither installer is executed.** There is no system-wide QEMU/7-Zip
+installation, elevation, registry entry or PATH change. Extraction has a
+five-minute deadline. Required files and `VERSION` are checked before staging.
+The app retains the x64 emulator, every top-level DLL, `share/`, optional `lib/`
+and the distributor's notices; other emulators and installer plugins are omitted.
+The driver runs the private emulator with `-L <qemu>/share`.
 
-```sh
-python -B -m unittest discover -s vm -p test_package_qemu.py
-python -B vm/package_qemu.py --output out
-```
+Staging, activation and rollback remain part of the existing engine transaction.
+Download or extraction errors leave the old engine/tools untouched. Extractors
+and downloaded installers are removed afterward; QEMU stays in CARE's private
+tools folder. Direct download avoids CARE redistributing the third-party
+binary bundle, not the upstream software's own license conditions.
 
-The script can reuse a download with `--installer <path>`; the same checksum
-check still applies. ZIP entries are stored without compression, in sorted
-order with fixed metadata, so the same input produces the same bytes across
-hosts. This trades size (about 463 MiB) for reproducibility. The ZIP includes
-`care-qemu-provenance.json` with the source URL, source SHA-512 and each bundled
-file's SHA-256.
-
-Before upload, run on Windows with PowerShell 7:
-
-```powershell
-./vm/validate_qemu_windows.ps1 -Archive out/qemu-10.1.0-windows-x86_64.zip
-```
-
-This verifies the bundled files and version, requires compiled WHPX support,
-and smoke-tests q35 firmware, virtio storage/network/RNG and user-mode
-networking under TCG. It does **not** establish an actual WHPX guest boot;
-that still requires a disposable Windows machine with WHPX enabled.
-
-Upload only the Windows-validated ZIP to the release selected by
-`CARE_VM_BASE_URL`, retain the existing engine tarballs unchanged, and regenerate
-`SHA256SUMS` for the complete asset set. Never replace a different binary under
-an existing version/checksum pin. The desktop release's all-platform download
-verification must remain enabled. Retain license notices and arrange the
-corresponding-source/license obligations for QEMU and its bundled dependencies
-before public redistribution; checksum verification is not a licensing audit.
-
-The prepared 10.1.0 bundle has SHA-256
-`35e964db85f55a4a08786fb418c2572c4e22e5d370862987b0eecb82400d6364`,
-now recorded in `deployments/.env`. It has **not** been Windows-validated or
-uploaded yet. No `care-vm.yml` is tracked in this checkout, so there is no
-verified automated path to publish that support asset here. The separate
-workflow patch covers desktop CI/release pin checks and macOS entitlements; it
-does not add an engine-publication workflow. The repository's `.github/` files
-remain unchanged.
+`vm/package_qemu.py` and `vm/validate_qemu_windows.ps1` remain local diagnostics
+for the old ZIP format, not release-publication instructions. Real Windows
+extractor execution and a disposable WHPX guest boot still require native
+validation; macOS archive-layout tests are not proof of Windows runtime behavior.

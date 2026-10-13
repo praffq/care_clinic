@@ -46,6 +46,8 @@ func (u EngineUpdate) Interrupted() bool { return u.Phase != UpdateFailed }
 // EngineFiles are the verified downloads of one engine update.
 type EngineFiles struct {
 	Engine, Docker, Compose, QEMU string
+	QEMUBootstrap, QEMUExtractor  string
+	QEMUVersion                   string
 }
 
 // StagedUpdate is an update that is unpacked and verified but not active.
@@ -151,7 +153,13 @@ func StageEngineUpdate(f EngineFiles) (*StagedUpdate, error) {
 		return nil, fmt.Errorf("Docker Compose: %w", err)
 	}
 	if runtime.GOOS == "windows" {
-		if err := stageQEMU(f.QEMU, filepath.Join(newDir(), "qemu")); err != nil {
+		var err error
+		if f.QEMUExtractor != "" {
+			err = stageQEMUInstaller(f, filepath.Join(newDir(), "qemu"))
+		} else {
+			err = stageQEMU(f.QEMU, filepath.Join(newDir(), "qemu"))
+		}
+		if err != nil {
 			s.Discard()
 			return nil, fmt.Errorf("QEMU: %w", err)
 		}

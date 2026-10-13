@@ -315,13 +315,19 @@ func TestWindowsQEMUUsesDeploymentPins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantName := "qemu-" + p.QEMUWindowsVersion + "-windows-x86_64.zip"
 	want := Download{
-		Name: wantName, URL: strings.TrimRight(p.CareVMBaseURL, "/") + "/" + wantName,
+		Name: "qemu-w64-setup-20250826.exe", URL: p.QEMUWindowsURL,
 		SHA256: p.QEMUWindowsSHA256,
 	}
-	if len(downloads) != 4 || downloads[3] != want {
+	if len(downloads) != 6 || downloads[3] != want ||
+		downloads[4].URL != p.SevenZipBootstrapURL || downloads[4].SHA256 != p.SevenZipBootstrapSHA256 ||
+		downloads[5].URL != p.SevenZipWindowsURL || downloads[5].SHA256 != p.SevenZipWindowsSHA256 {
 		t.Fatalf("Windows provisioning must automatically include pinned QEMU: %+v", downloads)
+	}
+	for _, d := range downloads[3:] {
+		if strings.Contains(d.URL, p.CareVMBaseURL) {
+			t.Fatalf("third-party software must download directly from upstream: %+v", d)
+		}
 	}
 	if want.SHA256 == strings.Repeat("0", 64) {
 		t.Fatal("QEMU must have a real bundle checksum")
@@ -335,7 +341,9 @@ func TestEngineDownloadsMatchPlatform(t *testing.T) {
 		DockerCLIVersion: "29.8.1", DockerCLIMacAarch64SHA256: "cli-arm", DockerCLIMacX8664SHA256: "cli-intel",
 		DockerCLIWindowsSHA256: "cli-win", ComposeLinuxVersion: "5.5.1",
 		ComposeMacAarch64SHA256: "compose-arm", ComposeMacX8664SHA256: "compose-intel", ComposeWindowsSHA256: "compose-win",
-		QEMUWindowsVersion: "10.1.0", QEMUWindowsSHA256: "qemu",
+		QEMUWindowsVersion: "10.1.0", QEMUWindowsSHA256: "qemu", QEMUWindowsURL: "https://qemu.example.test/setup.exe",
+		SevenZipBootstrapURL: "https://7zip.example.test/7zr.exe", SevenZipBootstrapSHA256: "bootstrap",
+		SevenZipWindowsURL: "https://7zip.example.test/7zip.exe", SevenZipWindowsSHA256: "extractor",
 	}
 
 	compose := "https://github.com/docker/compose/releases/download/v5.5.1/"
@@ -357,7 +365,9 @@ func TestEngineDownloadsMatchPlatform(t *testing.T) {
 			{"care-engine-0.1.0-linux-amd64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-amd64.tar.gz", "vm-intel"},
 			{"docker-29.8.1.zip", "https://download.docker.com/win/static/stable/x86_64/docker-29.8.1.zip", "cli-win"},
 			{"docker-compose-windows-x86_64.exe", compose + "docker-compose-windows-x86_64.exe", "compose-win"},
-			{"qemu-10.1.0-windows-x86_64.zip", "https://example.test/engine/qemu-10.1.0-windows-x86_64.zip", "qemu"},
+			{"setup.exe", "https://qemu.example.test/setup.exe", "qemu"},
+			{"7zr.exe", "https://7zip.example.test/7zr.exe", "bootstrap"},
+			{"7zip.exe", "https://7zip.example.test/7zip.exe", "extractor"},
 		}},
 	} {
 		got, err := engineDownloads(p, tc.goos, tc.goarch)
@@ -368,6 +378,28 @@ func TestEngineDownloadsMatchPlatform(t *testing.T) {
 	for _, target := range [][2]string{{"windows", "arm64"}, {"linux", "amd64"}} {
 		if _, err := engineDownloads(p, target[0], target[1]); err == nil {
 			t.Errorf("%s/%s: expected no engine download", target[0], target[1])
+		}
+	}
+}
+
+func TestWindowsUpstreamDownloadsRejectInvalidURLs(t *testing.T) {
+	for _, raw := range []string{"", "http://example.test/qemu.exe", "https://user:password@example.test/qemu.exe",
+		"https://example.test/qemu.exe#fragment", "https://example.test/"} {
+		t.Run(raw, func(t *testing.T) {
+			p := *deploymentPins(t)
+			p.QEMUWindowsURL = raw
+			if _, err := engineDownloads(&p, "windows", "amd64"); err == nil {
+				t.Fatal("invalid upstream URL accepted")
+			}
+		})
+	}
+}
+
+func TestIncompleteEngineDownloadsFailBeforeDownloading(t *testing.T) {
+	pr := &Provisioner{}
+	for _, count := range []int{0, 2, 4, 5, 6, 7} {
+		if err := pr.installEngineDownloads(make([]Download, count), nil); err == nil {
+			t.Fatalf("incomplete download configuration accepted: %d", count)
 		}
 	}
 }
