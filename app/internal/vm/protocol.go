@@ -17,10 +17,11 @@ const (
 	vsockHTTPS   = 443
 )
 
-// Fixed loopback ports QEMU forwards on Windows. They only listen on
-// 127.0.0.1 and require the per-install client certificate.
+// Windows loopback endpoints require the per-install client certificate.
+// The helper relays Docker to QEMU's private port without terminating TLS.
 const (
 	hostTCPDocker  = 47375
+	qemuTCPDocker  = 47376
 	hostTCPControl = 47377
 )
 

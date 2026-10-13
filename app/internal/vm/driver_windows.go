@@ -99,11 +99,12 @@ func qemuArgs(m Manifest, c Config, creds string) []string {
 		"user,id=net0",
 		"hostfwd=tcp:0.0.0.0:80-:80",
 		"hostfwd=tcp:0.0.0.0:443-:443",
-		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(hostTCPDocker) + "-:" + strconv.Itoa(guestTCPDocker),
+		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(qemuTCPDocker) + "-:" + strconv.Itoa(guestTCPDocker),
 		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(hostTCPControl) + "-:" + strconv.Itoa(guestTCPControl),
 	}, ",")
 	return []string{
-		"-machine", "q35", "-accel", "whpx,kernel-irqchip=off", "-cpu", "max",
+		// WHPX cannot safely expose all of "max"'s CPU features.
+		"-machine", "q35", "-accel", "whpx,kernel-irqchip=off", "-cpu", "Nehalem",
 		"-m", strconv.Itoa(c.MemoryMB), "-smp", strconv.Itoa(c.CPUs),
 		"-display", "none", "-monitor", "none", "-serial", "stdio", "-no-reboot",
 		"-L", filepath.Join(qemuDir(), "share"),
@@ -174,7 +175,7 @@ func (v *qemuVM) dial(ctx context.Context, port uint32) (net.Conn, error) {
 	case vsockControl:
 		hp = hostTCPControl
 	case vsockDocker:
-		hp = hostTCPDocker
+		hp = qemuTCPDocker
 	default:
 		return nil, fmt.Errorf("guest port %d is not forwarded", port)
 	}

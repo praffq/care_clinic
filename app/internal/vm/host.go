@@ -345,6 +345,12 @@ func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 // sockets on macOS, file sync on Windows.
 func (h *host) attach(ctx context.Context) error {
 	if runtime.GOOS == "windows" {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostTCPDocker))
+		if err != nil {
+			return fmt.Errorf("Docker relay: %w", err)
+		}
+		relay := newDockerRelay()
+		go forward(ctx, ln, relay.connect, h.logf)
 		h.sync = newSyncer(h.g, h.logf)
 		h.mu.Lock()
 		h.status.WebPorts = []int{80, 443}

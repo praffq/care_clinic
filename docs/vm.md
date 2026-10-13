@@ -45,8 +45,20 @@ flowchart LR
 - **Run.** The app points every `docker` / `docker compose` call at the
   engine with `DOCKER_HOST`, `DOCKER_CONFIG` and a `PATH` that puts the
   engine's own CLI first (`vm.Env`). Nothing reads the user's Docker contexts.
+  The CLI and Compose run on the host as remote-control tools; Docker Engine
+  and the clinic containers run inside the VM. The guest agent forwards Docker
+  API requests rather than implementing high-level setup jobs. Moving these
+  tools into the guest would require a separate job-management protocol and
+  is not part of the Windows connection relay fix.
 - **Ports.** The helper listens on ports 80 and 443 and forwards them into the
   VM, where Caddy publishes the clinic. Only those two ports are forwarded.
+  On Windows, Docker clients connect to the helper's loopback relay on port
+  47375, which forwards the original mTLS stream to QEMU on loopback port
+  47376. The relay serializes and paces upstream connection establishment to
+  avoid overflowing libslirp's small listen backlog. Only refused TCP dials
+  are retried, within a ten-second deadline; no HTTP requests are replayed.
+  Established streams remain concurrent. Restart the engine helper after
+  upgrading the desktop app to activate this host-side change.
 - **Update.** When `CARE_VM_VERSION` changes in a new app release, the setup
   check shows "Update CARE engine". App self-updates leave a running engine in
   place, so on panel launch the app compares the installed and running
@@ -227,6 +239,22 @@ CARE with "remove images" deletes the folder.
 - **"Windows Hypervisor Platform is off".** Use the *Turn on* button on the
   setup screen, then restart. If it says virtualization is disabled, turn on
   Intel VT-x / AMD-V (sometimes called "SVM") in the computer's BIOS/UEFI.
+- **"WHPX: Unexpected VP exit code 4".** QEMU can stop before Linux boots
+  when the CPU model exposes features WHPX cannot safely run. The Windows
+  driver uses the conservative `Nehalem` CPU model, retaining hardware
+  acceleration and the configured CPU count. Older apps that use `max` need
+  an app update; reinstalling the engine or deleting its data disk does not
+  change the CPU model. This profile was verified on an Intel i3-1215U;
+  native AMD and other Windows/WHPX combinations still require validation.
+- **Setup repeatedly reports connection refused at `127.0.0.1:47375`.**
+  Simultaneous connections to QEMU's Windows user-network forwarding can
+  overflow its small listen backlog while the VM and Docker stay healthy.
+  The helper's Docker relay queues connection establishment and retries only
+  refused dials, without replaying commands. Update the desktop app and stop
+  and restart the engine to load the new helper. Reconnecting Wi-Fi or deleting
+  clinic data is not a fix for this local connection burst. Other causes,
+  including a stopped engine, still require checking the app and engine logs.
+  Relay failures are logged as `forward ...` in `engine-host.log`.
 - **The clinic page doesn't open.** Another program may be using port 80 or
   443 (`engine-host.log` says `port 80: address already in use`). Stop it (common
   culprits: IIS, Skype, another web server) and restart

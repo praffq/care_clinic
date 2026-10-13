@@ -45,12 +45,17 @@ func forward(ctx context.Context, ln net.Listener, dial func(context.Context) (n
 			return
 		}
 		go func() {
+			closeClient := context.AfterFunc(ctx, func() { _ = c.Close() })
+			defer closeClient()
+			defer func() { _ = c.Close() }()
 			up, err := dial(ctx)
 			if err != nil {
 				logf("forward %s: %v", ln.Addr(), err)
 				_ = c.Close()
 				return
 			}
+			closeUpstream := context.AfterFunc(ctx, func() { _ = up.Close() })
+			defer closeUpstream()
 			pipe(c, up)
 		}()
 	}
