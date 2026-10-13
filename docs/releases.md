@@ -28,6 +28,26 @@ See the [CARE engine guide](vm.md) for the local build and publication limits.
 
 ### Personal testing versus the general release workflow
 
+The next personal test build, `0.1.17`, is staged for universal macOS
+(Apple silicon and Intel) and Windows x64 with engine `0.1.2`. macOS is ad-hoc
+signed with the virtualization entitlement, not Developer ID signed or
+notarized; Windows is unsigned. The engine bundles were built by the fork's
+existing engine workflow from builder commit
+`12c63c0daa3539f41d0e6d87cdf7c1952aca793e`, whose non-workflow source matches
+`32ce8e940dfbecdb7ff89587c7ee40659f4f57ff`. Workflow bytes were inherited
+unchanged from fork main `572aa5cc8d698e3d2ef3e52b24149535eac8787e`.
+The newly created engine tag was corrected to the actual builder commit after
+the inherited publication step initially selected main.
+
+Desktop publication remains blocked on the Windows QEMU support asset:
+the existing deterministic ZIP has verified checksums, but its 103 bundled
+third-party DLLs do not have a complete corresponding-source/license inventory.
+It is not uploaded. A source-built, dependency-pinned Windows QEMU/WHPX package
+needs an approved builder route; neither the retained distributor ZIP nor
+date-consistent upstream source guesses establish that inventory. Do not publish
+the staged desktop release as install-ready while this dependency URL is absent.
+No installer, clinic, VM, native Windows test or notarization was executed.
+
 Current development publishes to `praffq/care_clinic`, not the organization
 repository. The personal macOS release prepared from this branch is `v0.1.16`; its
 assets are an Apple-silicon macOS DMG and `SHA256SUMS`. Windows runtime/packaging
