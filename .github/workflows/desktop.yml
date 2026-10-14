@@ -92,10 +92,10 @@ jobs:
           docker compose version
       - name: Build from a clean checkout
         run: go build ./...
-      - name: Check host-specific engine boundaries
+      - name: Vet Linux and Windows engine boundaries
         run: |
+          go vet ./...
           GOOS=windows GOARCH=amd64 go vet ./...
-          GOOS=darwin GOARCH=amd64 go vet ./...
       - name: Test with race detection
         run: go test -race -count=1 -timeout=15m ./...
       - name: Check module files were not changed
@@ -164,6 +164,9 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@"$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
       - name: Prepare installer metadata and deployment kit
         run: node app/frontend/scripts/stage-install.mjs
+      - name: Vet on the native desktop host
+        working-directory: app
+        run: go vet ./...
       - name: Build native application
         working-directory: app
         run: wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }}

@@ -72,9 +72,12 @@ func TestCIIncludesGuestAndQEMUPackagingRegressions(t *testing.T) {
 	)
 	requireText(t, workflow(t, "desktop.yml"),
 		"GOOS=windows GOARCH=amd64 go vet ./...",
-		"GOOS=darwin GOARCH=amd64 go vet ./...",
+		"name: Vet on the native desktop host",
 		"go test -race -count=1", "npm run build",
 	)
+	if strings.Contains(workflow(t, "desktop.yml"), "GOOS=darwin") {
+		t.Fatal("Darwin vet requires the native macOS runner and its cgo frameworks")
+	}
 }
 
 func TestThirdPartyActionsUseImmutableSHAs(t *testing.T) {
