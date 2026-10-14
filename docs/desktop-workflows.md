@@ -127,7 +127,7 @@ opens Overview only after both the saved setup-success event and matching
 successful job completion arrive. A failure keeps the failure screen, relevant
 guidance and logs instead of entering the panel.
 
-Initial installation needs internet to download the release-line manifest, images, and any local customization dependencies.
+Initial installation needs internet to download verified update metadata, images, and any local customization dependencies.
 Recognized connection failures show **The download was interrupted**, ask the
 operator to reconnect, and do not suggest updating CARE Clinic as the remedy.
 Keep CARE Clinic open and choose **Try again** to retry the same unfinished
@@ -306,17 +306,13 @@ interrupted update is rolled back on the next launch. The data disk and database
 migrations are not rolled back. A failed update is not retried automatically;
 the panel offers **Try the update again**. See [CARE engine](vm.md#engine-update-rollback).
 
-CARE updates download and stage backend/frontend images within the current release line.
-The Updates tab shows the current line and offers an explicit upgrade to a newer
-compatible line, after a safety backup. Desktop updates outside the line's app-version
-range are blocked. See [images and release lines](images-and-lines.md). A failed
+CARE updates download and stage backend/frontend images for CARE 3.1.
+The Updates tab shows the software version and prepared updates.
+See [CARE images](images.md). A failed
 check remains a retryable failure, not "Up to date". Installing a staged CARE
 update can interrupt service.
 
-After upgrading to a newer line, checks follow only that line's backend/frontend
-images, not older lines. The personal `3.1` branch test is available on Clinic
-`0.1.15`; it is not an official upstream release. Returning to an older line
-requires a backup restore, not an ordinary update button.
+Only CARE 3.1 ships; there is no CARE version selector.
 
 A CARE Clinic update downloads a verified application installer or replaces
 the app bundle. Conflicting actions stay locked while it runs:
@@ -324,7 +320,7 @@ the app bundle. Conflicting actions stay locked while it runs:
 The clinic can keep serving during desktop installer download/replacement.
 An included engine upgrade can then take it offline for a few minutes when
 the app reopens. CARE software, CARE Clinic and the CARE engine have separate
-versions; a CARE line upgrade does not redesign the desktop interface.
+versions; a CARE software update does not redesign the desktop interface.
 
 | Desktop update state | How to proceed |
 | --- | --- |

@@ -41,7 +41,7 @@ func migrationFixture(t *testing.T) (*Clinic, func() string, string) {
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	const fixtureRef = "0123456789abcdef0123456789abcdef01234567"
 	digest := "@sha256:" + strings.Repeat("a", 64)
-	lock := `{"line":"fixture","backend":{"current":{"commit":"` + fixtureRef + `","image":"fixture/backend` + digest +
+	lock := `{"version":"3.1.0","backend":{"current":{"commit":"` + fixtureRef + `","image":"fixture/backend` + digest +
 		`","builder":"fixture/backend-builder` + digest + `"}},"frontend":{"current":{"commit":"` + fixtureRef +
 		`","image":"fixture/frontend` + digest + `","builder":"fixture/frontend-builder` + digest + `","runtime_keys":["REACT_CARE_API_URL"]}}}`
 	hash := func(data string) string {
@@ -49,7 +49,7 @@ func migrationFixture(t *testing.T) (*Clinic, func() string, string) {
 		return hex.EncodeToString(sum[:])[:12]
 	}
 	pins := &release.Pins{
-		AppVersion: "fixture", DefaultLine: "fixture",
+		AppVersion: "fixture", CAREVersion: "3.1.0",
 		BackendImage: "fixture-backend", FrontendImage: "fixture-frontend", BackupImage: "fixture-backup",
 		CaddyWafImage: "fixture-caddy", CaddyImage: "fixture-caddy-base", PostgresImage: "fixture-postgres", CorazaVersion: "fixture",
 	}
@@ -109,7 +109,7 @@ exit 99
 		"frontend.env":      "",
 		"backup.Dockerfile": "synthetic-backup",
 		"caddy.Dockerfile":  "synthetic-caddy",
-		"line.json":         lock,
+		"care-images.json":  lock,
 	} {
 		mode := os.FileMode(0o600)
 		if path == "docker" {

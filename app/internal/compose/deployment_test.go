@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
@@ -152,6 +153,22 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	source, err := os.ReadFile("../../../versions.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := release.StageEnv(source, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envFile, staged, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range []struct {
 		name       string
 		user       string
@@ -174,7 +191,7 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 				"FACILITY_S3_BUCKET="+tt.facility,
 			)}
 			output, err := run.Capture("docker", "compose", "--project-directory", dir,
-				"--env-file", filepath.Join(dir, ".env"), "-f", filepath.Join(dir, "docker-compose.yml"),
+				"--env-file", envFile, "-f", filepath.Join(dir, "docker-compose.yml"),
 				"config", "--format", "json")
 			if err != nil {
 				t.Fatal(err)

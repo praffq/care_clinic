@@ -22,7 +22,7 @@ application's own user or API documentation.
 | [Wails application and API](wails-application.md) | Process startup, background jobs, concurrency, authorization, all bound methods, and events. |
 | [Configuration and settings](configuration-and-settings.md) | The installed directory, persisted configuration, environment files, plugins, and settings changes. |
 | [Plugins](plugins.md) | How CARE loads backend and frontend plugins, the `catalog.yml` format, and how CARE Clinic installs and syncs them. |
-| [CARE images and release lines](images-and-lines.md) | Published images, runtime and compiled settings, release-line manifests, and explicit line upgrades. |
+| [CARE images](images.md) | Published CARE 3.1 images, runtime and compiled settings, and verified update metadata. |
 | [Clinic lifecycle and deployment](clinic-lifecycle.md) | Setup, image builds, starting, migrations, service relationships, and stopping. |
 | [CARE engine](vm.md) | The app-managed Linux VM used for Docker on macOS and Windows, including setup, storage, migration, and troubleshooting. |
 | [Local diagnostics](local-logs.md) | Shared logs, live collection status, retention, privacy and diagnostics ZIP exports. |

@@ -101,14 +101,14 @@ network-wide single-clinic rule.
 A Go / [Wails](https://wails.io) desktop app with a React UI drives a Docker Compose
 stack: the CARE backend and workers, the CARE frontend, PostgreSQL, Redis, Silo for
 files, and Caddy with the Coraza WAF as the HTTPS front door. CARE images are
-published by CI and downloaded by digest from the clinic's release line. Local
+published by CI and downloaded by digest from verified update metadata. Local
 builder-image customizations are only needed for backend plugins or changed
-compiled frontend settings; see [images and release lines](docs/images-and-lines.md).
+compiled frontend settings; see [CARE images](docs/images.md).
 
 | Path | What lives there |
 |---|---|
 | `app/` | The desktop app: Go engine in `internal/`, Wails bindings in `*.go`, React UI in `frontend/` |
-| `images/` | CARE image publication inputs, frontend runtime wrapper, and release-line manifest scripts |
+| `images/` | CARE 3.1 frontend runtime wrapper and image verification scripts |
 | `deployments/` | The server kit: compose file, Caddyfile, env files, backup script, and public certificate bootstrap route |
 | `.github/workflows/` | CI, and releases started when `CARE_CLINIC_VERSION` in `deployments/.env` changes on `main` |
 
@@ -145,20 +145,20 @@ checks:
 
 - **Server setup** installs the [CARE engine](docs/vm.md) on macOS and Windows,
   or pinned native Docker and Compose binaries on Linux. Downloads are
-  checksum-verified. It fetches the CARE release-line
+  checksum-verified. It fetches signed CARE update
   manifest from GitHub Pages and pulls digest-pinned CARE images from GHCR,
   plus the stack's third-party images. Local CARE builds are only needed for
   backend plugins or changed compiled frontend settings, using published builder
   images. The proxy and backup images build locally while their optional prebuilt
-  pins are blank. See [images and release lines](docs/images-and-lines.md).
+  pins are blank. See [CARE images](docs/images.md).
 - **The Windows installer** contains Microsoft's WebView2 bootstrapper, which
   downloads the WebView2 runtime from Microsoft if the computer lacks it.
 - **Clinic features** the operator turns on, such as SMS sign-in codes and email,
   send data to the provider the operator configured.
 - **Updates** check GitHub release metadata for CARE Clinic. While the clinic
-  is serving, CARE's background update checker fetches the release-line manifest
-  and downloads newer images within the current line. Moving to a newer line is
-  an explicit choice. Local plugin or compiled-setting builds can fetch dependencies.
+  is serving, CARE's background update checker fetches signed metadata
+  and downloads newer CARE 3.1 images. There is no CARE version selector.
+  Local plugin or compiled-setting builds can fetch dependencies.
 - **Hosted plugins**, including the default CARE Onboarding plugin for new
   clinics, are downloaded by staff browsers from their configured hosts.
 

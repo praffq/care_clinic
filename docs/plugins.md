@@ -186,7 +186,7 @@ Overview first if it is stopped. `ApplyPlugins`:
    clinic's HTTPS `/ping/` endpoint for 30 continuous seconds.
 2. Pins the currently running backend image under a safety tag and atomically
    saves a private `plugin-recovery.json`. It preserves the exact previous
-   `backend.env`, `plugins.json` (including absence), `line.json`, container
+   `backend.env`, `plugins.json` (including absence), `care-images.json`, container
    metadata, and affected frontend registration rows, including manual rows
    sharing a candidate slug.
 3. Writes the candidate configuration. Changed backend inputs trigger a

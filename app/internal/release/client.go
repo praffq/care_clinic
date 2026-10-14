@@ -24,16 +24,17 @@ type verifiedState struct {
 type Client struct {
 	StatePath string
 	HTTP      *http.Client
-	mu        sync.Mutex
 }
+
+var manifestMu sync.Mutex
 
 func NewClient(clinicDir string) *Client {
 	return &Client{StatePath: filepath.Join(clinicDir, "updates", "verified.json")}
 }
 
 func (c *Client) Fetch(ctx context.Context, endpoint string) (Manifest, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	manifestMu.Lock()
+	defer manifestMu.Unlock()
 	client := c.HTTP
 	if client == nil {
 		client = http.DefaultClient

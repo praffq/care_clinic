@@ -22,7 +22,8 @@ flowchart LR
 
 | Layer | Owner | Purpose |
 | --- | --- | --- |
-| `deployments/.env` | Maintainer | Desktop version, release-line manifest URL/default line, and image pins. |
+| `versions.toml` | Maintainer | Release versions, update URL, upstream branches, image and prerequisite pins. |
+| `deployments/.env` | Maintainer | Local image tag names. |
 | Other `deployments/` files | Maintainer | The Compose stack, initial environment templates, proxy and helper programs. |
 | `app/install/` | Build process | Staging for Go embedding; not the place for source edits. |
 | Embedded `installFS` | Desktop executable | Immutable copy of the kit used by that build. |
@@ -52,8 +53,8 @@ The installed kit contains the following recognizable parts:
 ```text
 install/
 |-- .env
-|-- line.json                 # current/staged published image records
-|-- lines.json                # cached release-line manifest
+|-- care-images.json          # current/staged published image records
+|-- updates/verified.json     # verified signed metadata and revision watermark
 |-- docker-compose.yml
 |-- backend.env
 |-- frontend.env
@@ -208,13 +209,12 @@ files (with the existing Windows private DACL helper).
 
 Its preservation allow-list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other kit files are refreshed from the executable. This includes `.env`, so the shipped pins do not become an independently editable runtime release mechanism.
 
-The clinic's line id and current/staged published images are kept in `line.json`,
+The clinic's CARE version and current/staged published images are kept in `care-images.json`,
 not `.env`. It is not embedded, so kit refresh does not overwrite it; uninstall
 removes it with the installed kit. A missing or corrupt lock is treated as an
-empty record and selects images from the release-line manifest. `lines.json`
-caches that manifest for offline selection and status. Recording current images
-removes the legacy source checkouts and lock. See [images and release
-lines](images-and-lines.md).
+empty record and selects images from verified signed update metadata.
+Recorded current images support offline startup. Recording current images
+removes the legacy source checkouts and lock. See [CARE images](images.md).
 
 Writes go through a process-wide mutex and a temporary file renamed into place, because the background check and an operator pressing "Install now" can reach the lock at the same time, and a half-written lock would lose the record of what the clinic is running.
 
@@ -231,7 +231,7 @@ the union so retry can finish even if some old files are already gone.
 An upgrade without an inventory **does not guess prior ownership**: unknown
 older files remain, and only the current shipped files become tracked.
 Environment files, keys/secret material, backup state, restore/plugin recovery
-records, plugin selections and release-line state are protected from cleanup.
+records, plugin selections and image state are protected from cleanup.
 Unknown files and empty directories remain; there is no recursive deletion.
 Invalid paths, symlinks within the installation, non-regular file targets and
 damaged/unsupported inventories fail explicitly. File-to-directory transitions
@@ -325,7 +325,7 @@ A backend change uses Start to reapply configuration; Start also checks compiled
 frontend image freshness. A frontend-only change uses the narrower frontend rebuild
 action, which force-recreates the frontend container. Runtime frontend changes
 do not recompile assets; changed compiled settings use the published builder
-image. See [images and release lines](images-and-lines.md).
+image. See [CARE images](images.md).
 
 `WriteEnv` alone does not restart a container or rebuild an image. Saving a file and applying it are two operations. The editor only requests the apply action after its write loop and reload.
 
@@ -407,7 +407,7 @@ Frontend runtime values are read from mounted `frontend.env` when the container
 starts; apply them by recreating the frontend. Nonblank compiled values differing
 from the published image's `build_env` trigger a local rebuild on its builder
 image. Blank compiled values use the published defaults. The runtime key list
-and parser limits are in [images and release lines](images-and-lines.md).
+and parser limits are in [CARE images](images.md).
 Clearing an optional friendly control removes its assignment and lets CARE's
 default apply. In the support editor, an explicitly blank `KEY=` stays blank;
 blank and missing values can behave differently depending on the CARE setting.
@@ -446,8 +446,8 @@ The **Updates** tab shows both update mechanisms without a CARE Clinic admin pas
 
 | Card | Shows | Actions |
 | --- | --- | --- |
-| CARE | Current release line, support date, running/staged commits, newer compatible lines, and check status. | Check now; retry; install staged fixes; explicitly upgrade to a newer line after a safety backup. |
-| CARE Clinic | Installed and newest published GitHub versions, notes, and any line-compatibility block. | Download and launch the verified installer only when the current line permits its app version. |
+| CARE | CARE 3.1 version, running/staged commits, and check status. | Check now; retry; install staged fixes. |
+| CARE Clinic | Installed and newest published GitHub versions and notes. | Download and launch the checksum-verified installer. |
 
 CARE Clinic's shared controller remains guarded through the native
 installer/restart handoff. The backend reports `restarting` immediately before

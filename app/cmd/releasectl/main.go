@@ -146,7 +146,6 @@ func run(args []string) error {
 			return fmt.Errorf("build outputs do not match run-start branch snapshots")
 		}
 		m.Care.Backend.SourceHash, m.Care.Frontend.SourceHash = p.Hashes["backend"], p.Hashes["frontend"]
-		m.Care.Frontend.BuildEnv = p.BuildEnv
 		m.SourceHashes = map[string]string{"desktop": p.Hashes["desktop"], "engine": p.Hashes["engine"], "support": p.Hashes["support"]}
 		if m.Blocked == nil {
 			m.Blocked = []string{}

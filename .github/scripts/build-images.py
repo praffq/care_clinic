@@ -68,8 +68,7 @@ def main():
             builder = build("care-backend-builder", directory, dockerfile, args.publish, target="builder")
             build_env = None
         else:
-            subprocess.run(["node", "images/scripts/frontend-env.mjs", "--out",
-                            "images/frontend/clinic.env", "--json", "ci/frontend-build.json"], check=True)
+            subprocess.run(["node", ".github/scripts/frontend-env.mjs"], check=True)
             build_env = read("ci/frontend-build.json")["build_env"]
             context = {"care_fe": directory}
             image = build("care-frontend", "images/frontend", "images/frontend/Dockerfile",

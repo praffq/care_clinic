@@ -8,6 +8,7 @@ on:
     paths:
       - versions.toml
       - env-defaults.yml
+      - deployments/env-defaults.yml
       - app/**
       - images/**
       - vm/**
@@ -66,7 +67,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ci/releasectl plan --root . --previous previous.json --out plan.json
+          previous=()
+          if [ -f previous.json ]; then previous+=(--previous previous.json); fi
+          ci/releasectl plan --root . "${previous[@]}" --out plan.json
           python3 .github/scripts/pipeline.py plan-outputs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -154,7 +157,9 @@ jobs:
           mkdir -p ci public
           go -C app build -o ../ci/releasectl ./cmd/releasectl
           python3 .github/scripts/pipeline.py merge
-          ci/releasectl manifest --root . --previous previous.json --outputs outputs.json --out public/updates.json
+          previous=()
+          if [ -f previous.json ]; then previous+=(--previous previous.json); fi
+          ci/releasectl manifest --root . --plan plan.json "${previous[@]}" --outputs outputs.json --out public/updates.json
       - name: Sign and verify exact manifest bytes
         env:
           UPDATES_SIGNING_KEY: ${{ secrets.UPDATES_SIGNING_KEY }}

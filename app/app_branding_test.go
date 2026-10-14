@@ -59,7 +59,7 @@ func TestClinicBrandingContract(t *testing.T) {
 	if !strings.Contains(string(read("../deployments/Caddyfile")), `root_cn "`+trust.CommonName+`"`) {
 		t.Error("Caddy's root certificate must match the native trust identity")
 	}
-	if _, err := release.Load(read("../deployments/.env")); err != nil {
+	if _, err := release.LoadSource(read("../versions.toml"), read("../deployments/.env")); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"frontend/package.json", "frontend/package-lock.json"} {

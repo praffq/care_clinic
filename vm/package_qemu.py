@@ -6,11 +6,16 @@ import json
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
 
-PIN = Path(__file__).with_name("qemu-windows.json")
+PIN = Path(__file__).parent.parent / "versions.toml"
+
+
+def release_pin():
+    return tomllib.loads(PIN.read_text())["tools"]["qemu_windows_x86_64"]
 
 
 def digest(path, algorithm):
@@ -49,7 +54,7 @@ def package(root, output, pin):
     provenance = {
         "version": pin["version"],
         "installer_url": pin["url"],
-        "installer_sha512": pin["sha512"],
+        "installer_sha256": pin["sha256"],
         "files_sha256": {
             p.relative_to(root).as_posix(): digest(p, "sha256") for p in files
         },
@@ -75,7 +80,7 @@ def main():
     parser.add_argument("--installer", type=Path, help="Use a local, checksum-verified installer")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    pin = json.loads(PIN.read_text())
+    pin = release_pin()
     extractor = shutil.which("7z") or shutil.which("7zz")
     if extractor is None:
         raise RuntimeError("7-Zip is required to extract the NSIS installer")
@@ -91,9 +96,9 @@ def main():
             installer = temp / "installer.exe"
             with urllib.request.urlopen(pin["url"], timeout=120) as response, installer.open("wb") as target:
                 shutil.copyfileobj(response, target)
-        actual = digest(installer, "sha512")
-        if actual != pin["sha512"]:
-            raise ValueError(f"Installer SHA-512 mismatch: expected {pin['sha512']}, got {actual}")
+        actual = digest(installer, "sha256")
+        if actual != pin["sha256"]:
+            raise ValueError(f"Installer SHA-256 mismatch: expected {pin['sha256']}, got {actual}")
         root = temp / "extracted"
         subprocess.run([extractor, "x", str(installer.resolve()), f"-o{root}", "-y"],
                        check=True, stdout=subprocess.DEVNULL)

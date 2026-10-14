@@ -108,11 +108,11 @@ decides. Actual OS privilege prompts still belong to the native integrations.
 | --- | --- |
 | `backup` | Which backups and keys exist, and how can data be safely restored? |
 | `compose` | Which published images or local customizations are needed, and from which exact inputs? |
-| `lines` | Which release lines, digest-pinned images and app-version ranges does the manifest publish? |
+| `careversions` | Which verified CARE 3.1 image builds does the signed manifest publish? |
 | `health` | Is the clinic HTTP endpoint responding, and is the HTTPS port usable? |
 | `plugins` | Which plugin configuration is active, and which validated draft is staged for application? |
 | `prereq` | Is Docker usable, and how can the user obtain or start it? Uses the [CARE engine](vm.md) on macOS/Windows and native Docker Engine on Linux. |
-| `release` | Which version, release-line settings, and image references does this executable ship? |
+| `release` | Which versions and image references does this executable ship, and is update metadata authentic? |
 | `residue` | What resources from an earlier installation remain? |
 
 ### OS primitives: `internal/sys`
@@ -202,7 +202,7 @@ See [the job protocol](wails-application.md#concurrency-and-job-protocol) for co
 | Fixed installation location | Avoid unsupported file-sharing, removable-drive, cloud-sync, and path-layout combinations. | Moving the executable or kit is not a way to move Docker's patient-data volumes. |
 | Separate release pins from clinic settings | Reproducibility and operator customization have different owners. | Change `deployments/.env` for shipped versions; use installed environment files for clinic configuration. |
 | Preserve editable environments during kit refresh | App upgrades must not erase operator settings. | New defaults in a template are not automatically merged into an existing clinic's preserved file. |
-| Digest-pinned CARE images and release lines | An upstream change must not silently replace a running clinic. | `line.json` records current and staged images; fixes are staged within a line and newer lines require an explicit upgrade. See [images and lines](images-and-lines.md). |
+| Digest-pinned CARE images | An upstream change must not silently replace a running clinic. | `care-images.json` records current and staged CARE 3.1 images; metadata is signature-verified before use. See [CARE images](images.md). |
 | Local image freshness fingerprints | Decide whether a build is necessary from explicit inputs and local images. | New build inputs must participate in the freshness contract. |
 | Named Docker volumes and stable project identity | Data ownership must survive working-directory changes. | Renaming services or volumes is a data migration decision, not cosmetic cleanup. |
 | Atomic file replacement | A partially written configuration can turn a recoverable failure into an unbootable app. | Use the shared primitive; retain its error handling and platform-specific replacement. |

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -276,7 +275,11 @@ func deploymentPins(t *testing.T) *release.Pins {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := release.Load(data)
+	config, err := os.ReadFile("../../../versions.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins, err := release.LoadSource(config, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,72 +439,32 @@ func TestDockerLinuxDownloadsMatchArchitecture(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowVerifiesTheDownloadsTheAppUses(t *testing.T) {
-	if !proc.Exists("node") {
-		t.Skip("Node.js is not installed")
-	}
-	expected, err := json.Marshal(pinnedDownloads(t, deploymentPins(t)))
+// CI verifies every [tools] entry of versions.toml; the app must download
+// exactly those pinned URLs and checksums.
+func TestVersionsTOMLPinsTheDownloadsTheAppUses(t *testing.T) {
+	data, err := os.ReadFile("../../../" + release.ConfigFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := `
-const fs = require("fs");
-const vm = require("vm");
-const crypto = require("crypto");
-const assert = require("assert/strict");
-const workflow = fs.readFileSync(".github/workflows/release.yml", "utf8");
-const match = workflow.match(/          node <<'PREREQS'\n([\s\S]*?)\n          PREREQS/);
-if (!match) throw new Error("Prerequisite verifier is missing");
-const verifier = match[1].replace(/^          /gm, "");
-const downloads = JSON.parse(process.env.CARE_DOWNLOADS);
-const pins = fs.readFileSync("deployments/.env", "utf8");
-const body = url => "installer served from " + url;
-const hash = value => crypto.createHash("sha256").update(value).digest("hex");
-let served = pins;
-for (const d of downloads) served = served.replace(d.SHA256, hash(body(d.URL)));
-const run = async (env, missing) => {
-  const fetched = [];
-  const logs = [];
-  const proc = {env: {}, exitCode: undefined};
-  await vm.runInNewContext(verifier, {
-    URL,
-    process: proc,
-    console: {log: line => logs.push(line)},
-    fetch: async url => {
-      fetched.push(url);
-      if (url === missing) return {ok: false, status: 404};
-      return {ok: true, status: 200, body: (async function* () { yield Buffer.from(body(url)); })()};
-    },
-    require: name => {
-      if (name === "crypto") return crypto;
-      assert.equal(name, "fs");
-      return {readFileSync: path => { assert.equal(path, "deployments/.env"); return env; }};
-    },
-  });
-  return {fetched: fetched.sort(), logs, failed: proc.exitCode === 1};
-};
-(async () => {
-  const urls = downloads.map(d => d.URL).sort();
-  const ok = await run(served);
-  assert.deepEqual(ok.fetched, urls);
-  assert.equal(ok.failed, false, ok.logs.join("\n"));
-  const first = downloads[0];
-  const tampered = await run(served.replace(hash(body(first.URL)), "0".repeat(64)));
-  assert.equal(tampered.failed, true);
-  assert.ok(tampered.logs.some(line => line.startsWith("::error::") && line.includes(first.URL)));
-  const gone = await run(served, downloads[3].URL);
-  assert.equal(gone.failed, true);
-  assert.ok(gone.logs.some(line => line.includes("HTTP 404")));
-  let threw = false;
-  try { await run(served.replace(/^CARE_VM_VERSION=.*$/m, "CARE_VM_VERSION=latest")); } catch { threw = true; }
-  assert.ok(threw, "an unpinned CARE engine version was accepted");
-})().catch(error => { console.error(error); process.exit(1); });
-`
-	cmd := proc.Command("node", "-e", script)
-	cmd.Dir = "../../.."
-	cmd.Env = append(os.Environ(), "CARE_DOWNLOADS="+string(expected))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("prerequisite verifier failed: %v\n%s", err, output)
+	config, err := release.ReadConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := map[string]string{}
+	for _, tool := range config.Tools {
+		pinned[tool.URL] = tool.SHA256
+	}
+	used := map[string]bool{}
+	for _, d := range pinnedDownloads(t, deploymentPins(t)) {
+		if sum, ok := pinned[d.URL]; !ok || sum != d.SHA256 {
+			t.Errorf("%s (%s) is not pinned in %s", d.URL, d.SHA256, release.ConfigFile)
+		}
+		used[d.URL] = true
+	}
+	for url := range pinned {
+		if !used[url] {
+			t.Errorf("%s pins %s, which the app never downloads", release.ConfigFile, url)
+		}
 	}
 }
 

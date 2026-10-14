@@ -257,3 +257,219 @@ jobs:
           BUILD: ${{ inputs.build }}
         run: |
           node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [name, job] of Object.entries(jobs)) { const optional = name === "native" && process.env.BUILD === "false" && job.result === "skipped"; if (job.result !== "success" && !optional) process.exitCode = 1; }'
+
+  signing:
+    name: Validate signing configuration
+    if: inputs.build && inputs.publish
+    needs: required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release-signing
+    outputs:
+      windows: ${{ steps.config.outputs.windows }}
+    steps:
+      - id: config
+        env:
+          TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          ORGANIZATION: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          count=0
+          for value in "$TOKEN" "$ORGANIZATION" "$PROJECT" "$POLICY"; do
+            if [ -n "$value" ]; then count=$((count + 1)); fi
+          done
+          case "$count" in
+            0) echo "windows=false" >> "$GITHUB_OUTPUT" ;;
+            4) echo "windows=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::SignPath is partially configured"; exit 1 ;;
+          esac
+  sign-windows-app:
+    name: Sign Windows application and uninstaller
+    needs: signing
+    if: needs.signing.outputs.windows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: release-signing
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Find the current run's application artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "desktop-windows-app" and .expired == false)] | if length == 1 then .[0].id else error("expected one application artifact") end')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.artifact.outputs.id }}
+          parameters: |
+            version: "${{ inputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "3600"
+          output-artifact-directory: signed-app
+      - run: test -s "signed-app/CARE Clinic.exe" && test -s signed-app/uninstall.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-app-signed
+          path: signed-app/
+          if-no-files-found: error
+          retention-days: 7
+  windows-installer:
+    name: Rebuild installer around signed Windows files
+    needs: sign-windows-app
+    runs-on: windows-2025
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-app-signed
+          path: signed-app
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-installer-inputs
+          path: app/build/windows
+      - uses: ./.github/actions/install-nsis
+      - name: Verify signatures and rebuild
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $app = Join-Path $env:GITHUB_WORKSPACE "signed-app\CARE Clinic.exe"
+          $uninstaller = Join-Path $env:GITHUB_WORKSPACE "signed-app\uninstall.exe"
+          foreach ($file in @($app, $uninstaller)) {
+            if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "$file has an invalid signature" }
+          }
+          git diff --exit-code -- app/build/windows/installer/project.nsi
+          if ($LASTEXITCODE -ne 0) { throw "Installer inputs differ from source" }
+          New-Item -ItemType Directory -Force app/build/bin, installer | Out-Null
+          Push-Location app/build/windows/installer
+          makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DSIGNED_UNINSTALLER=$uninstaller" project.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          Pop-Location
+          $built = @(Get-ChildItem app/build/bin/*installer.exe)
+          if ($built.Count -ne 1) { throw "Expected exactly one installer" }
+          $info = $built[0].VersionInfo
+          if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $env:VERSION) { throw "Installer version metadata differs from versions.toml" }
+          Copy-Item $built[0].FullName "installer/CARE-Clinic-$env:VERSION-windows-amd64-setup.exe"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-installer
+          path: installer/
+          if-no-files-found: error
+          retention-days: 7
+  sign-windows-installer:
+    name: Sign rebuilt Windows installer
+    needs: windows-installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: release-signing
+    steps:
+      - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.windows-installer.outputs.artifact-id }}
+          parameters: |
+            version: "${{ inputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "3600"
+          output-artifact-directory: signed-installer
+      - run: test -s "signed-installer/CARE-Clinic-${{ inputs.version }}-windows-amd64-setup.exe"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-installer-signed
+          path: signed-installer/
+          if-no-files-found: error
+          retention-days: 7
+  package:
+    name: Package and sign desktop binaries
+    needs: [signing, native, sign-windows-installer]
+    if: >-
+      !cancelled() && inputs.build && inputs.publish && needs.native.result == 'success'
+      && needs.signing.result == 'success'
+      && (needs.signing.outputs.windows == 'true' && needs.sign-windows-installer.result == 'success'
+          || needs.signing.outputs.windows != 'true' && needs.sign-windows-installer.result == 'skipped')
+    runs-on: macos-15
+    timeout-minutes: 360
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-macos-unsigned
+          path: incoming/macos
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.signing.outputs.windows == 'true' && 'desktop-windows-installer-signed' || 'desktop-windows-unsigned' }}
+          path: incoming/windows
+      - name: Sign macOS application, notarize and package
+        env:
+          VERSION: ${{ inputs.version }}
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: bash .github/scripts/package-macos.sh
+      - name: Collect Windows installer
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          installers=(incoming/windows/*.exe)
+          test "${#installers[@]}" -eq 1 && test -s "${installers[0]}"
+          cp "${installers[0]}" "release-assets/CARE-Clinic-$VERSION-windows-amd64-setup.exe"
+          cp versions.toml release-assets/versions.toml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    name: Publish immutable desktop binaries
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-release-assets
+          path: release-assets
+      - name: Hash all release assets without replacing an existing version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/pipeline.py assets --component desktop --publish
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: output-desktop
+          path: outputs/desktop.json
+          if-no-files-found: error
+          retention-days: 7

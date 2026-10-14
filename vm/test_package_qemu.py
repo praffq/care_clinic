@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from package_qemu import bundle_files, main, package
+from package_qemu import bundle_files, main, package, release_pin
 
 
 class PackageTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class PackageTests(unittest.TestCase):
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("10.1.0" if name == "VERSION" else name)
-        self.pin = {"version": "10.1.0", "url": "https://example.test/installer.exe", "sha512": "a" * 128}
+        self.pin = {"version": "10.1.0", "url": "https://example.test/installer.exe", "sha256": "a" * 64}
 
     def test_layout_dependencies_and_provenance(self):
         output = Path(self.temp.name) / "bundle.zip"
@@ -41,7 +41,7 @@ class PackageTests(unittest.TestCase):
             self.assertNotIn("$PLUGINSDIR/installer.dll", names)
             self.assertNotIn("qemu-system-aarch64.exe", names)
             provenance = json.loads(archive.read("care-qemu-provenance.json"))
-            self.assertEqual(provenance["installer_sha512"], self.pin["sha512"])
+            self.assertEqual(provenance["installer_sha256"], self.pin["sha256"])
             for name, expected in provenance["files_sha256"].items():
                 self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), expected)
 
@@ -69,11 +69,10 @@ class PackageTests(unittest.TestCase):
             bundle_files(self.root, "11.0.0")
 
     def test_download_pin_matches_application_version(self):
-        pin = json.loads(Path(__file__).with_name("qemu-windows.json").read_text())
-        env = (Path(__file__).parent.parent / "deployments" / ".env").read_text()
-        self.assertIn(f"QEMU_WINDOWS_VERSION={pin['version']}\n", env)
-        self.assertEqual(len(pin["sha512"]), 128)
-        self.assertNotEqual(pin["sha512"], "0" * 128)
+        pin = release_pin()
+        self.assertEqual(pin["version"], "10.1.0")
+        self.assertEqual(len(pin["sha256"]), 64)
+        self.assertNotEqual(pin["sha256"], "0" * 64)
 
     def test_corrupt_installer_is_rejected_before_extraction(self):
         installer = Path(self.temp.name) / "bad.exe"
@@ -82,7 +81,7 @@ class PackageTests(unittest.TestCase):
         with mock.patch("sys.argv", ["package_qemu.py", "--installer", str(installer), "--output", str(output)]), \
                 mock.patch("package_qemu.shutil.which", return_value="7z"), \
                 mock.patch("package_qemu.subprocess.run") as extract:
-            with self.assertRaisesRegex(ValueError, "SHA-512 mismatch"):
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 main()
         extract.assert_not_called()
         self.assertEqual(list(output.iterdir()), [])

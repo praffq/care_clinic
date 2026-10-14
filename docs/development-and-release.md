@@ -4,7 +4,7 @@
 
 This guide explains how desktop source becomes an application and how that
 application prepares the clinic from published images. CARE image publication
-is a separate CI build system; see [images and release lines](images-and-lines.md).
+is a separate CI build system; see [CARE images](images.md).
 
 ## The different builds
 
@@ -14,7 +14,7 @@ is a separate CI build system; see [images and release lines](images-and-lines.m
 | Desktop executable | `app/*.go`, `app/internal/`, Go dependencies, both embedded trees | Wails application under `app/build/bin/` | Developer or release build. |
 | Installer/package | Wails application, platform metadata, optional signing configuration | macOS `.dmg` or Windows NSIS setup executable | Release workflow. |
 | Clinic infrastructure images | Optional prebuilt digests, or deployment Dockerfiles and base-image/module pins | Locally tagged backup and Caddy/Coraza images | Clinic setup or when their inputs change; local compilation only when prebuilt pins are blank. |
-| CARE backend/frontend images | Published runtime/builder digests from `lines.json`, clinic settings/plugins | Images tagged for this clinic installation | Download/relabel at setup or update; local builder-image customization only for plugins or changed compiled frontend settings. |
+| CARE backend/frontend images | Published runtime/builder digests from signed update metadata, clinic settings/plugins | Images tagged for this clinic installation | Download/relabel at setup or update; local builder-image customization only for plugins or changed compiled frontend settings. |
 
 Changing Go code, such as the settings read lock, requires rebuilding and relaunching the desktop executable. It does not require reinstalling the clinic or rebuilding every Docker image.
 
@@ -264,7 +264,7 @@ UI suite because all screens share them.
 | Desktop identity | `CARE_CLINIC_VERSION`. |
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
-| CARE release lines | `CARE_LINES_URL` (HTTPS manifest URL); `CARE_DEFAULT_LINE` selects new installs. |
+| CARE software | `CARE_VERSION` and `CARE_UPDATES_URL`, staged from `versions.toml`; only CARE 3.1 ships. |
 | Prerequisite downloads | `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, `DOCKER_LINUX_*`, and `COMPOSE_LINUX_*` version, URL, and checksum pins. |
 
 `CARE_CLINIC_VERSION` is `X.Y.Z` or `X.Y.Z-dev`. Engine and tool versions
@@ -278,12 +278,11 @@ Windows QEMU and its temporary extraction tools download directly from upstream;
 Both `SEVENZIP_*_URL` and `SEVENZIP_*_SHA256` pairs are required. No upstream
 installer is run and no third-party binary is hosted by the CARE release.
 
-`CARE_LINES_URL` points to the schema-1 release-line manifest. New clinics use
-`CARE_DEFAULT_LINE`, or the manifest's recommended line. Existing clinics keep
-current and staged digest-pinned images in `line.json`; background checks download
-fixes for that line, while moving to a newer line is explicit. Optional
+`CARE_UPDATES_URL` points to signed update metadata. Clinics keep
+current and staged digest-pinned CARE 3.1 images in `care-images.json`;
+background checks verify signatures before downloading updates. Optional
 `CADDY_WAF_PREBUILT` and `BACKUP_PREBUILT` must be digest-pinned when set; blank
-values retain local builds. See [images and release lines](images-and-lines.md).
+values retain local builds. See [CARE images](images.md).
 
 At runtime, `GetState().version` comes from these embedded pins, not a separate
 linker-injected version variable.
@@ -296,7 +295,7 @@ into `main`, or the commit selected for a manual run):
 | `CARE_CLINIC_VERSION` | Numeric `X.Y.Z`, without `-dev`. |
 | `app/wails.json` -> `info.productVersion` | Derived as `X.Y.Z` before building. |
 | Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
-| CARE release lines | An HTTPS `CARE_LINES_URL` and `CARE_DEFAULT_LINE`; CARE image digests are published separately in `lines.json`. |
+| CARE software | CARE 3.1 runtime/builder digests in signed `updates.json`. |
 
 The tracked release workflow is currently blocked before packaging: it still
 requires removed image-revision values and obsolete desktop dependency pins,
@@ -319,8 +318,8 @@ For the same reason no test may elevate. Privileged work goes through [`sys/elev
 
 ### Reproducibility boundaries
 
-A desktop release chooses the manifest URL and default line, not a fixed CARE
-source commit. `line.json` records the actual published images and their commits;
+A desktop release ships the update URL and CARE 3.1 version.
+`care-images.json` records the actual published images and their commits;
 CARE images are pinned by registry digest. Local image freshness labels also
 include plugin or compiled-setting inputs, as described in
 [clinic lifecycle](clinic-lifecycle.md).

@@ -42,7 +42,7 @@ not a second installation procedure or evidence of a separately installed
 - [Embedded versus installed material](#2-three-different-copies-of-application-material)
 - [Subprocess environment](#3-one-subprocess-environment-for-the-clinic)
 - [Setup checkpoints](#4-setup-ordered-preparation-not-a-transaction)
-- [Image freshness and release lines](#5-image-builder-freshness-is-local-evidence)
+- [Image freshness](#5-image-builder-freshness-is-local-evidence)
 - [Hostname, buckets, and proxy routes](#6-hostname-buckets-and-proxy-routing-form-one-configuration)
 - [Deployment inventory](#7-deployment-inventory-and-dependency-graph)
 - [Start, migrations, and readiness](#8-start-recovery-migration-safety-then-readiness)
@@ -112,10 +112,10 @@ remaining teardown files and the residue package.
 | [`rebuild.go`](../app/internal/clinic/rebuild.go) | Explicit backend and frontend rebuild-and-restart paths. |
 | [`compose/build.go`](../app/internal/compose/build.go) | Published image downloads/relabeling, local customization builds, image fingerprints, and dangling-image cleanup. |
 | [`compose/parallel.go`](../app/internal/compose/parallel.go) | Parallel build groups: shared cancellation, per-job log prefixes, first-error reporting, and deferred prune. |
-| [`lines/lines.go`](../app/internal/lines/lines.go) | Manifest parsing, validation, caching, ordering, and app-version compatibility. |
-| [`compose/channel.go`](../app/internal/compose/channel.go) | The `line.json` current/staged image record and legacy source-checkout removal. |
+| [`careversions/versions.go`](../app/internal/careversions/versions.go) | Verified single CARE 3.1 image metadata. |
+| [`compose/channel.go`](../app/internal/compose/channel.go) | The `care-images.json` current/staged image record and legacy source-checkout removal. |
 | [`compose/update.go`](../app/internal/compose/update.go) | Staging digest-pinned same-line fixes or explicit line upgrades under `-next`, declining, and applying by retag. |
-| [`clinic/update.go`](../app/internal/clinic/update.go) | Release-line status, app-version compatibility, explicit line upgrades, safety backups, and live/startup update application. |
+| [`clinic/update.go`](../app/internal/clinic/update.go) | CARE version status, safety backups, and live/startup update application. |
 | [`compose/channel_test.go`](../app/internal/compose/channel_test.go) | Lock round-tripping, missing/corrupt lock tolerance, default-line selection, manifest-backed image keys, and stale staged-image recovery. |
 | [`compose/build_test.go`](../app/internal/compose/build_test.go) | Manifest-backed image selection, plugin/compiled-setting invalidation, runtime-setting reuse, image inspection failures, and isolated-context cleanup. |
 | [`compose/deployment_test.go`](../app/internal/compose/deployment_test.go) | Silo bootstrap arguments, configurable Caddy bucket routes, and Compose storage-environment wiring. |
@@ -420,26 +420,24 @@ applies runtime settings from the mounted `frontend.env` at container start.
 
 `Caddyfile`, `scripts/backup.sh`, and `minio/entrypoint.sh` remain runtime mounts.
 These labels are cache keys, not signatures or an audit of external dependencies.
-See [images and release lines](images-and-lines.md) for the publication contract.
+See [CARE images](images.md) for the publication contract.
 
-### Release lines and the image lock
+### CARE version and the image lock
 
-[`internal/lines`](../app/internal/lines) validates the schema-1 `lines.json`
-manifest from `CARE_LINES_URL` and caches it as `InstallDir/lines.json`.
-Initial selection uses `CARE_DEFAULT_LINE`, or the manifest's recommended line.
-The builder checks the chosen line's app-version range before selecting images.
+[`internal/careversions`](../app/internal/careversions) uses the signed update
+manifest from `CARE_UPDATES_URL`. Signature verification and persisted revision
+checks run before any metadata is used. Only CARE 3.1 images are accepted.
 
 [`compose/channel.go`](../app/internal/compose/channel.go) keeps installed state
-in `InstallDir/line.json`, outside the embedded `.env` refresh:
+in `InstallDir/care-images.json`, outside the embedded `.env` refresh:
 
 | Field | Meaning |
 | --- | --- |
-| `line` | The clinic's current release-line id. |
-| `next_line` | A newer line staged by an explicit upgrade. |
+| `version` | The clinic's CARE 3.1 version. |
 | `backend` / `frontend` | Each service's `current`, `next`, and `declined` record. |
 | `current` | The published image entry, including commit, runtime and builder digests; frontend entries also carry runtime keys and compiled defaults. |
 | `next` | A published image entry prepared under the local `-next` tag. |
-| `declined` | A commit whose prompt was dismissed; same-line staging remains available. |
+| `declined` | A commit whose prompt was dismissed; the prepared image remains available. |
 
 Starting and manual rebuilds use the recorded current image rather than chasing
 upstream changes. A missing or corrupt lock yields an empty record and triggers
@@ -454,7 +452,7 @@ checkouts and `channel.lock` are removed; no source checkout is needed.
 
 1. The app checks hourly once the clinic is serving. Cadence and skip conditions
    are in [configuration and settings](configuration-and-settings.md).
-2. `PrepareUpdate` fetches the manifest for the current line and compares image
+2. `PrepareUpdate` verifies the manifest for CARE 3.1 and compares image
    digests, skipping the current image and declined commits. It downloads and
    prepares changed services under `-next` tags while the clinic keeps serving.
    Plugins and changed compiled frontend settings require local builder-image
@@ -478,19 +476,10 @@ checkouts and `channel.lock` are removed; no source checkout is needed.
    the commit is offered again by the next check instead of being remembered as
    something already refused.
 
-A newer compatible line is offered, never chosen by a routine same-line check.
-`UpgradeCareLine(id)` runs the `upgrade-line` job: `Clinic.UpgradeLine` stages both
-images, requires backup encryption, then uses the normal pre-update backup and
-apply/migration path. Going back requires restoring a backup. The update panel
-shows line support dates; `LineAllowsApp` checks the cached line's
-`min_app_version`/`max_app_version` before a desktop update.
-
-Changing line explicitly discards earlier pending metadata before downloading;
-the ordinary **Not now** path still keeps a routine update for the next start.
-The builder refuses a line change while any pending update remains, before
-overwriting `-next` tags. Staging and applying share a serialization lock.
-Cross-line metadata is published only after both images succeed, and
-interruption returns an explicit error instead of an empty successful update.
+Only CARE 3.1 ships; no version picker or migration from CARE 3 is exposed.
+The ordinary **Not now** path keeps a routine update for the next start.
+Staging and applying share a serialization lock. An interrupted image download
+returns an explicit error instead of an empty successful update.
 
 CARE updates do not have image-level rollback (plugin application has its own
 [rollback transaction](plugins.md#save-and-apply)). Published digests identify the
@@ -529,7 +518,7 @@ Recorded image entries and the cached manifest support offline selection.
 Freshness checks use Docker metadata, and already-present digest images need not
 be pulled again. Neither guarantees a complete offline cache:
 
-- Initial selection needs a downloaded or cached release-line manifest.
+- Initial selection needs verified signed update metadata.
 - Missing CARE runtime or builder images require registry access.
 - Plugin packages, frontend build dependencies, or locally built proxy/backup
   dependencies can require downloads.
@@ -1053,7 +1042,7 @@ may be reused; this is not an upstream-update or cache-wipe operation.
 | Symptom | Read it as |
 | --- | --- |
 | `Setup done.` followed by failure | Preparation finished; Start or final App persistence still failed. Investigate partial setup, not only the last image build. |
-| Backend input or fingerprint error | Installed inputs, release-line selection, or Docker inspection is unavailable; do not delete a cache just because inspection failed. |
+| Backend input or fingerprint error | Installed inputs, verified image metadata, or Docker inspection is unavailable; do not delete a cache just because inspection failed. |
 | Worker still running or state count mismatch | The migration guard intentionally refused to proceed. Fix process/daemon state before retrying. |
 | Migration/admin startup error | Core services may be up, but workers are intentionally held stopped. Avoid bypassing the engine with a raw all-services startup. |
 | Caddy refresh error | Current mounts/environment could not be applied to the proxy. A prior container/image is not proof that the configuration took effect. |
