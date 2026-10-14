@@ -38,12 +38,12 @@ type EngineUpdate struct {
 }
 
 type ImageBuild struct {
-	RuntimeKeys   []string          `json:"runtime_keys,omitempty"`
-	Commit     string            `json:"commit"`
-	Image      string            `json:"image"`
-	Builder    string            `json:"builder"`
-	BuildEnv   map[string]string `json:"build_env,omitempty"`
-	SourceHash string            `json:"source_hash"`
+	RuntimeKeys []string          `json:"runtime_keys,omitempty"`
+	Commit      string            `json:"commit"`
+	Image       string            `json:"image"`
+	Builder     string            `json:"builder"`
+	BuildEnv    map[string]string `json:"build_env,omitempty"`
+	SourceHash  string            `json:"source_hash"`
 }
 
 type CareUpdate struct {

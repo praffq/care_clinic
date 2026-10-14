@@ -55,7 +55,7 @@ func SourceHash(root string, paths ...string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(path), len(b))
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(path), len(b))
 		_, _ = h.Write(b)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -66,7 +66,7 @@ func AssetForFile(path, releaseURL string) (Asset, error) {
 	if err != nil {
 		return Asset{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {

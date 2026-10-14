@@ -177,7 +177,7 @@ func readJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	d := json.NewDecoder(f)
 	d.DisallowUnknownFields()
 	return d.Decode(value)

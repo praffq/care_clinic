@@ -15,7 +15,7 @@ func TestDockerRelayRetriesOnlyRefusedDials(t *testing.T) {
 	r := newDockerRelay()
 	var calls int
 	client, server := net.Pipe()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	r.dial = func(context.Context) (net.Conn, error) {
 		calls++
 		if calls < 3 {
@@ -52,7 +52,7 @@ func TestDockerRelaySerializesDialsNotStreams(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		client, server := net.Pipe()
 		go func() {
-			defer server.Close()
+			defer func() { _ = server.Close() }()
 			_, _ = server.Write([]byte("ok"))
 		}()
 		active.Add(-1)
@@ -73,7 +73,7 @@ func TestDockerRelaySerializesDialsNotStreams(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			<-read
 			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 			buf := make([]byte, 2)
@@ -123,9 +123,9 @@ func TestForwardClosesActiveStreamsOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	up, server := net.Pipe()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 	attached := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -137,7 +137,7 @@ func TestForwardClosesActiveStreamsOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	<-attached
 	cancel()
 	_ = server.SetReadDeadline(time.Now().Add(time.Second))

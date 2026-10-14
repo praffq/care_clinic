@@ -153,9 +153,7 @@ func (b *Builder) DeclineUpdate() error {
 	return ModifyLock(b.dir, func(lock *Lock) error {
 		for _, service := range []string{Backend, Frontend} {
 			c := lock.Get(service)
-			switch {
-			case c.Next == nil:
-			default:
+			if c.Next != nil {
 				c.Declined = c.Next.Commit
 			}
 
