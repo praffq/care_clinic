@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -101,11 +102,50 @@ func TestDroppedStagedBuildIsOfferedAgain(t *testing.T) {
 	if err := WriteLock(b.dir, Lock{Backend: Channel{Next: &next, Declined: next.Commit}}); err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := b.ApplyPending(); err != nil {
 		t.Fatal(err)
 	}
 	got := ReadLock(b.dir).Backend
 	if got.Next != nil || got.Declined != "" {
 		t.Fatalf("a vanished staged build left %+v", got)
+	}
+}
+
+func TestInterruptedRetagKeepsPreviousReleaseDurable(t *testing.T) {
+	b := installed(t)
+	before := ReadLock(b.dir).Backend.Current
+	next := versionFixture('b').Backend
+	if err := ModifyLock(b.dir, func(lock *Lock) error {
+		lock.Backend.Next = &next
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	crash := new(int)
+	b.Log = func(line string) {
+		if strings.Contains(line, "CARE backend updated") {
+			panic(crash)
+		}
+	}
+	func() {
+		defer func() {
+			if got := recover(); got != crash {
+				t.Fatalf("expected crash after retag, got %v", got)
+			}
+		}()
+		_, err := b.ApplyPending()
+		t.Fatalf("activation returned without crashing: %v", err)
+	}()
+	stored := ReadLock(b.dir).Backend
+	if stored.Previous == nil || stored.Previous.Image != before.Image || stored.Next == nil || stored.Next.Image != next.Image {
+		t.Fatalf("retag lost durable rollback releases: %+v", stored)
+	}
+	if err := b.RollbackApplied(); err != nil {
+		t.Fatal(err)
+	}
+	stored = ReadLock(b.dir).Backend
+	if stored.Current.Image != before.Image || stored.Previous != nil || stored.Next == nil || stored.Next.Image != next.Image {
+		t.Fatalf("recovery did not restore the old release and retain the prepared update: %+v", stored)
 	}
 }

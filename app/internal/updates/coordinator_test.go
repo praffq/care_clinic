@@ -30,7 +30,7 @@ func TestJournalRequiresApprovalAndSuccessfulPlanMovesToHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var applies int
-	hooks.Apply = func(_ context.Context, name string, _ *Journal) (string, error) {
+	hooks.Apply = func(_ context.Context, name string, _ *Journal, _ Checkpoint) (string, error) {
 		applies++
 		if name != string(Desktop) {
 			t.Fatalf("step = %q", name)
@@ -65,7 +65,7 @@ func TestFailedStepStopsAfterThreeAttemptsAndRollsBack(t *testing.T) {
 	attempts, undos := 0, 0
 	err = c.Execute(context.Background(), j.PlanID, Hooks{
 		Preflight: func(context.Context, *Journal) error { return nil },
-		Apply: func(context.Context, string, *Journal) (string, error) {
+		Apply: func(context.Context, string, *Journal, Checkpoint) (string, error) {
 			attempts++
 			return "restore previous images", errors.New("image health failed")
 		},
@@ -93,7 +93,7 @@ func TestPreflightFailureDoesNotApply(t *testing.T) {
 	applied := false
 	err = c.Execute(context.Background(), j.PlanID, Hooks{
 		Preflight: func(context.Context, *Journal) error { return errors.New("insufficient disk") },
-		Apply: func(context.Context, string, *Journal) (string, error) {
+		Apply: func(context.Context, string, *Journal, Checkpoint) (string, error) {
 			applied = true
 			return "", nil
 		},
@@ -153,7 +153,7 @@ func TestDesktopHandoffRemainsJournaledUntilNewAppResumesPlan(t *testing.T) {
 	}
 	err = c.Execute(context.Background(), j.PlanID, Hooks{
 		Preflight: func(context.Context, *Journal) error { return nil },
-		Apply: func(context.Context, string, *Journal) (string, error) {
+		Apply: func(context.Context, string, *Journal, Checkpoint) (string, error) {
 			return "previous app retained", ErrHandoffPending
 		},
 		Rollback: func(context.Context, string, Journal) error { return nil },
@@ -170,7 +170,7 @@ func TestDesktopHandoffRemainsJournaledUntilNewAppResumesPlan(t *testing.T) {
 	}
 	if err := c.Execute(context.Background(), j.PlanID, Hooks{
 		Preflight: func(context.Context, *Journal) error { return nil },
-		Apply: func(context.Context, string, *Journal) (string, error) {
+		Apply: func(context.Context, string, *Journal, Checkpoint) (string, error) {
 			t.Fatal("completed desktop step was applied again")
 			return "", nil
 		},
@@ -191,6 +191,76 @@ func TestCorruptJournalIsNotTreatedAsNoPendingPlan(t *testing.T) {
 	}
 	if _, err := New(dir); err == nil || !strings.Contains(err.Error(), "read update journal") {
 		t.Fatalf("corrupt journal error = %v", err)
+	}
+}
+
+func TestCheckpointFailureStopsApplyWithoutRetry(t *testing.T) {
+	c := coordinator(t)
+	j, err := c.Create(1, Snapshot{}, Snapshot{}, []string{string(CAREImages)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Approve(j.PlanID, "staff"); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	err = c.Execute(context.Background(), j.PlanID, Hooks{
+		Preflight: func(context.Context, *Journal) error { return nil },
+		Apply: func(_ context.Context, _ string, plan *Journal, checkpoint Checkpoint) (string, error) {
+			attempts++
+			// Make the journal destination unwritable without relying on
+			// permissions (which privileged test runners may bypass).
+			if err := os.Remove(c.JournalPath()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(c.JournalPath(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			plan.Rollback.BackupID = "safety-backup"
+			return "", checkpoint()
+		},
+		Rollback: func(context.Context, string, Journal) error {
+			t.Fatal("checkpoint failure must leave recovery to the next launch")
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint update recovery metadata") || attempts != 1 {
+		t.Fatalf("checkpoint failure = %v, attempts = %d", err, attempts)
+	}
+}
+
+func TestIncompleteInStepRollbackIsNotRetriedAsApply(t *testing.T) {
+	c := coordinator(t)
+	j, err := c.Create(1, Snapshot{}, Snapshot{}, []string{string(CAREImages)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Approve(j.PlanID, "staff"); err != nil {
+		t.Fatal(err)
+	}
+	applies := 0
+	err = c.Execute(context.Background(), j.PlanID, Hooks{
+		Preflight: func(context.Context, *Journal) error { return nil },
+		Apply: func(_ context.Context, _ string, plan *Journal, checkpoint Checkpoint) (string, error) {
+			applies++
+			plan.State = RollingBack
+			plan.Rollback = Rollback{BackupID: "safety-backup", DBMigrated: true}
+			if err := checkpoint(); err != nil {
+				return "", err
+			}
+			return "", errors.New("data rollback failed")
+		},
+		Rollback: func(context.Context, string, Journal) error {
+			return errors.New("backup disk is unavailable")
+		},
+	})
+	if err == nil || applies != 1 {
+		t.Fatalf("failed rollback retried apply: %v, applies = %d", err, applies)
+	}
+	stored, readErr := c.Journal()
+	if readErr != nil || stored == nil || stored.State != RollingBack ||
+		stored.Rollback.BackupID != "safety-backup" || !stored.Rollback.DBMigrated || stored.Steps[0].Attempts != 1 {
+		t.Fatalf("incomplete data recovery was not retained: %+v, %v", stored, readErr)
 	}
 }
 

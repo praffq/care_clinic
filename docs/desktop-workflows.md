@@ -317,7 +317,10 @@ with no safe intermediate desktop/engine combination requires a bridge release.
 See [CARE images](images.md). A failed check remains a retryable failure, not
 "Up to date". Installing a staged CARE update can interrupt service; backend
 migrations are preceded by an encrypted safety backup, and a data rollback
-restores that backup.
+restores that backup. The coordinator durably checkpoints the backup ID and
+retained-image metadata before activation, marks data as potentially migrated
+before invoking migrations, and checkpoints rollback before restoring anything.
+Recovery therefore uses the same safety backup even if the apply hook never returns.
 
 Only CARE 3.1 ships; there is no CARE version selector.
 

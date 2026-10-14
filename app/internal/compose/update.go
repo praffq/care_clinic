@@ -159,6 +159,12 @@ func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) 
 				return fmt.Errorf("could not retain the previous CARE %s image: %w", s.service, err)
 			}
 		}
+		previous := c.Current
+		c.Previous = &previous
+		lock.Set(s.service, c)
+		if err := writeLock(b.dir, *lock); err != nil {
+			return fmt.Errorf("record previous CARE %s image before activation: %w", s.service, err)
+		}
 		if err := b.run.Run("docker", "image", "tag", staged, s.image); err != nil {
 			if c.Current.Image != "" {
 				if restoreErr := b.run.Run("docker", "image", "tag", previousTag, s.image); restoreErr != nil {
@@ -169,7 +175,6 @@ func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) 
 		}
 		b.logln("CARE " + s.service + " updated to " + Short(c.Next.Commit) + ".")
 		*s.dst = c.Next.Commit
-		previous := c.Current
 		c.Current, c.Previous, c.Next, c.Declined = *c.Next, &previous, nil, ""
 		*retagged = append(*retagged, s.image)
 		lock.Set(s.service, c)
@@ -183,6 +188,26 @@ func (b *Builder) restoreStableTags(images []string) error {
 	var failures []error
 	for i := len(images) - 1; i >= 0; i-- {
 		if err := b.run.Run("docker", "image", "tag", previousImageTag(images[i]), images[i]); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		service := Backend
+		if images[i] == b.set.FrontendImage {
+			service = Frontend
+		}
+		if err := ModifyLock(b.dir, func(lock *Lock) error {
+			channel := lock.Get(service)
+			if channel.Previous == nil {
+				return nil
+			}
+			if channel.Next == nil {
+				current := channel.Current
+				channel.Next = &current
+			}
+			channel.Current, channel.Previous = *channel.Previous, nil
+			lock.Set(service, channel)
+			return nil
+		}); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -204,6 +229,9 @@ func (b *Builder) RollbackApplied() error {
 				continue
 			}
 			current := channel.Current
+			if channel.Next != nil {
+				current = *channel.Next
+			}
 			if err := b.run.Run("docker", "image", "tag", previousImageTag(item.image), item.image); err != nil {
 				return fmt.Errorf("could not restore the previous CARE %s image: %w", item.service, err)
 			}

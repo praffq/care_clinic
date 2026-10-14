@@ -48,7 +48,10 @@ func (e *Clinic) CheckForUpdateManifest(m *careversions.Manifest) (compose.Updat
 
 func (e *Clinic) DeclineUpdate() error { return e.Builder().DeclineUpdate() }
 
-func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal) error {
+func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal, checkpoint updates.Checkpoint) error {
+	if j == nil || checkpoint == nil {
+		return errors.New("CARE updates require a coordinator journal and durable checkpoint")
+	}
 	if err := e.Backups().RecoverRestore(); err != nil {
 		return err
 	}
@@ -64,12 +67,23 @@ func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal) error {
 		if err != nil {
 			return err
 		}
-		if j != nil {
-			j.Rollback.BackupID = backupID
+		j.Rollback.BackupID = backupID
+		if err := checkpoint(); err != nil {
+			return err
 		}
 		if err := e.stopWorkers(); err != nil {
 			return err
 		}
+	}
+	j.Rollback.ImagesKept = nil
+	if waiting.Backend != "" {
+		j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.BackendImage+"-previous")
+	}
+	if waiting.Frontend != "" {
+		j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.FrontendImage+"-previous")
+	}
+	if err := checkpoint(); err != nil {
+		return err
 	}
 	applied, err := b.ApplyPending()
 	if err != nil {
@@ -78,23 +92,17 @@ func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal) error {
 	if !applied.Any() {
 		return errors.New("the prepared update is no longer available - it will be built again on the next check")
 	}
-	if j != nil {
-		if applied.Backend != "" {
-			j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.BackendImage+"-previous")
-		}
-		if applied.Frontend != "" {
-			j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.FrontendImage+"-previous")
-		}
-	}
 	rollback := func(cause error, dbMigrated bool) error {
-		if j != nil {
-			j.Rollback.DBMigrated = dbMigrated
+		j.State, j.Rollback.DBMigrated = updates.RollingBack, dbMigrated
+		if err := checkpoint(); err != nil {
+			return errors.Join(cause, err)
 		}
 		if err := e.RollbackUpdate(backupID, dbMigrated); err != nil {
 			return fmt.Errorf("%w; CARE rollback also failed: %v", cause, err)
 		}
-		if j != nil {
-			j.Rollback.DBMigrated = false
+		j.State, j.Rollback.DBMigrated = updates.Running, false
+		if err := checkpoint(); err != nil {
+			return errors.Join(cause, err)
 		}
 		return cause
 	}
@@ -103,8 +111,9 @@ func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal) error {
 			return rollback(fmt.Errorf("the updated backend did not start: %w", err), false)
 		}
 		e.logln("Applying database migrations...")
-		if j != nil {
-			j.Rollback.DBMigrated = true
+		j.Rollback.DBMigrated = true
+		if err := checkpoint(); err != nil {
+			return err
 		}
 		if err := e.migrate(); err != nil {
 			return rollback(fmt.Errorf("database migration failed: %w", err), true)

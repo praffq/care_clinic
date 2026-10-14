@@ -24,7 +24,7 @@ import (
 
 const updateStagingReserve = uint64(1 << 30)
 
-func (a *App) runCoordinatedUpdate(request updates.UpdateType, desktopApply func(*updates.Journal) error) error {
+func (a *App) runCoordinatedUpdate(request updates.UpdateType, desktopApply func(*updates.Journal, updates.Checkpoint) error) error {
 	if a.updateCoordinator == nil {
 		return errors.New("the update coordinator is unavailable")
 	}
@@ -113,23 +113,26 @@ func (a *App) runCoordinatedUpdate(request updates.UpdateType, desktopApply func
 	return nil
 }
 
-func (a *App) updateHooks(manifest release.Manifest, desktopApply func(*updates.Journal) error) updates.Hooks {
+func (a *App) updateHooks(manifest release.Manifest, desktopApply func(*updates.Journal, updates.Checkpoint) error) updates.Hooks {
+	if desktopApply == nil {
+		desktopApply = a.installStagedDesktopUpdate
+	}
 	return updates.Hooks{
 		Preflight: func(ctx context.Context, plan *updates.Journal) error {
 			return a.updatePreflight(ctx, plan, manifest)
 		},
-		Apply: func(_ context.Context, name string, plan *updates.Journal) (string, error) {
+		Apply: func(_ context.Context, name string, plan *updates.Journal, checkpoint updates.Checkpoint) (string, error) {
 			switch updates.UpdateType(name) {
 			case updates.CAREImages:
-				return "restore previous CARE images and pre-update backup", a.engine().ApplyUpdateWithJournal(plan)
+				return "restore previous CARE images and pre-update backup", a.engine().ApplyUpdateWithJournal(plan, checkpoint)
 			case updates.Engine:
 				plan.Rollback.EnginePrevious = plan.From.EngineVersion
+				if err := checkpoint(); err != nil {
+					return "", err
+				}
 				return "restore previous CARE engine", a.updateEngine()
 			case updates.Desktop:
-				if desktopApply == nil {
-					return "", errors.New("desktop update installer is unavailable")
-				}
-				if err := desktopApply(plan); err != nil {
+				if err := desktopApply(plan, checkpoint); err != nil {
 					return "", err
 				}
 				return "previous desktop application retained beside the installed application", updates.ErrHandoffPending

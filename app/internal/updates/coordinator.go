@@ -113,9 +113,13 @@ type HistoryEntry struct {
 
 type Hooks struct {
 	Preflight func(context.Context, *Journal) error
-	Apply     func(context.Context, string, *Journal) (undo string, err error)
+	Apply     func(context.Context, string, *Journal, Checkpoint) (undo string, err error)
 	Rollback  func(context.Context, string, Journal) error
 }
+
+// Checkpoint persists in-step recovery metadata before an irreversible action.
+// Apply must call it synchronously and stop immediately if it returns an error.
+type Checkpoint func() error
 
 type Coordinator struct {
 	dir     string
@@ -340,7 +344,23 @@ func (c *Coordinator) Execute(ctx context.Context, planID string, hooks Hooks) e
 			if err := c.write(c.JournalPath(), j); err != nil {
 				return err
 			}
-			undo, applyErr := hooks.Apply(ctx, step.Name, j)
+			var checkpointErr error
+			checkpoint := func() error {
+				j.UpdatedAt = c.now().UTC()
+				// Execute already owns mu. Re-entering a public locking method
+				// here would deadlock the apply hook.
+				if err := c.write(c.JournalPath(), j); err != nil {
+					checkpointErr = fmt.Errorf("checkpoint update recovery metadata: %w", err)
+				}
+				return checkpointErr
+			}
+			undo, applyErr := hooks.Apply(ctx, step.Name, j, checkpoint)
+			if checkpointErr != nil {
+				return errors.Join(applyErr, checkpointErr)
+			}
+			if j.State == RollingBack {
+				return c.rollback(ctx, j, hooks, applyErr)
+			}
 			finished := c.now().UTC()
 			step.Undo, j.UpdatedAt = undo, finished
 			if errors.Is(applyErr, ErrHandoffPending) {

@@ -299,7 +299,7 @@ func (a *App) InstallAppUpdate() error {
 	}, false, "app-update")
 }
 
-func (a *App) installStagedDesktopUpdate(j *updates.Journal) error {
+func (a *App) installStagedDesktopUpdate(j *updates.Journal, checkpoint updates.Checkpoint) error {
 	if developmentUpdateBuild || strings.HasSuffix(a.pins.AppVersion, "-dev") {
 		return errors.New("update location unavailable: development builds cannot replace themselves; install a released copy of CARE Clinic first")
 	}
@@ -334,6 +334,9 @@ func (a *App) installStagedDesktopUpdate(j *updates.Journal) error {
 	}
 	j.Rollback.PreviousApp = target
 	j.To.Files = append(j.To.Files, updates.FileDigest{Path: path, SHA256: digest})
+	if err := checkpoint(); err != nil {
+		return err
+	}
 	return a.handoffAppUpdate(path, version, asset.SHA256)
 }
 
