@@ -12,8 +12,11 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Schema != ConfigSchema || c.Care.Version != "3.1.0" {
-		t.Fatalf("unexpected config: schema %d, CARE %s", c.Schema, c.Care.Version)
+	if c.Schema != ConfigSchema || c.Desktop.Version != "0.0.1" || c.Engine.Version != "0.1.3" || c.Care.Version != "3.1.0" {
+		t.Fatalf("unexpected config: schema %d, desktop %s, engine %s, CARE %s", c.Schema, c.Desktop.Version, c.Engine.Version, c.Care.Version)
+	}
+	if c.Engine.RequiresDesktop != ">=0.0.1" || c.Care.RequiresDesktop != ">=0.0.1" {
+		t.Fatalf("engine and CARE must support desktop %s: engine %q, CARE %q", c.Desktop.Version, c.Engine.RequiresDesktop, c.Care.RequiresDesktop)
 	}
 	if c.Care.Backend.Repo == "" || c.Care.Frontend.Branch == "" {
 		t.Fatal("CARE sources are missing")
@@ -50,7 +53,7 @@ func TestReadConfigIsStrict(t *testing.T) {
 		{"future schema", [2]string{"schema = 1", "schema = 2"}, false},
 		{"missing schema", [2]string{"schema = 1", ""}, false},
 		{"v prefix", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "v` + c.Desktop.Version + `"`}, false},
-		{"leading zero", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "00.1.19"`}, false},
+		{"leading zero", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "00.0.1"`}, false},
 		{"short version", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "0.1"`}, false},
 		{"prerelease", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "` + c.Desktop.Version + `-rc.1"`}, false},
 		{"build metadata", [2]string{`version = "` + c.Desktop.Version + `"`, `version = "` + c.Desktop.Version + `+abc"`}, false},
