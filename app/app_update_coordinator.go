@@ -256,7 +256,7 @@ func (a *App) updateSnapshot() (updates.Snapshot, error) {
 func updateSettingsDigests(dir string) ([]updates.FileDigest, string, error) {
 	h := sha256.New()
 	var files []updates.FileDigest
-	for _, name := range []string{"backend.env", "frontend.env", "secrets.env"} {
+	for _, name := range []string{"backend.env", "frontend.env", "backend.overrides.env", "frontend.overrides.env", "secrets.env", "env-defaults.yml", "plugins.json"} {
 		path := filepath.Join(dir, name)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {

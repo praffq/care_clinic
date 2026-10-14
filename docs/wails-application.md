@@ -483,9 +483,10 @@ The API does not require the CARE Clinic admin password for every operational co
 
 | Method | Result | Execution and contract |
 | --- | --- | --- |
-| `ReadEnv(name, adminPassword)` | `string` | Read. Admin plus setup required; `name` is only `backend` or `frontend`. Returns installed file contents. |
+| `ReadEnv(name, adminPassword)` | `string` | Read. Admin plus setup required; `name` is only `backend` or `frontend`. Returns explicit overrides, never effective env or secrets. |
+| `ReadEnvDefaults(name, adminPassword)` | `string` | Read. Same guards; returns the selected section's validated string defaults, without secrets or derived wiring. |
 | `GetBackupPolicy()` | `BackupPolicy` | Query. Requires an installed server. Reports the 86,400-second interval and actual installed retention days; zero means forever. Missing/unreadable settings or invalid/negative retention reject rather than inventing a policy. |
-| `WriteEnv(name, content, adminPassword)` | `void` | Sync. Admin plus stable clinic required; parse dotenv syntax, then atomically replace the selected file. |
+| `WriteEnv(name, content, adminPassword)` | `void` | Sync. Admin plus stable clinic required; validate override syntax/managed keys, persist overrides privately, regenerate effective env. Does not restart or activate updates. |
 | `ReadPlugins()` | `CarePlugin[]` | Read. Installed server required, no password; read `plugins.json`, or derive the list from `ADDITIONAL_PLUGS` when that file is absent. |
 | `SavePlugins(plugins)` | `void` | Sync. Stable clinic required, no password; validate and stage `plugins-pending.json`, leaving active configuration untouched until apply. |
 | `PluginCatalog()` | `PluginCatalogEntry[]` | Query. The bundled plugin catalog. |

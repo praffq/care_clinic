@@ -60,6 +60,20 @@ func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal, checkpoint updates.C
 	if !waiting.Any() {
 		return errors.New("there is no prepared update to apply")
 	}
+	// The staff may have changed overrides or plugins since the background
+	// download. Reapply the latest inputs to the staged release before approval
+	// is executed, without activating either image early.
+	pending := b.Pending()
+	if waiting.Backend != "" {
+		if err := pending.EnsureBackendImage(); err != nil {
+			return err
+		}
+	}
+	if waiting.Frontend != "" {
+		if err := pending.EnsureFrontendImage(); err != nil {
+			return err
+		}
+	}
 	var backupID string
 	if waiting.Backend != "" {
 		var err error
@@ -118,6 +132,7 @@ func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal, checkpoint updates.C
 		if err := e.migrate(); err != nil {
 			return rollback(fmt.Errorf("database migration failed: %w", err), true)
 		}
+		e.syncFrontendPluginsOrWarn()
 	}
 	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300"); err != nil {
 		return rollback(err, applied.Backend != "")

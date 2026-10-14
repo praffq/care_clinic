@@ -26,8 +26,7 @@ export function serializeEnv(lines: EnvLine[]): string {
 }
 
 /**
- * The value as the readers see it. compose-go (backend.env) and Vite
- * (frontend.env) both strip one pair of matching quotes (Vite also backticks);
+ * The value as the readers see it. Both override files use compose-go dotenv;
  * double quotes unescape \" and \\. Anything after " #" on a bare value is a
  * comment.
  */
@@ -35,23 +34,20 @@ export function unquote(raw: string): string {
   const v = raw.trim();
   if (v.length >= 2 && (v[0] === "'" || v[0] === "`") && v[v.length - 1] === v[0]) return v.slice(1, -1);
   if (v.length >= 2 && v[0] === '"' && v[v.length - 1] === '"') {
-    return v.slice(1, -1).replace(/\\(["\\])/g, "$1");
+    return v.slice(1, -1).replace(/\\(["\\nr])/g, (_, c: string) => c === "n" ? "\n" : c === "r" ? "\r" : c).replace(/\$\$/g, "$");
   }
   return v.replace(/\s+#.*$/, "");
 }
 
-/** Which reader a file is written for: compose-go or Vite's dotenv. */
+/** Which section an override file belongs to. Both use compose-go dotenv. */
 export type EnvDialect = "backend" | "frontend";
 
-// Bare when it is plainly safe; otherwise single-quoted, which neither reader
-// expands or unescapes, so JSON and URLs survive untouched. A value that itself
-// contains a single quote is backtick-quoted for Vite (which never unescapes
-// \" inside double quotes) and double-quoted with escapes for compose-go.
-export function quote(value: string, dialect: EnvDialect): string {
+// Frontend overrides are parsed by Go and passed to builds as JSON, not read
+// directly by Vite. Use compose-go quoting for both files.
+export function quote(value: string, _dialect: EnvDialect): string {
   if (/^[A-Za-z0-9_./:@+,=-]*$/.test(value)) return value;
   if (!value.includes("'")) return `'${value}'`;
-  if (dialect === "frontend" && !value.includes("`")) return `\`${value}\``;
-  return `"${value.replace(/[\\"]/g, "\\$&")}"`;
+  return `"${value.replace(/[\\"]/g, "\\$&").replace(/\$/g, "$$$$")}"`;
 }
 
 /** The parsed value of `key`, or undefined when the file has no such line. */

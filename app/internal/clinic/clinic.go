@@ -76,7 +76,6 @@ func (e *Clinic) baseEnv() []string {
 }
 
 func (e *Clinic) minioCreds() (accessKey, secretKey string) {
-	accessKey, secretKey = "minioadmin", "minioadmin"
 	env := e.backendEnv()
 	if v := strings.TrimSpace(env["BUCKET_KEY"]); v != "" {
 		accessKey = v

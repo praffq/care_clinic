@@ -106,8 +106,8 @@ func TestBackupPolicyPropagatesBackendEnvironmentReadFailures(t *testing.T) {
 				t.Fatalf("missing backend.env lost its underlying read error: %v", err)
 			}
 			access, secret := e.minioCreds()
-			if access != "minioadmin" || secret != "minioadmin" || e.corazaMode() != "Off" {
-				t.Fatal("readBackendEnv extraction changed legacy caller defaults on an unreadable environment")
+			if access != "" || secret != "" || e.corazaMode() != "Off" {
+				t.Fatal("unreadable environment supplied storage credentials instead of failing closed")
 			}
 		})
 	}

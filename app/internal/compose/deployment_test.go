@@ -180,7 +180,7 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 		wantBucket string
 		wantPublic string
 	}{
-		{"defaults", "", "", "", "", "minioadmin", "minioadmin", "patient-bucket", "facility-bucket"},
+		{"generated credentials and default buckets", "generated-access", "generated-secret", "", "", "generated-access", "generated-secret", "patient-bucket", "facility-bucket"},
 		{"custom", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

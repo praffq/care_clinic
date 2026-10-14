@@ -183,7 +183,7 @@ func collectDiagnosticFiles(logRoot, updatesRoot, installRoot string) ([]diagnos
 			return nil, err
 		}
 	}
-	for _, name := range []string{".env", "backend.env", "frontend.env", "secrets.env", "env-defaults.yml"} {
+	for _, name := range []string{".env", "backend.env", "frontend.env", "backend.overrides.env", "frontend.overrides.env", "secrets.env", "env-defaults.yml"} {
 		path := filepath.Join(installRoot, name)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {

@@ -17,7 +17,7 @@ import (
 
 const pluginRecoveryFile = "plugin-recovery.json"
 
-var pluginSnapshotFiles = []string{"backend.env", "plugins.json", compose.LockFile}
+var pluginSnapshotFiles = []string{"backend.env", "backend.overrides.env", "plugins.json", compose.LockFile}
 
 type pluginFile struct {
 	Data   []byte `json:"data"`

@@ -4,7 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
 import { editableEnvLines, mergeEnvChanges, validateExtraSetting, validateSetting } from "../src/screens/panel/advanced-env";
 import { GROUPS, isHiddenKey, SETTING_BY_KEY, SETTINGS } from "../src/screens/panel/env-schema";
-import { getValue } from "../src/lib/env-file";
+import { getValue, quote, unquote } from "../src/lib/env-file";
 
 const desktopPassword = "ClinicTest123";
 const nextPassword = "ClinicChanged456";
@@ -129,6 +129,9 @@ test("environment merging preserves unrelated bytes, quotes, multiline secrets a
   expect(getValue(editableEnvLines(original), "DJANGO_SECRET_KEY")).toBe("one\r\ntwo".replace("\r\n", "\n"));
   expect(mergeEnvChanges(original, [], "backend")).toBe(original);
   expect(mergeEnvChanges("A=one\n", [{ key: "A", value: " leading and trailing " }], "backend")).toBe("A=' leading and trailing '\n");
+  const literal = `O'Connor "$HOME" and \`tick\``;
+  expect(quote(literal, "frontend")).toBe(quote(literal, "backend"));
+  expect(unquote(quote(literal, "frontend"))).toBe(literal);
 });
 
 test("environment validators reject unsafe numbers, multiline values and unknown choices", () => {
@@ -192,12 +195,65 @@ test("Advanced exposes only ten everyday clinic choices and keeps local extras o
 });
 
 test("new clinic templates include visit and address defaults without an invalid blank area ID", async () => {
-  const contents = await readFile(new URL("../../../deployments/frontend.env", import.meta.url), "utf8");
-  const lines = editableEnvLines(contents);
-  expect(getValue(lines, "REACT_DEFAULT_ENCOUNTER_TYPE")).toBe("");
-  expect(getValue(lines, "REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED")).toBe("0");
-  expect(getValue(lines, "REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG")).toBeUndefined();
-  expect(contents).toContain("# REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG=");
+  const contents = await readFile(new URL("../../../deployments/env-defaults.yml", import.meta.url), "utf8");
+  expect(contents).toContain('REACT_DEFAULT_ENCOUNTER_TYPE: ""');
+  expect(contents).toContain('REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED: "0"');
+  expect(contents).not.toContain("REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG");
+  expect(contents).not.toContain("REACT_APP_TITLE");
+  expect(contents).not.toContain("REACT_CARE_API_URL");
+});
+
+test("default-valued and empty edits persist explicitly, while reset removes the override", async ({ page }) => {
+  await openAdvanced(page);
+  await page.evaluate(() => { window.careTest.fixtures.env.frontend = ""; });
+  await unlock(page);
+  await group(page, "Clinic details");
+  const title = root(page).getByRole("textbox", { name: "Clinic display name", exact: true });
+  const reset = root(page).getByRole("button", { name: "Reset Clinic display name to default", exact: true });
+  await expect(reset).toBeDisabled();
+  await title.fill("temporary");
+  await title.fill("");
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "WriteEnv")).toBe(1);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).toContain("REACT_APP_TITLE=\n");
+  await expect(reset).toBeEnabled();
+  await reset.click();
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "WriteEnv")).toBe(2);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).not.toContain("REACT_APP_TITLE=");
+  await expect(reset).toBeDisabled();
+  await group(page, "Patients and visits");
+  const visit = root(page).getByRole("combobox", { name: "Usual visit type", exact: true });
+  await visit.click();
+  await page.getByRole("option", { name: "Home visit", exact: true }).click();
+  await visit.click();
+  await page.getByRole("option", { name: "No preference", exact: true }).click();
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "WriteEnv")).toBe(3);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).toContain("REACT_DEFAULT_ENCOUNTER_TYPE=\n");
+});
+
+test("support defaults stay inherited until edited and reset removes an equal default override", async ({ page }) => {
+  await openAdvanced(page);
+  await page.evaluate(() => { window.careTest.fixtures.env.frontend = ""; });
+  await unlock(page);
+  await group(page, "Extra settings (for support)");
+  const value = root(page).getByLabel("Value for REACT_MFE_REGISTERED_COMPONENTS", { exact: true });
+  const reset = root(page).getByRole("button", { name: "Reset REACT_MFE_REGISTERED_COMPONENTS to default", exact: true });
+  await expect(value).toHaveValue("UserDashboard");
+  await expect(reset).toBeDisabled();
+  await value.fill("Other");
+  await value.fill("UserDashboard");
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "WriteEnv")).toBe(1);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).toContain("REACT_MFE_REGISTERED_COMPONENTS=UserDashboard");
+  await expect(reset).toBeEnabled();
+  await reset.click();
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "WriteEnv")).toBe(2);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).not.toContain("REACT_MFE_REGISTERED_COMPONENTS=");
+  await expect(value).toHaveValue("UserDashboard");
+  await expect(reset).toBeDisabled();
 });
 
 test("email, SMS, patient sign-in and MFA settings cannot reappear in support-only extras", async ({ page }) => {
@@ -208,10 +264,9 @@ test("email, SMS, patient sign-in and MFA settings cannot reappear in support-on
   await expect(root(page).getByRole("button", { name: /^Outgoing email/ })).toHaveCount(0);
   await group(page, "Extra settings (for support)");
   const existingNames = root(page).getByLabel("Setting name", { exact: true });
-  await expect(existingNames).toHaveCount(extraSettings.length);
-  for (const [index, entry] of extraSettings.entries()) {
-    await expect(existingNames.nth(index)).toHaveValue(entry.split("=")[0]);
-  }
+  await expect(existingNames).toHaveCount(extraSettings.length + 1);
+  expect(await existingNames.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value).sort()))
+    .toEqual([...extraSettings.map((entry) => entry.split("=")[0]), "REACT_MFE_REGISTERED_COMPONENTS"].sort());
   await root(page).getByRole("button", { name: "Add setting", exact: true }).click();
   const name = root(page).getByLabel("Setting name", { exact: true }).last();
   const save = root(page).getByRole("button", { name: "Save changes", exact: true });

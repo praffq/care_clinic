@@ -43,7 +43,7 @@ func migrationFixture(t *testing.T) (*Clinic, func() string, string) {
 	digest := "@sha256:" + strings.Repeat("a", 64)
 	lock := `{"version":"3.1.0","backend":{"current":{"commit":"` + fixtureRef + `","image":"fixture/backend` + digest +
 		`","builder":"fixture/backend-builder` + digest + `"}},"frontend":{"current":{"commit":"` + fixtureRef +
-		`","image":"fixture/frontend` + digest + `","builder":"fixture/frontend-builder` + digest + `","runtime_keys":["REACT_CARE_API_URL"]}}}`
+		`","image":"fixture/frontend` + digest + `","builder":"fixture/frontend-builder` + digest + `"}}}`
 	hash := func(data string) string {
 		sum := sha256.Sum256([]byte(data))
 		return hex.EncodeToString(sum[:])[:12]

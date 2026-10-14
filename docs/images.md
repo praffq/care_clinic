@@ -18,24 +18,36 @@ images continue to work offline; checking or downloading new images needs
 internet. New images are prepared under local `-next` tags and applied after
 a safety backup when the backend changes.
 
-## Runtime settings and customization
+## Generated settings and customization
 
 The backend runtime image can be downloaded and relabelled for the clinic.
-Additional backend plugins use the published backend builder image.
+Additional backend plugins use the published backend builder image, install
+into its virtual environment, then copy `/app/.venv` onto the runtime. Backend
+settings are used only at container startup, never as build inputs.
 
-`images/frontend/runtime-keys.json` defines frontend settings filled in at
-container startup. `images/scripts/frontend-env.mjs` compiles placeholders
-for these settings and records `runtime_keys` and `build_env` in publication
-metadata. Runtime-only changes do not trigger a frontend rebuild.
-Changing another compiled setting uses the frontend builder image.
+Every frontend setting is compiled. `deployments/env-defaults.yml` supplies
+the deliberate release defaults; `releasectl` validates and snapshots its `fe`
+map into the run-start plan. `images/scripts/frontend-env.mjs` records exactly
+those settings, including empty strings, as manifest `build_env`.
 
-The frontend wrapper consists of `images/frontend/Dockerfile`,
-`40-care-clinic-config.sh`, `nginx.conf` and the Go configuration helper.
-Keep the placeholder format synchronized with
-`app/internal/compose.PlaceholderPrefix`.
+The only exception is `REACT_CARE_API_URL`. Its hard-coded
+`https://care-clinic.invalid/__CARE_CLINIC_REACT_CARE_API_URL__` placeholder is
+replaced by `images/frontend/40-care-api-url.sh` at startup. The script copies
+the pristine bundle, substitutes only this origin, and removes stale compressed
+copies. There is no runtime setting registry or general configuration helper.
+
+The clinic compares its effective compiled settings with release `build_env`.
+An exact match relabels the published runtime. Any difference (including an
+explicit empty value, a removed value or the clinic title/languages) uses the
+published frontend builder and `frontend-rebuild.Dockerfile`. Build inputs use
+JSON and process environment variables rather than dotenv interpolation, so
+literal dollars, quotes and empty strings survive compilation.
+
+Updates prepare these customized images under `-next` tags. Immediately before
+an approved update, the clinic checks those tags against the latest settings
+and plugins again. No staged update is activated by Start or a settings save.
 
 ## Validation
 
-Run `go test ./internal/compose ./internal/careversions` from `app/`,
-and `go test ./...` from `images/frontend/configure/`.
-`images/scripts/verify-frontend.sh` validates a published frontend image.
+Run `go test ./internal/envconfig ./internal/compose ./internal/careversions`
+from `app/`, and `node --test images/scripts/*.test.mjs` from the repository root.

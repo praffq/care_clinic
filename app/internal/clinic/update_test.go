@@ -25,6 +25,7 @@ func TestCAREUpdateCheckpointsSurviveInterruptedApply(t *testing.T) {
 			if err := queueBackendUpdate(e.InstallDir, "b"); err != nil {
 				t.Fatal(err)
 			}
+			t.Setenv("CARE_NEXT_FINGERPRINT", compose.ReadLock(e.InstallDir).Backend.Next.Image)
 			script := `#!/bin/sh
 printf '%s\n' "$*" >> "$CARE_MIGRATION_TRACE"
 case "$1 $2" in
@@ -35,7 +36,7 @@ case "$1 $2" in
     exit 0 ;;
   'compose stop'|'compose ps'|'compose up') exit 0 ;;
   'image ls') printf 'fixture-image\n'; exit 0 ;;
-  'image inspect') printf 'fixture-fingerprint\n'; exit 0 ;;
+  'image inspect') printf '%s\n' "$CARE_NEXT_FINGERPRINT"; exit 0 ;;
   'image tag') exit 0 ;;
 esac
 exit 99

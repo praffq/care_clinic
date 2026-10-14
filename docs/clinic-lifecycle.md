@@ -100,7 +100,7 @@ remaining teardown files and the residue package.
 | --- | --- |
 | [`clinic.go`](../app/internal/clinic/clinic.go) | `Clinic`, nil-safe logging, effective paths/name, runtime environment, runner helpers, and builder construction. |
 | [`setup.go`](../app/internal/clinic/setup.go) | Ordered first-time preparation: location check, default plugins, secret, domain, directories, encryption keys, and images. |
-| [`secret.go`](../app/internal/clinic/secret.go) | One-time replacement of the Django secret placeholder. |
+| [`secret.go`](../app/internal/clinic/secret.go) | One-time private credential generation through `envconfig`. |
 | [`domain.go`](../app/internal/clinic/domain.go) | Discover managed hostnames, update selected settings and kit files, and construct the clinic host. |
 | [`domain_test.go`](../app/internal/clinic/domain_test.go) | Unmanaged-setting preservation, multiline dotenv handling, mode preservation, idempotence, incomplete setups, and validation before writes. |
 | [`start.go`](../app/internal/clinic/start.go) | Plugin rollback before normal startup; restore recovery, prerequisites, worker safety, phased Compose startup, migrations, health, and native completion. |
@@ -141,10 +141,11 @@ Do not confuse these locations:
 
 [`ensureInstallDir`](../app/app_installdir.go) belongs to the App layer, not
 `Clinic.Setup`. It copies the embedded kit to the installed location. Existing
-`backend.env` and `frontend.env` are user-maintained files and are preserved;
+`backend.env` and `frontend.env` are generated files;
 other embedded kit files can be refreshed. Placeholder `.gitkeep` files are not
 installation payloads. The App reapplies the saved domain after normal kit
-refresh. It deliberately suppresses that refresh while removal or a pending
+refresh, regenerating effective env from defaults, preserved overrides and
+private secrets. It deliberately suppresses that refresh while removal or a pending
 restore or plugin rollback makes replacement unsafe; see [Wails application](wails-application.md).
 
 `Setup()` therefore assumes its input kit has already been unpacked. It does
@@ -158,7 +159,7 @@ the private recovery file.
 | Desktop control panel | `app/frontend/` becomes embedded Wails web assets. | Development or desktop release packaging. The panel must work without a running clinic. |
 | Desktop Go executable | `app/` plus embedded assets and install kit become the native application. | Development or release packaging. |
 | CARE backend image | Published backend runtime image by digest; optional plugins use its matching builder image. | Setup, startup freshness checks, or explicit backend rebuild. |
-| CARE frontend image | Published frontend image by digest; runtime settings from mounted `frontend.env`, or a builder-image rebuild for changed compiled settings. | Setup, startup freshness checks, or explicit frontend rebuild. This is the clinical browser application. |
+| CARE frontend image | Published frontend image by digest; a builder-image rebuild for any differing compiled setting. Only the API origin is substituted at startup. | Setup, startup freshness checks, or explicit frontend rebuild. This is the clinical browser application. |
 | Caddy and backup images | Optional digest-pinned prebuilt images, or installed Dockerfiles and pinned base/module inputs. | Setup or startup freshness checks. |
 
 Rebuilding the desktop control panel does not rebuild the CARE frontend
@@ -211,10 +212,9 @@ in [native integrations](native-integrations.md).
 | `BACKUP_DIR` | The effective engine backup directory. |
 
 Compose translates the storage credentials to the container variables
-`MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`. If a backend storage credential is
-missing or blank, the engine falls back to the implementation's `minioadmin`
-default. That is a default to recognize, not a recommendation or a generated
-secret. Empty bucket values fall back in Compose to `patient-bucket` and
+`MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`. Missing or blank storage credentials
+fail Compose validation; setup generates independent credentials in private
+`secrets.env`. Empty bucket values fall back in Compose to `patient-bucket` and
 `facility-bucket`.
 
 `backendEnv()` returns no parsed settings on a read or dotenv-parse failure;
@@ -285,9 +285,9 @@ error. There is no implicit rollback of earlier successful steps.
 | Order | Operation | Durable or operational effect |
 | --- | --- | --- |
 | 1 | `backup.CheckLocation(backupDir, InstallDir)` | Reject an unsafe backup location before setup changes the kit. The backup guide explains the path rules. |
-| 2 | `plugins.New(InstallDir).InitializeDefaults()` | For new-clinic setup, persist default catalog entries, including CARE Onboarding, only when `plugins.json` is absent. Preserve existing backend plugins and any saved list, including an empty one. Malformed saved JSON fails setup rather than being overwritten. |
-| 3 | `Backups().InstallCertificate(BackupCertificate)`, then `genSecret()` | Install only the public backup certificate and its ownership copy; replace the Django secret placeholder if present. |
-| 4 | `ApplyDomain()` | Apply the clinic host to managed settings and deployment assets. |
+| 2 | `genSecret()` | Generate private credentials once and initialize empty override files; retain existing secrets on retry. |
+| 3 | `ApplyDomain()` | Generate effective environment files and apply the clinic host to deployment assets. |
+| 4 | `plugins.New(InstallDir).InitializeDefaults()`, then `Backups().InstallCertificate(BackupCertificate)` | Persist initial plugin choices only when absent; install only the public backup certificate and ownership copy. |
 | 5 | Create the backup directory with `MkdirAll(..., 0755)` | The destination may now exist even if later setup fails; its location is logged. |
 | 6 | `Backups().EnsureKeysDir()` | Prepare the keys directory before a Docker bind mount can create a root-owned source directory. |
 | 7 | Start `EnsureBackend` and `EnsureFrontend` as a background build group | Image downloads and any required local customizations run while steps 8–9 continue. |
@@ -327,22 +327,14 @@ exists for that reason.
 
 ### What secret generation actually does
 
-[`genSecret`](../app/internal/clinic/secret.go) reads `backend.env` and looks for
-the literal text `DJANGO_SECRET_KEY=CHANGE_ME`. Only the first occurrence is
-replaced. It obtains 40 cryptographically random bytes and encodes them with
-unpadded URL-safe Base64, producing about 54 characters.
-
-If the literal placeholder is absent, the file is left alone; this is not a
-general secret validator or rotation mechanism. Read, randomness, and write
-errors propagate. The generated key remains in the local environment file.
-This helper currently uses `os.WriteFile`, not the atomic replacement helper
-used by domain/environment editing. It must not be described as part of an
-all-or-nothing setup transaction.
-
-This function does not generate PostgreSQL passwords, storage credentials, a
-new password for an existing CARE administrator, or a replacement backup
-recovery file. The backup keypair and Caddy's local CA are separate key systems
-with different owners and lifetimes.
+[`genSecret`](../app/internal/clinic/secret.go) calls
+`envconfig.EnsureSecrets`. It generates independent Django, PostgreSQL, storage
+and offline email/SNS credentials using cryptographic randomness, then atomically
+publishes `secrets.env` as 0600 with a restricted Windows DACL. Existing secrets
+are retained; an incomplete file fails rather than rotating credentials.
+Effective env generation derives `DATABASE_URL` from the database credentials.
+The editor reads overrides/defaults, never effective files or these secrets.
+Backup keys, Caddy's CA and CARE administrator passwords have separate owners.
 
 ## 5. Image builder: freshness is local evidence
 
@@ -407,16 +399,17 @@ Let `H(bytes)` mean the first 12 lowercase hexadecimal characters of SHA-256.
 | Image | Fingerprint components | Preparation behavior |
 | --- | --- | --- |
 | Backend | Published runtime image digest, plus `+plugs@H(AdditionalPlugs)` when plugins are configured. | Pull/relabel the runtime image; plugins use `backend-plugins.Dockerfile` with the matching published builder and runtime images. |
-| Frontend | Published runtime image digest, plus `+env@H(rendered compiled settings)` only when nonblank compiled settings differ from `build_env`. | Pull/relabel the runtime image, or use `frontend-rebuild.Dockerfile` to recompile on the published builder image. |
+| Frontend | Published runtime image digest, plus `+env@H(JSON compiled settings)` whenever effective compiled settings differ from `build_env`, including empty or removed values. | Pull/relabel the runtime image, or use `frontend-rebuild.Dockerfile` to recompile on the published builder image. |
 | Backup | Prebuilt digest when set; otherwise `PostgresImage + "+dockerfile@" + H(backup.Dockerfile bytes)`. | Pull/relabel or build with an empty context. |
 | Caddy/WAF | Prebuilt digest when set; otherwise `CaddyImage + "+coraza@" + CorazaVersion + "+dockerfile@" + H(caddy.Dockerfile bytes)`. | Pull/relabel or build with an empty context. |
 
 Changing the desktop version no longer invalidates CARE images by itself.
 Backend plugins do; most other backend environment settings are runtime inputs.
-Frontend runtime keys and blank values do not force compilation. Compiled values
-are merged into the image's `build_env` and rendered in stable key order, so
-formatting-only changes are not fingerprint inputs. `care-clinic-configure`
-applies runtime settings from the mounted `frontend.env` at container start.
+All frontend settings except `REACT_CARE_API_URL` are compiled. Effective values
+are serialized as stable JSON, so formatting-only changes are not fingerprint
+inputs and literal dollar signs/quotes are not interpolated. The tiny
+`40-care-api-url.sh` startup script substitutes only the hard-coded API origin
+placeholder, using the hostname-derived value from `frontend.env`.
 
 `Caddyfile`, `scripts/backup.sh`, and `minio/entrypoint.sh` remain runtime mounts.
 These labels are cache keys, not signatures or an audit of external dependencies.
@@ -435,7 +428,7 @@ in `InstallDir/care-images.json`, outside the embedded `.env` refresh:
 | --- | --- |
 | `version` | The clinic's CARE 3.1 version. |
 | `backend` / `frontend` | Each service's `current`, `next`, and `declined` record. |
-| `current` | The published image entry, including commit, runtime and builder digests; frontend entries also carry runtime keys and compiled defaults. |
+| `current` | The published image entry, including commit, runtime and builder digests; frontend entries also carry compiled `build_env`. |
 | `next` | A published image entry prepared under the local `-next` tag. |
 | `declined` | A commit whose prompt was dismissed; the prepared image remains available. |
 
@@ -498,7 +491,7 @@ The Caddy and backup builders create an empty `.care-buildctx-*` directory
 under the installed kit and remove it on return. The full install directory, including keys and environment files, is not
 uploaded as their build context. Plugin builds and image relabeling also use
 isolated empty contexts; a frontend customization context contains only the
-generated `clinic.env`, with runtime placeholders and compiled settings.
+generated `clinic.json`, with the API placeholder and exact compiled settings.
 
 After a successful stale-image replacement through `ensure`, the builder
 attempts Docker's dangling-image prune. Inside a parallel build group that
@@ -530,38 +523,24 @@ of just one required image.
 
 ## 6. Hostname, buckets, and proxy routing form one configuration
 
-[`ApplyDomain`](../app/internal/clinic/domain.go) manages exactly three files:
+[`ApplyDomain`](../app/internal/clinic/domain.go) regenerates effective env and
+updates hostname-bearing deployment assets:
 
 | Installed file | Managed content |
 | --- | --- |
 | `backend.env` | Values assigned to `CSRF_TRUSTED_ORIGINS` and `BUCKET_EXTERNAL_ENDPOINT`. |
 | `frontend.env` | Values assigned to `REACT_CARE_API_URL`. |
 | `Caddyfile` | Tokens for recognized managed hosts, including the clinic TLS site. |
+| `setup/index.html` | The clinic-address link. |
 
-It validates the clinic label, reads all available files, and parses the
-environment files before writing any changes. Missing files are allowed, so a
-partial installation can have its available files updated. Other read errors
-and dotenv parse errors stop the operation before the write phase.
-
-The managed-host set begins with the template's `example.local`. The code also
-recognizes previous `.local` hosts from parseable managed URL values, the
-expected Caddy site-block shape. It then replaces **whole matching host tokens**, not every occurrence
-of `.local`:
-
-- An unrelated device such as `scanner.local` is not automatically renamed.
-- A larger hostname such as `example.local.other` is not a match for the
-  template hostname.
-- Only the named dotenv assignments are edited. Plugin configuration and other
-  settings are preserved even if their values mention the old clinic host.
-- The dotenv-aware line handling preserves comments and unrelated multiline
-  quoted values rather than rewriting the entire file from a parsed map.
-
-Each changed file is atomically replaced with its existing permission bits.
-This is **per-file atomicity**, not a transaction across all three files: a write
-failure partway through can leave some files updated. Idempotence and discovery
-of previous managed hosts make retries possible. Custom Caddy block shapes or
-URL values outside the recognized forms are not a generic configuration
-migration API.
+It validates the clinic label and reads the proxy/setup assets before generating
+private effective files from defaults, overrides, secrets and derived hostname.
+Missing proxy/setup assets are allowed during partial setup, but missing defaults
+or secrets fail. Overrides are never rewritten by a hostname change, even if a
+plugin value mentions an old hostname. Proxy/setup replacements use whole host
+tokens discovered from `example.local` and the managed site/address shapes;
+unrelated device hostnames are preserved. Atomicity is per file; retries are
+idempotent, not a transaction across the whole kit.
 
 Changing the domain has several downstream effects: backend runtime URLs must
 change, the frontend must be recreated to apply runtime URLs, the proxy
@@ -706,7 +685,7 @@ Ports shown as internal are not host-published by this kit.
 | `backend` | `BACKEND_IMAGE`; `bash start.sh`, `backend.env`. | `db` and `redis` healthy. | No application-data volume declared here. | API 9000 internally. |
 | `celery-worker` | `BACKEND_IMAGE`; `bash celery_worker.sh`, `backend.env`. | `db` and `redis` healthy. | No dedicated volume declared here. | No published port. |
 | `celery-beat` | `BACKEND_IMAGE`; `bash celery_beat.sh`, `backend.env`. | `db` and `redis` healthy. | No dedicated volume declared here. | No published port. |
-| `frontend` | `FRONTEND_IMAGE`; nginx with `care-clinic-configure` applying runtime values at container start; other settings are compiled. | `backend` started. | `frontend.env` read-only at `/care-clinic/frontend.env`. | Web server 80 internally. |
+| `frontend` | `FRONTEND_IMAGE`; nginx with the API-origin-only startup sed script; every other setting is compiled. | `backend` started. | No bind mount; `frontend.env` supplies the API origin through `env_file`. | Web server 80 internally. |
 | `caddy` | `CADDY_WAF_IMAGE`; generate WAF mode file and execute Caddy. | `backend`, `frontend`, `minio` started. | `Caddyfile` read-only; `caddy-data` at `/data`; `caddy-config` at `/config`. | Host TCP 80 to 80 and TCP 443 to 443. |
 | `backup` | `BACKUP_IMAGE`; `/bin/sh /backup.sh`, `backend.env`. | `db` healthy. | Backup script read-only; selected backup directory writable at `/backups`; `keys/` read-only; `minio-data` read-only at `/minio-data`. | No published port. |
 

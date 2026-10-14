@@ -55,7 +55,7 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 	}
 	write("app/frontend/scripts/stage-install.mjs", string(script))
 	// The hook runs the real stage command from the app module.
-	for _, dir := range []string{"go.mod", "go.sum", "cmd/stageconfig", "internal/release", "internal/sys"} {
+	for _, dir := range []string{"go.mod", "go.sum", "cmd/stageconfig", "internal/release", "internal/envconfig", "internal/sys"} {
 		src := filepath.Join("..", "..", dir)
 		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || strings.HasSuffix(path, "_test.go") {
@@ -77,6 +77,7 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 		}
 	}
 	write("deployments/.env", base)
+	write("deployments/env-defaults.yml", string(repoFile(t, "deployments/env-defaults.yml")))
 	write("app/wails.json", `{"name":"care-clinic","info":{"productVersion":"9.9.9","productName":"CARE Clinic"}}`)
 	write("deployments/minio/entrypoint.sh", "storage entrypoint")
 	write("app/main.go", `package main

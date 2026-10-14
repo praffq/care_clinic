@@ -14,9 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/compose-spec/compose-go/v2/dotenv"
+	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
-	"go.yaml.in/yaml/v3"
 )
 
 type plan struct {
@@ -257,30 +256,9 @@ func makePlan(root string, c release.Config, old release.Manifest) (plan, error)
 }
 
 func frontendEnv(root string) (map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(root, "deployments", "env-defaults.yml"))
-	if err == nil {
-		var defaults struct {
-			BE map[string]string `yaml:"be"`
-			FE map[string]string `yaml:"fe"`
-		}
-		d := yaml.NewDecoder(strings.NewReader(string(data)))
-		d.KnownFields(true)
-		if err := d.Decode(&defaults); err != nil {
-			return nil, err
-		}
-		if defaults.FE == nil {
-			return map[string]string{}, nil
-		}
-		return defaults.FE, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, err
-	}
-	// Phase 3 introduces env-defaults.yml. Until then the existing published
-	// frontend defaults remain build inputs, not a second release version file.
-	data, err = os.ReadFile(filepath.Join(root, "deployments", "frontend.env"))
+	defaults, err := envconfig.LoadDefaults(filepath.Join(root, "deployments", "env-defaults.yml"))
 	if err != nil {
 		return nil, err
 	}
-	return dotenv.Parse(strings.NewReader(string(data)))
+	return defaults.FE, nil
 }

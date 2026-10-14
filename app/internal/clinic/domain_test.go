@@ -3,9 +3,10 @@ package clinic
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 )
 
 func writeDomainFile(t *testing.T, dir, name, content string) {
@@ -28,134 +29,93 @@ func readDomainFile(t *testing.T, dir, name string) string {
 	return string(data)
 }
 
-func TestApplyDomainPreservesUnmanagedSettings(t *testing.T) {
+func domainClinic(t *testing.T) *Clinic {
+	t.Helper()
 	dir := t.TempDir()
-	caddy := "not header Referer *example.local*\nexample.local:443 {\n\ttls internal\n\timport bootstrap\n\timport site\n}\nreverse_proxy https://scanner.local\nreverse_proxy https://example.local.example.com\n"
-	backend := "export BUCKET_EXTERNAL_ENDPOINT = \"https://example.local:443/files\"\r\n" +
-		"CSRF_TRUSTED_ORIGINS='[\"https://example.local\", \"https://scanner.local\", \"https://example.local.other\"]'\r\n" +
-		"PLUGIN_API=https://scanner.local/api\r\n" +
-		"PLUGIN_CLINIC=https://example.local/api\r\n" +
-		"ADDITIONAL_PLUGS='[\r\n  {\"name\":\"scanner\",\"configs\":{\"endpoint\":\"https://scanner.local\",\"clinic\":\"https://example.local\"}}\r\n]'\r\n" +
-		"PLUGIN_TEMPLATE='first\r\nBUCKET_EXTERNAL_ENDPOINT=https://example.local\r\nlast'\r\n" +
-		"PLUGIN_COLON: 'first\r\nBUCKET_EXTERNAL_ENDPOINT=https://example.local\r\nlast'\r\n"
-	frontend := "REACT_CARE_API_URL=https://example.local\nPLUGIN_API=https://printer.local\nPLUGIN_CLINIC=https://example.local\n"
-	for name, content := range map[string]string{
-		"Caddyfile":    caddy,
-		"backend.env":  backend,
-		"frontend.env": frontend,
-	} {
-		writeDomainFile(t, dir, name, content)
-	}
-	e := &Clinic{InstallDir: dir, MDNSName: "north"}
-	if err := e.ApplyDomain(); err != nil {
+	defaults, err := os.ReadFile("../../../deployments/env-defaults.yml")
+	if err != nil {
 		t.Fatal(err)
 	}
-	expectedBackend := strings.Replace(backend, "https://example.local:443/files", "https://north.local:443/files", 1)
-	expectedBackend = strings.Replace(expectedBackend, `["https://example.local",`, `["https://north.local",`, 1)
-	expected := map[string]string{
-		"Caddyfile":    strings.Replace(strings.Replace(caddy, "*example.local*", "*north.local*", 1), "example.local:443 {", "north.local:443 {", 1),
-		"backend.env":  expectedBackend,
-		"frontend.env": strings.Replace(frontend, "REACT_CARE_API_URL=https://example.local", "REACT_CARE_API_URL=https://north.local", 1),
-	}
-	for name, want := range expected {
-		if got := readDomainFile(t, dir, name); got != want {
-			t.Errorf("%s:\ngot  %q\nwant %q", name, got, want)
-		}
-		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-			t.Errorf("%s permissions changed to %v", name, info.Mode().Perm())
-		}
-	}
-	if err := e.ApplyDomain(); err != nil {
+	writeDomainFile(t, dir, "env-defaults.yml", string(defaults))
+	if err := envconfig.EnsureSecrets(dir); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range expected {
-		if got := readDomainFile(t, dir, name); got != want {
-			t.Errorf("%s was not idempotent", name)
-		}
-	}
-	e.MDNSName = "south"
-	if err := e.ApplyDomain(); err != nil {
-		t.Fatal(err)
-	}
-	for name, previous := range expected {
-		if got, want := readDomainFile(t, dir, name), strings.ReplaceAll(previous, "north.local", "south.local"); got != want {
-			t.Errorf("%s retry:\ngot  %q\nwant %q", name, got, want)
-		}
-	}
+	return &Clinic{InstallDir: dir, MDNSName: "first"}
 }
 
-func TestApplyDomainHandlesIncompleteSetup(t *testing.T) {
-	dir := t.TempDir()
-	e := &Clinic{InstallDir: dir, MDNSName: "first"}
-	if err := e.ApplyDomain(); err != nil {
-		t.Fatal(err)
-	}
-	writeDomainFile(t, dir, "Caddyfile", "example.local:443 {\n\ttls internal\n\timport bootstrap\n\timport site\n}\n")
-	if err := e.ApplyDomain(); err != nil {
-		t.Fatal(err)
-	}
-	e.MDNSName = "retry"
-	if err := e.ApplyDomain(); err != nil {
-		t.Fatal(err)
-	}
-	if got := readDomainFile(t, dir, "Caddyfile"); !strings.HasPrefix(got, "retry.local:443") {
-		t.Fatalf("partial setup retained the old hostname: %s", got)
-	}
-	writeDomainFile(t, dir, "backend.env", "BUCKET_EXTERNAL_ENDPOINT=https://first.local\nCSRF_TRUSTED_ORIGINS=[\"https://first.local\", \"https://scanner.local\"]\n")
-	if err := e.ApplyDomain(); err != nil {
-		t.Fatal(err)
-	}
-	if got := readDomainFile(t, dir, "backend.env"); got != "BUCKET_EXTERNAL_ENDPOINT=https://retry.local\nCSRF_TRUSTED_ORIGINS=[\"https://retry.local\", \"https://scanner.local\"]\n" {
-		t.Fatalf("preserved environment was not updated during retry: %s", got)
-	}
-}
-
-func TestApplyDomainRejectsInvalidInputsBeforeWriting(t *testing.T) {
-	for _, failure := range []string{"label", "read", "parse"} {
-		t.Run(failure, func(t *testing.T) {
-			dir := t.TempDir()
-			e := &Clinic{InstallDir: dir, MDNSName: "north"}
-			writeDomainFile(t, dir, "Caddyfile", "example.local:443 {}\n")
-			switch failure {
-			case "label":
-				e.MDNSName = "not a label"
-			case "read":
-				if err := os.Mkdir(filepath.Join(dir, "backend.env"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-			case "parse":
-				writeDomainFile(t, dir, "backend.env", "BUCKET_EXTERNAL_ENDPOINT=\"unterminated\n")
-			}
-			if err := e.ApplyDomain(); err == nil {
-				t.Fatal("invalid input was accepted")
-			}
-			if got := readDomainFile(t, dir, "Caddyfile"); got != "example.local:443 {}\n" {
-				t.Fatal("domain files changed before input validation finished")
-			}
-		})
-	}
-}
-
-func TestApplyDomainUpdatesCurrentCaddyfile(t *testing.T) {
+func TestApplyDomainPreservesOverridesAndUpdatesDerivedValues(t *testing.T) {
+	e := domainClinic(t)
+	overrides := "PLUGIN_API='https://scanner.local/api'\nPLUGIN_CLINIC='https://example.local/api'\n"
+	writeDomainFile(t, e.InstallDir, "backend.overrides.env", overrides)
 	caddy, err := os.ReadFile("../../../deployments/Caddyfile")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	writeDomainFile(t, dir, "Caddyfile", string(caddy))
-	e := &Clinic{InstallDir: dir, MDNSName: "first"}
-	for _, host := range []string{"first", "renamed"} {
+	writeDomainFile(t, e.InstallDir, "Caddyfile", string(caddy))
+	writeDomainFile(t, e.InstallDir, "setup/index.html", `<a id="clinic-address" href="https://example.local">Open</a>`)
+	for _, host := range []string{"first", "first", "renamed"} {
 		e.MDNSName = host
 		if err := e.ApplyDomain(); err != nil {
 			t.Fatal(err)
 		}
-		want := strings.ReplaceAll(string(caddy), "example.local", host+".local")
-		if got := readDomainFile(t, dir, "Caddyfile"); got != want {
+		if got := readDomainFile(t, e.InstallDir, "Caddyfile"); got != strings.ReplaceAll(string(caddy), "example.local", host+".local") {
 			t.Fatal("proxy configuration did not update the clinic host")
 		}
+		if got := readDomainFile(t, e.InstallDir, "backend.overrides.env"); got != overrides {
+			t.Fatal("hostname edit changed explicit overrides")
+		}
+		be, err := envconfig.Read(filepath.Join(e.InstallDir, "backend.env"))
+		if err != nil || be["BUCKET_EXTERNAL_ENDPOINT"] != "https://"+host+".local" || be["PLUGIN_CLINIC"] != "https://example.local/api" {
+			t.Fatal("generated backend lost derived hostname or plugin settings")
+		}
+		fe, err := envconfig.Read(filepath.Join(e.InstallDir, "frontend.env"))
+		if err != nil || fe["REACT_CARE_API_URL"] != "https://"+host+".local" {
+			t.Fatal("frontend hostname not regenerated")
+		}
+	}
+}
+
+func TestApplyDomainHandlesIncompleteProxySetup(t *testing.T) {
+	e := domainClinic(t)
+	if err := e.ApplyDomain(); err != nil {
+		t.Fatal(err)
+	}
+	writeDomainFile(t, e.InstallDir, "Caddyfile", "example.local:443 {\n\ttls internal\n\timport bootstrap\n\timport site\n}\n")
+	e.MDNSName = "retry"
+	if err := e.ApplyDomain(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDomainFile(t, e.InstallDir, "Caddyfile"); !strings.HasPrefix(got, "retry.local:443") {
+		t.Fatal("partial setup retained old hostname")
+	}
+}
+
+func TestApplyDomainRejectsInvalidInputsBeforeWriting(t *testing.T) {
+	for _, failure := range []string{"label", "read", "parse", "secrets"} {
+		t.Run(failure, func(t *testing.T) {
+			e := domainClinic(t)
+			writeDomainFile(t, e.InstallDir, "Caddyfile", "example.local:443 {}\n")
+			switch failure {
+			case "label":
+				e.MDNSName = "not a label"
+			case "read":
+				if err := os.Remove(filepath.Join(e.InstallDir, "backend.overrides.env")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(e.InstallDir, "backend.overrides.env"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "parse":
+				writeDomainFile(t, e.InstallDir, "backend.overrides.env", "PLUGIN=\"unterminated\n")
+			case "secrets":
+				writeDomainFile(t, e.InstallDir, "secrets.env", "")
+			}
+			if err := e.ApplyDomain(); err == nil {
+				t.Fatal("invalid input was accepted")
+			}
+			if got := readDomainFile(t, e.InstallDir, "Caddyfile"); got != "example.local:443 {}\n" {
+				t.Fatal("proxy changed before input validation")
+			}
+		})
 	}
 }

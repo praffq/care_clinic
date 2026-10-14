@@ -43,12 +43,11 @@ func versionFixture(c byte) careversions.Manifest {
 			SourceHash: strings.Repeat(string(c), 64),
 		},
 		Frontend: careversions.Image{
-			Commit:      strings.Repeat(string(c), 40),
-			Image:       digestRef("frontend", c),
-			Builder:     digestRef("frontend-builder", c),
-			SourceHash:  strings.Repeat(string(c), 64),
-			RuntimeKeys: []string{"REACT_CARE_API_URL", "REACT_APP_TITLE"},
-			BuildEnv:    map[string]string{"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard"},
+			Commit:     strings.Repeat(string(c), 40),
+			Image:      digestRef("frontend", c),
+			Builder:    digestRef("frontend-builder", c),
+			SourceHash: strings.Repeat(string(c), 64),
+			BuildEnv:   map[string]string{"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard"},
 		},
 	}
 }
@@ -175,13 +174,16 @@ func TestImageKeysTrackBuildInputs(t *testing.T) {
 		{"plugins", [4]bool{true}, func(t *testing.T, b *Builder) {
 			writeBuildFile(t, b.dir, "backend.env", "ADDITIONAL_PLUGS='[{\"name\":\"two\",\"package_name\":\"pkg_two\"}]'\n")
 		}},
-		{"frontend runtime setting", [4]bool{}, func(t *testing.T, b *Builder) {
+		{"frontend API origin", [4]bool{}, func(t *testing.T, b *Builder) {
+			writeBuildFile(t, b.dir, "frontend.env", "REACT_CARE_API_URL=https://other.local\nREACT_MFE_REGISTERED_COMPONENTS=UserDashboard\n")
+		}},
+		{"frontend title is compiled", [4]bool{false, true}, func(t *testing.T, b *Builder) {
 			writeBuildFile(t, b.dir, "frontend.env", "REACT_CARE_API_URL=https://other.local\nREACT_APP_TITLE=Clinic\n")
 		}},
 		{"frontend build setting", [4]bool{false, true}, func(t *testing.T, b *Builder) {
 			writeBuildFile(t, b.dir, "frontend.env", "REACT_MFE_REGISTERED_COMPONENTS=Other\n")
 		}},
-		{"blank build setting", [4]bool{}, func(t *testing.T, b *Builder) {
+		{"blank build setting", [4]bool{false, true}, func(t *testing.T, b *Builder) {
 			writeBuildFile(t, b.dir, "frontend.env", "REACT_MFE_REGISTERED_COMPONENTS=\n")
 		}},
 		{"postgres", [4]bool{false, false, true}, func(t *testing.T, b *Builder) { b.set.PostgresImage = "postgres:18-alpine" }},
@@ -247,23 +249,25 @@ func TestBuildSettingsMergeOnlyCompileTimeValues(t *testing.T) {
 		"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard",
 		"REACT_CUSTOM_DESCRIPTION":        "",
 	})
-	if changed || len(merged) != 1 {
-		t.Fatalf("runtime or blank values forced a rebuild: %v %v", merged, changed)
+	if !changed || len(merged) != 2 || merged["REACT_CUSTOM_DESCRIPTION"] != "" {
+		t.Fatalf("explicit blank value did not force a rebuild: %v %v", merged, changed)
 	}
 	merged, changed = BuildSettings(rel, map[string]string{"REACT_CUSTOM_DESCRIPTION": "Ours"})
-	if !changed || merged["REACT_CUSTOM_DESCRIPTION"] != "Ours" || merged["REACT_MFE_REGISTERED_COMPONENTS"] != "UserDashboard" {
+	if !changed || merged["REACT_CUSTOM_DESCRIPTION"] != "Ours" || len(merged) != 1 {
 		t.Fatalf("merge = %v %v", merged, changed)
 	}
 	if rel.BuildEnv["REACT_CUSTOM_DESCRIPTION"] != "" {
 		t.Fatal("merge mutated the release")
 	}
-}
-
-func TestRenderEnvIsStableAndQuoted(t *testing.T) {
-	got := renderEnv(map[string]string{"B": "it's", "A": "x y", "C": `a"b'c`})
-	want := "A='x y'\nB=\"it's\"\nC=`a\"b'c`\n"
-	if got != want {
-		t.Fatalf("renderEnv = %q, want %q", got, want)
+	merged, changed = BuildSettings(rel, map[string]string{
+		"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard", "REACT_CARE_API_URL": "https://north.local",
+	})
+	if changed || len(merged) != 1 {
+		t.Fatal("equal compiled values or changed API hostname forced a rebuild")
+	}
+	merged, changed = BuildSettings(rel, map[string]string{})
+	if !changed || len(merged) != 0 {
+		t.Fatal("removing a compiled value retained the release's old value")
 	}
 }
 
@@ -301,7 +305,7 @@ case "$1 $2" in
   build*)
     for arg do context=$arg; done
     [ -d "$context" ] || exit 23
-    [ ! -f "$context/clinic.env" ] || cp "$context/clinic.env" "$CARE_BUILD_TRACE.env"
+    [ ! -f "$context/clinic.json" ] || cp "$context/clinic.json" "$CARE_BUILD_TRACE.json"
     ;;
   *) exit 99 ;;
 esac
@@ -435,16 +439,12 @@ func TestBuildLabelsMatchConsumedInputs(t *testing.T) {
 			t.Errorf("docker was not called with %q", want)
 		}
 	}
-	env := readTrace(t, trace+".env")
-	for _, want := range []string{
-		"REACT_CARE_API_URL='https://care-clinic.invalid/__CARE_CLINIC_REACT_CARE_API_URL__'\n",
-		"REACT_APP_TITLE='https://care-clinic.invalid/__CARE_CLINIC_REACT_APP_TITLE__'\n",
-		"REACT_CUSTOM_DESCRIPTION='Our clinic'\n",
-		"REACT_MFE_REGISTERED_COMPONENTS='UserDashboard'\n",
-	} {
-		if !strings.Contains(env, want) {
-			t.Errorf("frontend rebuild env lacks %q:\n%s", want, env)
-		}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(readTrace(t, trace+".json")), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env["REACT_CARE_API_URL"] != "https://care-clinic.invalid/__CARE_CLINIC_REACT_CARE_API_URL__" || env["REACT_CUSTOM_DESCRIPTION"] != "Our clinic" || len(env) != 2 {
+		t.Fatalf("frontend rebuild did not receive exact effective values: %v", env)
 	}
 	contexts, err := filepath.Glob(filepath.Join(b.dir, ".care-buildctx-*"))
 	if err != nil || len(contexts) != 0 {

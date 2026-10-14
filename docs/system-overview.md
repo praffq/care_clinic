@@ -48,6 +48,17 @@ values. Effective env files combine overrides, deliberate string defaults from
 `env-defaults.yml`, hostname-derived values and generated private secrets.
 Clinic settings never trigger releases.
 
+`deployments/env-defaults.yml` has strict string-only `be`/`fe` maps. Per-clinic
+`backend.overrides.env` and `frontend.overrides.env` survive kit refresh; reset
+removes a key, while saving an equal-to-default or empty string keeps it
+explicit. Setup generates independent credentials once in private `secrets.env`
+(0600 and a restricted Windows DACL). The editor never reads effective env or
+secrets. Hostname changes regenerate the API origin, CSRF origins and external
+storage endpoint; PostgreSQL's URL is derived from its generated password.
+Effective `backend.env`/`frontend.env` are deterministic private outputs.
+Published frontend `build_env` and local builds preserve empty strings; JSON
+build inputs avoid dotenv expansion of literal settings.
+
 Backups live on local disk. A replacement backup must pass checksums,
 decryption, PostgreSQL archive/physical/WAL checks and chain verification before
 the previous set can be removed. Continuous encrypted WAL, nightly physical

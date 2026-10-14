@@ -4,16 +4,17 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strings"
 	"sync/atomic"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
+	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
@@ -22,10 +23,6 @@ import (
 const (
 	backendPluginsDockerfile  = "backend-plugins.Dockerfile"
 	frontendRebuildDockerfile = "frontend-rebuild.Dockerfile"
-	// PlaceholderPrefix marks a frontend setting the image fills in at start.
-	// It is URL-shaped so CARE's build-time validation accepts it for settings
-	// that must be URLs; images/frontend/configure matches the same pattern.
-	PlaceholderPrefix = "https://care-clinic.invalid/__CARE_CLINIC_"
 )
 
 type Builder struct {
@@ -243,30 +240,28 @@ func (b *Builder) frontendPlan() (plan, error) {
 		p.build = func() error { return b.relabel(rel.Image, p.tag, p.key, "frontend") }
 		return p, nil
 	}
-	p.key += "+env@" + shortHash([]byte(renderEnv(merged)))
+	data, err = json.Marshal(merged)
+	if err != nil {
+		return plan{}, err
+	}
+	p.key += "+env@" + shortHash(data)
 	p.build = func() error { return b.buildFrontend(rel, merged, p.tag, p.key) }
 	return p, nil
 }
 
-// BuildSettings merges the clinic's compile-time frontend settings into the
-// release's, reporting whether they differ so the bundle must be rebuilt.
-// Settings the image applies at start, and blank values, never force a rebuild.
+// BuildSettings compares the clinic's effective compiled settings with the
+// release's, reporting whether the bundle must be rebuilt.
+// Only the clinic API URL is substituted at startup. Empty compiled values are
+// explicit values, not absent overrides.
 func BuildSettings(rel Release, env map[string]string) (map[string]string, bool) {
-	merged := make(map[string]string, len(rel.BuildEnv))
-	for k, v := range rel.BuildEnv {
-		merged[k] = v
-	}
-	changed := false
+	merged := make(map[string]string, len(env))
 	for k, v := range env {
-		if v == "" || slices.Contains(rel.RuntimeKeys, k) {
+		if k == "REACT_CARE_API_URL" {
 			continue
 		}
-		if cur, ok := merged[k]; !ok || cur != v {
-			merged[k] = v
-			changed = true
-		}
+		merged[k] = v
 	}
-	return merged, changed
+	return merged, !maps.Equal(merged, rel.BuildEnv)
 }
 
 func (b *Builder) buildFrontend(rel Release, merged map[string]string, tag, key string) error {
@@ -281,14 +276,16 @@ func (b *Builder) buildFrontend(rel Release, merged map[string]string, tag, key 
 		return err
 	}
 	defer cleanup()
-	env := make(map[string]string, len(merged)+len(rel.RuntimeKeys))
+	env := make(map[string]string, len(merged)+1)
 	for k, v := range merged {
 		env[k] = v
 	}
-	for _, k := range rel.RuntimeKeys {
-		env[k] = PlaceholderPrefix + k + "__"
+	env["REACT_CARE_API_URL"] = envconfig.APIPlaceholder
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(filepath.Join(ctx, "clinic.env"), []byte(renderEnv(env)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ctx, "clinic.json"), data, 0o600); err != nil {
 		return err
 	}
 	b.logln("Rebuilding the frontend with this clinic's build settings (" + tag + ")... (a few minutes)")
@@ -297,31 +294,6 @@ func (b *Builder) buildFrontend(rel Release, merged map[string]string, tag, key 
 		"--build-arg", "FRONTEND_IMAGE="+rel.Image,
 		"--label", builtFromLabel+"="+key,
 		"-t", tag, ctx)
-}
-
-// renderEnv writes a dotenv file with stable ordering.
-func renderEnv(env map[string]string) string {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var out strings.Builder
-	for _, k := range keys {
-		out.WriteString(k + "=" + quoteEnv(env[k]) + "\n")
-	}
-	return out.String()
-}
-
-func quoteEnv(v string) string {
-	v = strings.NewReplacer("\r", "", "\n", " ").Replace(v)
-	switch {
-	case !strings.Contains(v, "'"):
-		return "'" + v + "'"
-	case !strings.Contains(v, `"`):
-		return `"` + strings.ReplaceAll(v, `\`, `\\`) + `"`
-	}
-	return "`" + strings.ReplaceAll(v, "`", "") + "`"
 }
 
 // BuildFrontend recreates the frontend image even when it looks current.

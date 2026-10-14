@@ -94,6 +94,7 @@ declare global {
           RetrySetup(): Promise<void>;
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;
+          ReadEnvDefaults(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
           ReadPlugins(): Promise<CarePlugin[]>;
           SavePlugins(plugins: CarePlugin[]): Promise<void>;

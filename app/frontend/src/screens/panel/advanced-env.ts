@@ -83,7 +83,7 @@ export function effectiveSetting(setting: Setting, value: string | undefined): s
     case "int":
       return (value ?? setting.fallback ?? "").trim();
     default:
-      return (value ?? "").trim();
+      return value ?? "";
   }
 }
 

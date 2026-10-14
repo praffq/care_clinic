@@ -16,7 +16,7 @@ import { ENV_KEY_RE, getValue, type EnvChange, type EnvLine } from "@/lib/env-fi
 import { useCare } from "@/state/care-store";
 import type { Section } from "@/types";
 import {
-  editableEnvLines, effectiveSetting, groupSummary, mergeEnvChanges, validateExtraSetting, validateSetting, type EnvDraft,
+  editableEnvLines, groupSummary, mergeEnvChanges, validateExtraSetting, validateSetting, type EnvDraft,
 } from "./advanced-env";
 import {
   AdvancedError, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
@@ -26,22 +26,29 @@ import { fileForKey, GROUPS, isHiddenKey, MANAGED_NOTES, SETTING_BY_KEY, SETTING
 
 const SECTIONS: Section[] = ["backend", "frontend"];
 const ICONS = [Palette, UserPlus, Receipt, Archive, LockKeyhole];
-type Files = Record<Section, { text: string; lines: EnvLine[] }>;
-type CustomRow = { uid: number; key: string; value: string; file: Section; isNew: boolean };
+type Files = Record<Section, { text: string; lines: EnvLine[]; defaults: EnvLine[] }>;
+type CustomRow = { uid: number; key: string; value: string; file: Section; isNew: boolean; overridden: boolean };
 
 function initialDraft(files: Files): EnvDraft {
   return Object.fromEntries(SETTINGS.map((setting) =>
     [setting.key, getValue(files[setting.file].lines, setting.key)]));
 }
 
+function resolvedDraft(files: Files | null, draft: EnvDraft): EnvDraft {
+  return Object.fromEntries(SETTINGS.map((setting) => [setting.key,
+    draft[setting.key] ?? (files ? getValue(files[setting.file].defaults, setting.key) : undefined)]));
+}
+
 function customRows(files: Files, take: () => number): CustomRow[] {
   const rows: CustomRow[] = [];
   for (const file of SECTIONS) {
     const seen = new Set<string>();
-    for (const line of files[file].lines) {
+    for (const line of [...files[file].defaults, ...files[file].lines]) {
       if (line.kind !== "kv" || SETTING_BY_KEY.has(line.key) || isHiddenKey(line.key) || seen.has(line.key)) continue;
       seen.add(line.key);
-      rows.push({ uid: take(), key: line.key, value: getValue(files[file].lines, line.key) ?? "", file, isNew: false });
+      const override = getValue(files[file].lines, line.key);
+      rows.push({ uid: take(), key: line.key, value: override ?? getValue(files[file].defaults, line.key) ?? "",
+        file, isNew: false, overridden: override !== undefined });
     }
   }
   return rows;
@@ -92,10 +99,13 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
     onGroupChange?.(next);
   };
   const readFiles = useCallback(async (): Promise<Files> => {
-    const [backend, frontend] = await Promise.all(SECTIONS.map((file) => bridge.ReadEnv(file, adminPassword)));
+    const [[backend, frontend], [backendDefaults, frontendDefaults]] = await Promise.all([
+      Promise.all(SECTIONS.map((file) => bridge.ReadEnv(file, adminPassword))),
+      Promise.all(SECTIONS.map((file) => bridge.ReadEnvDefaults(file, adminPassword))),
+    ]);
     return {
-      backend: { text: backend, lines: editableEnvLines(backend) },
-      frontend: { text: frontend, lines: editableEnvLines(frontend) },
+      backend: { text: backend, lines: editableEnvLines(backend), defaults: editableEnvLines(backendDefaults) },
+      frontend: { text: frontend, lines: editableEnvLines(frontend), defaults: editableEnvLines(frontendDefaults) },
     };
   }, [adminPassword]);
   const load = useCallback(async () => {
@@ -149,26 +159,29 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
     }
   }, [applying, busy, operationError, onPendingFilesChange]);
 
+  const resolved = useMemo(() => resolvedDraft(files, draft), [files, draft]);
   const dirtyKeys = useMemo(() => SETTINGS.filter((setting) =>
-    effectiveSetting(setting, draft[setting.key]) !== effectiveSetting(setting, initial[setting.key]))
+    draft[setting.key] !== initial[setting.key])
     .map((setting) => setting.key), [draft, initial]);
   const customDelta = useMemo(() => {
     const before = new Map(customInitial.map((row) => [row.uid, row]));
     return {
       removed: customInitial.filter((row) => !custom.some((current) => current.uid === row.uid)),
-      changed: custom.filter((row) => row.isNew ? row.key.trim() !== "" || row.value !== "" : before.get(row.uid)?.value !== row.value),
+      changed: custom.filter((row) => row.isNew ? row.key.trim() !== "" || row.value !== ""
+        : before.get(row.uid)?.value !== row.value || before.get(row.uid)?.overridden !== row.overridden),
     };
   }, [custom, customInitial]);
   const errors = useMemo(() => {
     const out: Record<string, string> = {};
     for (const setting of group?.settings ?? []) {
       if (!dirtyKeys.includes(setting.key)) continue;
-      const error = validateSetting(setting, draft[setting.key]);
+      const error = validateSetting(setting, resolved[setting.key]);
       if (error) out[setting.key] = error;
     }
     if (group?.id === "visits" && dirtyKeys.includes("REACT_DEFAULT_ENCOUNTER_TYPE") && files) {
-      const selectedVisit = draft.REACT_DEFAULT_ENCOUNTER_TYPE ?? "";
-      const configured = getValue(files.frontend.lines, "REACT_ALLOWED_ENCOUNTER_CLASSES");
+      const selectedVisit = resolved.REACT_DEFAULT_ENCOUNTER_TYPE ?? "";
+      const configured = getValue(files.frontend.lines, "REACT_ALLOWED_ENCOUNTER_CLASSES")
+        ?? getValue(files.frontend.defaults, "REACT_ALLOWED_ENCOUNTER_CLASSES");
       const allowed = configured === undefined ? VISIT_OPTIONS.map((option) => option.value) : splitList(configured);
       if (selectedVisit && !allowed.includes(selectedVisit)) out.REACT_DEFAULT_ENCOUNTER_TYPE = "This visit type is not enabled for your clinic. Ask support to enable it first.";
     }
@@ -192,7 +205,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
       }
     }
     return out;
-  }, [group, draft, custom, dirtyKeys, customDelta, files]);
+  }, [group, resolved, custom, dirtyKeys, customDelta, files]);
   const changeCount = dirtyKeys.length + customDelta.changed.length + customDelta.removed.length;
   const hasErrors = Object.keys(errors).some((key) => selected === "other" ? key.startsWith("custom:") : !key.startsWith("custom:"));
   const disabled = locked || loading || !files;
@@ -202,7 +215,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   const frontendOnly = touched.size > 0 ? !touched.has("backend") : !!group && group.settings.every((setting) => setting.file === "frontend");
 
   const commitFile = (file: Section, text: string) => {
-    const next = { text, lines: editableEnvLines(text) };
+    const next = { text, lines: editableEnvLines(text), defaults: files![file].defaults };
     setFiles((current) => current ? { ...current, [file]: next } : current);
     const values = initialDraft({ ...files!, [file]: next });
     const committed = Object.fromEntries(SETTINGS.filter((setting) => setting.file === file).map((setting) => [setting.key, values[setting.key]]));
@@ -230,12 +243,11 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
           for (const key of dirtyKeys) {
             const setting = SETTING_BY_KEY.get(key)!;
             if (setting.file !== file) continue;
-            const value = effectiveSetting(setting, draft[key]);
-            changes.push({ key, value: value === "" ? undefined : value });
+            changes.push({ key, value: draft[key] });
           }
           for (const row of customDelta.removed) if (row.file === file) changes.push({ key: row.key, value: undefined });
           for (const row of customDelta.changed) {
-            if (row.file === file && row.key.trim()) changes.push({ key: row.key.trim(), value: row.value });
+            if (row.file === file && row.key.trim()) changes.push({ key: row.key.trim(), value: row.overridden ? row.value : undefined });
           }
           if (!changes.length) continue;
           const text = mergeEnvChanges(fresh[file].text, changes, file);
@@ -299,7 +311,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   const categories = [
     ...GROUPS.map((entry, index) => ({
       id: entry.id, title: entry.title, Icon: ICONS[index],
-      summary: files ? groupSummary(entry, initial) : "Settings haven't been read",
+      summary: files ? groupSummary(entry, resolvedDraft(files, initial)) : "Settings haven't been read",
     })),
     { id: "other", title: "Extra settings (for support)", Icon: Settings2,
       summary: "Only open this if your CARE support person asks you to" },
@@ -308,22 +320,33 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
     <h3 className="advanced-expanded-title">{group?.title ?? "Extra settings (for support)"}</h3>
     {group ? <div className="advanced-settings-card">
       {group.settings.map((setting) => <SettingRow key={setting.key} setting={setting} changed={dirtyKeys.includes(setting.key)} error={errors[setting.key]}>
-        <SettingControl setting={setting} value={draft[setting.key]} disabled={disabled} invalid={!!errors[setting.key]}
+        <SettingControl setting={setting} value={resolved[setting.key]} disabled={disabled} invalid={!!errors[setting.key]}
           onChange={(value) => {
             if (disabled || lock.isLocked()) return;
             setNotice(""); setDraft((current) => ({ ...current, [setting.key]: value }));
           }} />
+        <Button type="button" disabled={disabled || draft[setting.key] === undefined}
+          aria-label={`Reset ${setting.label} to default`} onClick={() => {
+            if (!disabled && !lock.isLocked()) setDraft((current) => ({ ...current, [setting.key]: undefined }));
+          }}>Reset to default</Button>
+        <span className="advanced-field-hint">{draft[setting.key] === undefined ? "Using default" : "Explicit override"}</span>
       </SettingRow>)}
     </div> : <div className="advanced-custom-list">
       <p className="advanced-card-description">Values here override CARE's standard defaults. Only add or change them with help from your support person. Protected connection and online-service settings cannot be changed here.</p>
       {custom.length === 0 ? <p className="advanced-field-hint">No extra settings added.</p> : null}
       {custom.map((row) => <CustomRowView key={row.uid} row={row} error={errors[`custom:${row.uid}`]} disabled={disabled}
         onKeyChange={(key) => patchCustom(row.uid, { key, file: fileForKey(key.trim()) })}
-        onValueChange={(value) => patchCustom(row.uid, { value })}
-        onRemove={() => { if (!disabled && !lock.isLocked()) setCustom((current) => current.filter((entry) => entry.uid !== row.uid)); }} />)}
+        defaultValue={files ? getValue(files[row.file].defaults, row.key) : undefined}
+        onValueChange={(value) => patchCustom(row.uid, { value, overridden: true })}
+        onRemove={() => {
+          if (disabled || lock.isLocked()) return;
+          const defaultValue = files ? getValue(files[row.file].defaults, row.key) : undefined;
+          setCustom((current) => defaultValue === undefined ? current.filter((entry) => entry.uid !== row.uid)
+            : current.map((entry) => entry.uid === row.uid ? { ...entry, value: defaultValue, overridden: false } : entry));
+        }} />)}
       <Button type="button" className="self-start" disabled={disabled} onClick={() => {
         if (!disabled && !lock.isLocked()) setCustom((current) =>
-          [...current, { uid: take(), key: "", value: "", file: "backend", isNew: true }]);
+          [...current, { uid: take(), key: "", value: "", file: "backend", isNew: true, overridden: true }]);
       }}>Add setting</Button>
     </div>}
     <footer className="advanced-settings-foot">
@@ -412,8 +435,9 @@ function SettingRow({ setting, changed, error, children }: {
   </div>;
 }
 
-function CustomRowView({ row, error, disabled, onKeyChange, onValueChange, onRemove }: {
+function CustomRowView({ row, error, disabled, defaultValue, onKeyChange, onValueChange, onRemove }: {
   row: CustomRow; error?: string; disabled: boolean;
+  defaultValue: string | undefined;
   onKeyChange: (key: string) => void; onValueChange: (value: string) => void; onRemove: () => void;
 }) {
   const nameId = `advanced-custom-name-${row.uid}`;
@@ -424,11 +448,14 @@ function CustomRowView({ row, error, disabled, onKeyChange, onValueChange, onRem
         readOnly={!row.isNew} onChange={(event) => onKeyChange(event.target.value)} disabled={disabled}
         aria-invalid={!!error} className="font-mono" />
       <span className="advanced-custom-file">{row.file === "frontend" ? "CARE app setting" : "CARE server setting"}</span>
+      <span className="advanced-field-hint">{row.overridden ? "Explicit override" : "Using default"}</span>
     </div>
     <AdvancedSecretInput label={`Value${row.key.trim() ? ` for ${row.key.trim()}` : ""}`} value={row.value}
       onChange={onValueChange} disabled={disabled} invalid={!!error} />
-    <Button type="button" size="icon" className="advanced-outline-danger" disabled={disabled}
-      aria-label={`Remove ${row.key.trim() || "new setting"}`} onClick={onRemove}><Trash2 aria-hidden="true" className="size-4" /></Button>
+    <Button type="button" size="icon" className="advanced-outline-danger" disabled={disabled || (!row.overridden && !row.isNew)}
+      title="Reset to default"
+      aria-label={defaultValue === undefined ? `Remove ${row.key.trim() || "new setting"}` : `Reset ${row.key} to default`}
+      onClick={onRemove}><Trash2 aria-hidden="true" className="size-4" /></Button>
     {error ? <p className="advanced-field-error" role="alert">{error}</p> : null}
   </div>;
 }

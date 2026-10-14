@@ -16,7 +16,10 @@ flowchart LR
     Pins --> Engine
     Engine --> Compose["Compose environment and orchestration"]
     Installed --> Compose
-    Editor["Settings and plugin editors"] --> RuntimeEnv["Installed backend.env, frontend.env and plugins.json"]
+    Editor["Settings and plugin editors"] --> Overrides["backend.overrides.env / frontend.overrides.env"]
+    Overrides --> RuntimeEnv["Generated backend.env / frontend.env"]
+    Defaults["env-defaults.yml"] --> RuntimeEnv
+    Secrets["Private secrets.env + derived hostname"] --> RuntimeEnv
     RuntimeEnv --> Compose
 ```
 
@@ -24,11 +27,14 @@ flowchart LR
 | --- | --- | --- |
 | `versions.toml` | Maintainer | Release versions, update URL, upstream branches, image and prerequisite pins. |
 | `deployments/.env` | Maintainer | Local image tag names. |
-| Other `deployments/` files | Maintainer | The Compose stack, initial environment templates, proxy and helper programs. |
+| `deployments/env-defaults.yml` | Maintainer | Deliberate string defaults in `be` and `fe`, excluding secrets, hostname and clinic-owned operational settings. |
+| Other `deployments/` files | Maintainer | The Compose stack, proxy and helper programs. |
 | `app/install/` | Build process | Staging for Go embedding; not the place for source edits. |
 | Embedded `installFS` | Desktop executable | Immutable copy of the kit used by that build. |
 | Installed kit | Application | Runtime files used by Docker Compose. |
-| Installed `backend.env` / `frontend.env` | Clinic operator and application-managed fields | Clinic-specific settings preserved during kit refresh. |
+| Installed `backend.overrides.env` / `frontend.overrides.env` | Clinic operator | Persistent explicit overrides. Equal-to-default and empty values remain explicit; reset removes the key. |
+| Installed `secrets.env` | Application | Credentials generated once at install, private (0600 / Windows restricted DACL), never returned to the editor. |
+| Installed `backend.env` / `frontend.env` | Application | Deterministic effective defaults + overrides + derived wiring + secrets, regenerated on settings saves and kit refresh. |
 | `config.json` | `App` | Local setup/removal state, name, backup path, and CARE Clinic administrator hash. |
 | Exported recovery materials | Clinic manager | Private backup recovery file and printable CARE Clinic admin recovery codes, kept outside the installation and backup folder. |
 
@@ -58,6 +64,10 @@ install/
 |-- docker-compose.yml
 |-- backend.env
 |-- frontend.env
+|-- backend.overrides.env
+|-- frontend.overrides.env
+|-- secrets.env
+|-- env-defaults.yml
 |-- plugins.json
 |-- plugins-pending.json       # inactive draft, until apply consumes it
 |-- plugin-recovery.json      # only while apply or recovery is unfinished
@@ -240,10 +250,11 @@ also fail rather than deleting a directory or guessing its contents.
 Atomicity is **per file**, not a transaction over the entire kit. An interruption
 between files can leave a mixture of old and new complete files until the next
 successful refresh. Existing job serialization and restore/plugin-recovery gates
-remain in place. This is not a generated-file migration framework. Preserving
-`backend.env` and `frontend.env` means new template keys/defaults are not merged:
-operators keep their settings and secrets, but additions/removals/renames need an
-explicit migration policy before automation can safely change existing clinics.
+remain in place. The kit refresh then regenerates effective environment files from the refreshed
+defaults and preserved overrides/secrets. Precedence is explicit overrides over
+our defaults over CARE's own defaults; absent keys are not invented. Clinic
+names, languages, hostname and operational choices remain setup/Settings-owned,
+not release YAML. No compatibility migration is provided for older dev installs.
 
 The startup refresh is skipped for incomplete setup, incomplete removal, and
 pending restore or plugin recovery. Recovery metadata errors also prevent
@@ -276,11 +287,24 @@ privilege prompts and from the CARE web login after initial setup. See
 
 [`envPath()`](../app/app_env.go) accepts only `backend` and `frontend`, mapping them to fixed filenames under the installed kit. It is not an arbitrary file-reading or file-writing API.
 
-`ReadEnv` checks the CARE Clinic administrator password and setup state under a shared read lock, then reads the entire installed file. File errors are returned; there is no fallback to the repository template or an empty settings object.
+`ReadEnv` checks the CARE Clinic administrator password and setup state under a
+shared read lock, then reads the selected **override** file. A missing override
+file means no overrides; other errors are returned. `ReadEnvDefaults` exposes
+only that section's validated release defaults. Neither method reads effective
+env files or `secrets.env`.
 
-`WriteEnv` checks the administrator password and stable-clinic state under the exclusive lock. It validates syntax using `compose-go/dotenv`, then atomically writes the selected file as `0600`.
+`WriteEnv` checks the administrator password and stable-clinic state under the
+exclusive lock, parses dotenv syntax, rejects generated secret/hostname/database
+keys and plugin changes, persists explicit overrides privately, and regenerates
+the effective env files. Missing secrets fail rather than rotating credentials.
+Setup generates Django, PostgreSQL and independent storage credentials once;
+offline-only email/SNS credential placeholders are also random, not YAML secrets.
+`DATABASE_URL` uses the PostgreSQL password; CSRF, storage external endpoint and
+frontend API origin use the UI-owned hostname.
 
-This syntax check is not full application-specific validation. The friendly editor adds field-level constraints; a direct caller can submit settings the dotenv parser accepts but CARE later rejects. The backend also uses this same syntax parser for the frontend file, although CARE frontend runtime values are read by `care-clinic-configure` at container start and compiled settings go through the frontend builder.
+Syntax checking is not full CARE application-specific validation. The friendly
+editor adds field-level constraints. Effective frontend settings are compared
+with published `build_env`; all but the API origin compile through the builder.
 
 ## Applying settings
 
@@ -323,25 +347,29 @@ sequenceDiagram
 
 A backend change uses Start to reapply configuration; Start also checks compiled
 frontend image freshness. A frontend-only change uses the narrower frontend rebuild
-action, which force-recreates the frontend container. Runtime frontend changes
-do not recompile assets; changed compiled settings use the published builder
-image. See [CARE images](images.md).
+action, which force-recreates the frontend container. Every frontend setting
+except the hostname-derived API origin is compiled. Changed compiled settings,
+including explicitly empty values, use the published builder image.
+See [CARE images](images.md).
 
 `WriteEnv` alone does not restart a container or rebuild an image. Saving a file and applying it are two operations. The editor only requests the apply action after its write loop and reload.
 
 Re-reading before writing avoids deliberately applying an old full-file snapshot over newer plugin edits. This Advanced environment-editor flow is not a multi-file transaction or compare-and-swap protocol. If a later file write fails, earlier successful writes remain; if an apply action fails, the saved settings are still saved. The separate Plugins editor uses the [rollback transaction](plugins.md#save-and-apply) instead.
 
-### Retention as an example
+### Explicit overrides and reset
 
-The shipped [`backend.env`](../deployments/backend.env) sets:
+The release defaults deliberately set:
 
-```dotenv
-DB_BACKUP_RETENTION_PERIOD=14
+```yaml
+fe:
+  REACT_DEFAULT_ENCOUNTER_TYPE: ""
 ```
 
-The editor reads this value from the installed file. Its schema puts it in the backend, gives it an integer control, requires a value, and allows 0 through 3650 days. The control has no hard-coded retention fallback.
-
-`0` is an explicit value meaning keep all backups. It must remain the string `"0"` through parsing, draft state, saving, and reloading; absence and zero have different meanings. The scheduled writer implements the actual pruning rules described in the [backup guide](backups-and-restore.md).
+The editor displays this default without writing it into the overrides. Saving
+an explicit empty selection stores `REACT_DEFAULT_ENCOUNTER_TYPE=` even though
+it currently equals the default. Later release defaults cannot replace it.
+**Reset to default** removes the override so the latest default wins. The same
+distinction applies to `"0"`, `"false"` and every other string.
 
 Both files must load before the editor accepts a draft. A failed frontend read can therefore also leave a backend field such as retention unloaded. The shared read gate is essential: parallel file reads must not produce an exclusive-job conflict on an idle application.
 

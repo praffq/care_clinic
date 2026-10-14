@@ -153,7 +153,7 @@ export function installTestHost() {
     quitAccepted: false,
     env: {
       backend: "DB_BACKUP_RETENTION_PERIOD=0\nTIME_ZONE=Asia/Kolkata\nCORAZA_MODE=Off\nDEFAULT_FROM_EMAIL=clinic@example.invalid\nENABLE_OTP_LOGIN=False\nALLOW_PUBLIC_READ=False\n",
-      frontend: "REACT_CARE_API_URL=https://care.local\nREACT_CARE_ENABLE_DASHBOARD=true\n",
+      frontend: "REACT_CARE_ENABLE_DASHBOARD=true\n",
     },
     plugins: [{ ...catalog[0].plugin, catalog: true }],
     catalog,
@@ -495,6 +495,12 @@ export function installTestHost() {
       if (path !== fixtures.importedBackup.path) throw new Error("couldn't open that file");
       if (fixtures.importedBackup.encrypted && (!recoveryFile || recoveryFile !== fixtures.recoveryFile)) throw new Error("the recovery file does not match this backup");
       acceptJob("restore");
+    },
+    ReadEnvDefaults: async (section: string, password: string) => {
+      if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");
+      if (section === "backend") return "DJANGO_SETTINGS_MODULE=config.settings.production\n";
+      if (section === "frontend") return "REACT_MFE_REGISTERED_COMPONENTS=UserDashboard\nREACT_DEFAULT_ENCOUNTER_TYPE=\n";
+      throw new Error("unknown env file");
     },
     ReadEnv: async (section: string, password: string) => {
       if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");

@@ -8,7 +8,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
 
@@ -39,8 +41,13 @@ func run(configPath, envPath string) error {
 	if err != nil {
 		return err
 	}
+	defaults, err := envconfig.LoadDefaults(filepath.Join(filepath.Dir(envPath), "env-defaults.yml"))
+	if err != nil {
+		return err
+	}
 	return json.NewEncoder(os.Stdout).Encode(struct {
-		DesktopVersion string `json:"desktop_version"`
-		Env            string `json:"env"`
-	}{pins.AppVersion, string(staged)})
+		DesktopVersion string            `json:"desktop_version"`
+		Env            string            `json:"env"`
+		BuildEnv       map[string]string `json:"build_env"`
+	}{pins.AppVersion, string(staged), defaults.FE})
 }
