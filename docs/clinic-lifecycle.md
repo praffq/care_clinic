@@ -114,7 +114,7 @@ remaining teardown files and the residue package.
 | [`compose/parallel.go`](../app/internal/compose/parallel.go) | Parallel build groups: shared cancellation, per-job log prefixes, first-error reporting, and deferred prune. |
 | [`careversions/versions.go`](../app/internal/careversions/versions.go) | Verified single CARE 3.1 image metadata. |
 | [`compose/channel.go`](../app/internal/compose/channel.go) | The `care-images.json` current/staged image record and legacy source-checkout removal. |
-| [`compose/update.go`](../app/internal/compose/update.go) | Staging digest-pinned same-line fixes or explicit line upgrades under `-next`, declining, and applying by retag. |
+| [`compose/update.go`](../app/internal/compose/update.go) | Staging digest-pinned CARE 3.1 fixes under `-next`, declining, and applying by retag. |
 | [`clinic/update.go`](../app/internal/clinic/update.go) | CARE version status, safety backups, and live/startup update application. |
 | [`compose/channel_test.go`](../app/internal/compose/channel_test.go) | Lock round-tripping, missing/corrupt lock tolerance, default-line selection, manifest-backed image keys, and stale staged-image recovery. |
 | [`compose/build_test.go`](../app/internal/compose/build_test.go) | Manifest-backed image selection, plugin/compiled-setting invalidation, runtime-setting reuse, image inspection failures, and isolated-context cleanup. |

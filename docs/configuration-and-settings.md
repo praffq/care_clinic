@@ -457,7 +457,7 @@ installed version—not the handoff event—is how to confirm the update.
 Interrupted picker/preflight work is invalidated rather than resumed when the
 guard is released; see [the update protocol](wails-application.md).
 
-The panel also raises a banner when a same-line CARE update finishes staging, so operators need not keep the Updates tab open. Declining the banner is not declining the update: it stops the prompt for that commit, and the staged images are applied at the next start, when no clinic is running and applying it costs a retag instead of a restart.
+The panel also raises a banner when a CARE update finishes staging, so operators need not keep the Updates tab open. Declining the banner is not declining the update: it stops the prompt for that commit, and the staged images are applied at the next start, when no clinic is running and applying it costs a retag instead of a restart.
 
 The app checks hourly, but only while the clinic is actually serving. Until then it re-examines every thirty seconds and checks nothing, because a check competing with the start it is racing helps nobody. A clinic that later stops serving drops back to that thirty-second wait, so a check is never made against a clinic that is down. The loop ends only when the app closes, the desktop is switched to a client, or the clinic is being removed. These desktops stay on for weeks, so a check that only ran at launch would leave a verified fix unreachable until somebody restarted the app.
 
