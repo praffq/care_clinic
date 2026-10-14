@@ -4,21 +4,24 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
+	"github.com/ohcnetwork/care_desktop/app/internal/compose"
 	"github.com/ohcnetwork/care_desktop/app/internal/health"
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -74,7 +77,44 @@ func (a *App) checkCareUpdate() {
 		return
 	}
 	a.emit("care-check", CareCheck{Running: true})
-	update, err := a.engineForUpdate().CheckForUpdate()
+	if a.updateCoordinator == nil {
+		err := errors.New("the update coordinator is unavailable")
+		a.logln("update check: " + err.Error())
+		a.emit("care-check", CareCheck{Error: "CARE updates couldn't be checked. Try again, or open the log file for support."})
+		return
+	}
+	var update compose.Update
+	err := a.updateCoordinator.Check(context.Background(), func(parent context.Context) error {
+		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+		defer cancel()
+		client := release.NewClient(a.installDir())
+		manifest, err := client.Fetch(ctx, a.pins.UpdatesURL)
+		if err != nil {
+			return err
+		}
+		verified, raw, err := client.ReadVerified()
+		if err != nil {
+			return err
+		}
+		if verified.Revision != manifest.Revision {
+			return fmt.Errorf("signed update changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
+		}
+		if err := a.updateCoordinator.SaveVerifiedManifest(manifest, raw); err != nil {
+			return err
+		}
+		engine := a.EngineStatus()
+		if engine.Supported && engine.UpdateNeeded {
+			if err := a.provisioner().PrepareEngineUpdate(); err != nil {
+				return fmt.Errorf("prepare the signed app's CARE engine update: %w", err)
+			}
+		}
+		care, err := careversions.FromRelease(manifest, a.pins)
+		if err != nil {
+			return err
+		}
+		update, err = a.engineForUpdate().CheckForUpdateManifest(care)
+		return err
+	})
 	if err != nil {
 		a.logln("update check: " + err.Error())
 		a.emit("care-check", CareCheck{Error: "CARE updates couldn't be checked. Try again, or open the log file for support."})
@@ -119,9 +159,13 @@ func (a *App) watchForCareUpdates() {
 			return
 		}
 		wait := updateWarmup
-		if a.updatesAllowed() && health.Ping().Active {
+		if a.updatesAllowed() {
 			if checking.CompareAndSwap(false, true) {
-				a.checkCareUpdate()
+				if health.Ping().Active {
+					a.checkCareUpdate()
+				} else {
+					a.prepareEngineUpdate()
+				}
 				checking.Store(false)
 			}
 			wait = updateInterval
@@ -134,9 +178,24 @@ func (a *App) watchForCareUpdates() {
 	}
 }
 
-const (
-	releasesAPI = "https://api.github.com/repos/praffq/care_clinic/releases/latest"
+func (a *App) prepareEngineUpdate() {
+	engine := a.EngineStatus()
+	if !engine.Supported || !engine.UpdateNeeded {
+		return
+	}
+	if a.updateCoordinator == nil {
+		a.logln("engine update preparation: the update coordinator is unavailable")
+		return
+	}
+	err := a.updateCoordinator.Check(context.Background(), func(context.Context) error {
+		return a.provisioner().PrepareEngineUpdate()
+	})
+	if err != nil {
+		a.logln("engine update preparation: " + err.Error())
+	}
+}
 
+const (
 	maxDownloadBytes = 512 << 20
 
 	downloadTimeout = 30 * time.Minute
@@ -176,67 +235,106 @@ type ghAsset struct {
 	Size int64  `json:"size"`
 }
 
-type ghRelease struct {
-	Tag     string    `json:"tag_name"`
-	HTMLURL string    `json:"html_url"`
-	Assets  []ghAsset `json:"assets"`
-}
-
 func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 	defer a.logError(&err)
 	out := AppUpdate{Current: a.pins.AppVersion}
-	rel, err := latestRelease()
-	if err != nil {
-		return out, err
+	if a.updateCoordinator == nil {
+		return out, errors.New("the update coordinator is unavailable")
 	}
-	out.Version = strings.TrimPrefix(strings.TrimSpace(rel.Tag), "v")
-	out.NotesURL = rel.HTMLURL
-	asset, ok := platformAsset(rel)
-	if !ok {
-		return out, fmt.Errorf("release %s has no installer for this computer", out.Version)
-	}
-	out.Asset, out.Size = asset.Name, asset.Size
-	out.Available = newerVersion(out.Current, out.Version)
-	return out, nil
+	a.stagedUpdateMu.Lock()
+	defer a.stagedUpdateMu.Unlock()
+	err = a.updateCoordinator.Check(context.Background(), func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		manifest, err := release.NewClient(a.installDir()).Fetch(ctx, a.pins.UpdatesURL)
+		if err != nil {
+			return err
+		}
+		verified, raw, err := release.NewClient(a.installDir()).ReadVerified()
+		if err != nil {
+			return err
+		}
+		if verified.Revision != manifest.Revision {
+			return fmt.Errorf("signed update changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
+		}
+		if err := a.updateCoordinator.SaveVerifiedManifest(manifest, raw); err != nil {
+			return err
+		}
+		out.Version = manifest.Desktop.Version
+		asset, ok := manifest.Desktop.Assets[desktopPlatformKey()]
+		if !ok || desktopPlatformKey() == "" {
+			return fmt.Errorf("signed release %s has no installer for this computer", out.Version)
+		}
+		u, err := url.Parse(asset.URL)
+		if err != nil {
+			return fmt.Errorf("signed desktop installer URL is invalid: %w", err)
+		}
+		out.Asset, out.Size = filepath.Base(u.Path), asset.Size
+		out.Available = newerVersion(out.Current, out.Version)
+		if !out.Available {
+			return nil
+		}
+		if staged := a.stagedAppUpdates[out.Version]; staged != "" {
+			if digest, err := fileSHA256(staged); err == nil && digest == asset.SHA256 {
+				return nil
+			}
+			delete(a.stagedAppUpdates, out.Version)
+		}
+		a.updateProgress(phaseDownloading, 0, asset.Size)
+		path, err := downloadVerified(ghAsset{Name: out.Asset, URL: asset.URL, Size: asset.Size}, asset.SHA256,
+			out.Version, a.logln, func(done int64) { a.updateProgress(phaseDownloading, done, asset.Size) })
+		if err != nil {
+			return err
+		}
+		a.stagedAppUpdates[out.Version] = path
+		a.logln("The signed CARE Clinic update is downloaded and verified; it will not install until staff choose Update.")
+		return nil
+	})
+	return out, err
 }
 
 func (a *App) InstallAppUpdate() error {
 	return a.runJob(func() error {
-		rel, err := latestRelease()
-		if err != nil {
-			return err
-		}
-		version := strings.TrimPrefix(strings.TrimSpace(rel.Tag), "v")
-		if !newerVersion(a.pins.AppVersion, version) {
-			return errors.New("this is already the newest published version of CARE Clinic")
-		}
-		if developmentUpdateBuild || strings.HasSuffix(a.pins.AppVersion, "-dev") {
-			return errors.New("update location unavailable: development builds cannot replace themselves; install a released copy of CARE Clinic first")
-		}
-		if _, err := updateTarget(); err != nil {
-			return err
-		}
-		asset, ok := platformAsset(rel)
-		if !ok {
-			return fmt.Errorf("release %s has no installer for this computer", version)
-		}
-		sums, ok := findAsset(rel, func(name string) bool { return name == "SHA256SUMS" })
-		if !ok {
-			return fmt.Errorf("release %s publishes no checksums, so its installer cannot be verified", version)
-		}
-		want, err := expectedSum(sums.URL, asset.Name)
-		if err != nil {
-			return err
-		}
-		a.updateProgress(phaseDownloading, 0, asset.Size)
-		progress := func(done int64) { a.updateProgress(phaseDownloading, done, asset.Size) }
-		path, err := downloadVerified(asset, want, version, a.logln, progress)
-		if err != nil {
-			return err
-		}
-		a.logln("Download verified.")
-		return a.handoffAppUpdate(path, version, want)
+		return a.runCoordinatedUpdate(updates.Desktop, a.installStagedDesktopUpdate)
 	}, false, "app-update")
+}
+
+func (a *App) installStagedDesktopUpdate(j *updates.Journal) error {
+	if developmentUpdateBuild || strings.HasSuffix(a.pins.AppVersion, "-dev") {
+		return errors.New("update location unavailable: development builds cannot replace themselves; install a released copy of CARE Clinic first")
+	}
+	target, err := updateTarget()
+	if err != nil {
+		return err
+	}
+	manifest, _, err := release.NewClient(a.installDir()).ReadVerified()
+	if err != nil {
+		return err
+	}
+	asset, ok := manifest.Desktop.Assets[desktopPlatformKey()]
+	if !ok || desktopPlatformKey() == "" {
+		return fmt.Errorf("signed release %s has no installer for this computer", manifest.Desktop.Version)
+	}
+	a.stagedUpdateMu.Lock()
+	path := a.stagedAppUpdates[manifest.Desktop.Version]
+	a.stagedUpdateMu.Unlock()
+	if path == "" {
+		return errors.New("the desktop update has not been downloaded and verified yet; check for updates again before applying it")
+	}
+	digest, err := fileSHA256(path)
+	if err != nil {
+		return fmt.Errorf("read staged desktop update: %w", err)
+	}
+	if digest != asset.SHA256 {
+		return errors.New("the staged desktop update failed its signed SHA-256 check")
+	}
+	version := manifest.Desktop.Version
+	if !newerVersion(a.pins.AppVersion, version) {
+		return errors.New("this is already the newest signed version of CARE Clinic")
+	}
+	j.Rollback.PreviousApp = target
+	j.To.Files = append(j.To.Files, updates.FileDigest{Path: path, SHA256: digest})
+	return a.handoffAppUpdate(path, version, asset.SHA256)
 }
 
 func (a *App) quitAfterJob() {
@@ -245,23 +343,6 @@ func (a *App) quitAfterJob() {
 		a.jobMu.Unlock() //nolint:staticcheck // SA2001: waiting for the lock is the point
 		wruntime.Quit(a.ctx)
 	}()
-}
-
-func latestRelease() (ghRelease, error) {
-	var rel ghRelease
-	err := fetch(releasesAPI, 20*time.Second, func(body io.Reader) error {
-		if err := json.NewDecoder(io.LimitReader(body, 4<<20)).Decode(&rel); err != nil {
-			return fmt.Errorf("couldn't read the release listing: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return rel, err
-	}
-	if strings.TrimSpace(rel.Tag) == "" {
-		return rel, errors.New("no published CARE Clinic release was found")
-	}
-	return rel, nil
 }
 
 func fetch(url string, timeout time.Duration, fn func(io.Reader) error) error {
@@ -282,25 +363,6 @@ func fetch(url string, timeout time.Duration, fn func(io.Reader) error) error {
 		return fmt.Errorf("GitHub answered HTTP %d for %s", resp.StatusCode, url)
 	}
 	return fn(resp.Body)
-}
-
-func platformAsset(rel ghRelease) (ghAsset, bool) {
-	switch runtime.GOOS {
-	case "windows":
-		return findAsset(rel, func(name string) bool { return strings.HasSuffix(name, "-setup.exe") })
-	case "darwin":
-		return findAsset(rel, func(name string) bool { return strings.HasSuffix(name, ".dmg") })
-	}
-	return ghAsset{}, false
-}
-
-func findAsset(rel ghRelease, match func(string) bool) (ghAsset, bool) {
-	for _, asset := range rel.Assets {
-		if match(asset.Name) && asset.URL != "" {
-			return asset, true
-		}
-	}
-	return ghAsset{}, false
 }
 
 type progressWriter struct {
@@ -386,25 +448,6 @@ func downloadVerified(asset ghAsset, want, version string, log func(string), pro
 	_ = os.RemoveAll(dir)
 	return "", fmt.Errorf("the CARE Clinic %s update didn't download properly and was deleted without being installed (%s). "+
 		"Check this computer's internet connection and choose Update again", version, problem)
-}
-
-func expectedSum(url, name string) (string, error) {
-	var want string
-	err := fetch(url, 2*time.Minute, func(body io.Reader) error {
-		data, err := io.ReadAll(io.LimitReader(body, 1<<20))
-		if err != nil {
-			return err
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			sum, file, ok := strings.Cut(strings.TrimSpace(line), "  ")
-			if ok && file == name {
-				want = strings.ToLower(sum)
-				return nil
-			}
-		}
-		return fmt.Errorf("the published checksums do not cover %s", name)
-	})
-	return want, err
 }
 
 func newerVersion(current, candidate string) bool {

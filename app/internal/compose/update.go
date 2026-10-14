@@ -2,6 +2,7 @@ package compose
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
@@ -29,13 +30,23 @@ func (b *Builder) PrepareUpdate() (Update, error) {
 	if b.stopped() {
 		return Update{}, nil
 	}
-	lock := ReadLock(b.dir)
-	if lock.Backend.Current.Image == "" || lock.Frontend.Current.Image == "" {
-		return Update{}, nil
-	}
 	m, err := careversions.Fetch(b.dir, b.set)
 	if err != nil {
 		return Update{}, err
+	}
+	return b.PrepareUpdateManifest(m)
+}
+
+func (b *Builder) PrepareUpdateManifest(m *careversions.Manifest) (Update, error) {
+	if b.stopped() {
+		return Update{}, nil
+	}
+	if m == nil {
+		return Update{}, errors.New("verified CARE image manifest is required")
+	}
+	lock := ReadLock(b.dir)
+	if lock.Backend.Current.Image == "" || lock.Frontend.Current.Image == "" {
+		return Update{}, nil
 	}
 	staged := map[string]Release{}
 	if wanted(lock.Backend, m.Backend) {
@@ -107,13 +118,19 @@ func (b *Builder) ApplyPending() (Update, error) {
 	stageMu.Lock()
 	defer stageMu.Unlock()
 	var applied Update
+	var retagged []string
 	err := ModifyLock(b.dir, func(lock *Lock) error {
-		return b.applyPending(lock, &applied)
+		return b.applyPending(lock, &applied, &retagged)
 	})
+	if err != nil {
+		if rollbackErr := b.restoreStableTags(retagged); rollbackErr != nil {
+			return applied, fmt.Errorf("%w; restoring previous CARE image tags also failed: %v", err, rollbackErr)
+		}
+	}
 	return applied, err
 }
 
-func (b *Builder) applyPending(lock *Lock, applied *Update) error {
+func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) error {
 	for _, s := range []struct {
 		service string
 		image   string
@@ -136,15 +153,67 @@ func (b *Builder) applyPending(lock *Lock, applied *Update) error {
 			lock.Set(s.service, c)
 			continue
 		}
+		previousTag := previousImageTag(s.image)
+		if c.Current.Image != "" {
+			if err := b.run.Run("docker", "image", "tag", s.image, previousTag); err != nil {
+				return fmt.Errorf("could not retain the previous CARE %s image: %w", s.service, err)
+			}
+		}
 		if err := b.run.Run("docker", "image", "tag", staged, s.image); err != nil {
+			if c.Current.Image != "" {
+				if restoreErr := b.run.Run("docker", "image", "tag", previousTag, s.image); restoreErr != nil {
+					return fmt.Errorf("could not activate CARE %s: %w; restoring its previous tag failed: %v", s.service, err, restoreErr)
+				}
+			}
 			return err
 		}
 		b.logln("CARE " + s.service + " updated to " + Short(c.Next.Commit) + ".")
 		*s.dst = c.Next.Commit
-		c.Current, c.Next, c.Declined = *c.Next, nil, ""
+		previous := c.Current
+		c.Current, c.Previous, c.Next, c.Declined = *c.Next, &previous, nil, ""
+		*retagged = append(*retagged, s.image)
 		lock.Set(s.service, c)
 	}
 	return nil
+}
+
+func previousImageTag(image string) string { return image + "-previous" }
+
+func (b *Builder) restoreStableTags(images []string) error {
+	var failures []error
+	for i := len(images) - 1; i >= 0; i-- {
+		if err := b.run.Run("docker", "image", "tag", previousImageTag(images[i]), images[i]); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// RollbackApplied restores the previous local image tags and lock entries.
+// Kept image IDs remain available for retry or support investigation.
+func (b *Builder) RollbackApplied() error {
+	stageMu.Lock()
+	defer stageMu.Unlock()
+	err := ModifyLock(b.dir, func(lock *Lock) error {
+		for _, item := range []struct {
+			service string
+			image   string
+		}{{Backend, b.set.BackendImage}, {Frontend, b.set.FrontendImage}} {
+			channel := lock.Get(item.service)
+			if channel.Previous == nil {
+				continue
+			}
+			current := channel.Current
+			if err := b.run.Run("docker", "image", "tag", previousImageTag(item.image), item.image); err != nil {
+				return fmt.Errorf("could not restore the previous CARE %s image: %w", item.service, err)
+			}
+			channel.Current, channel.Next, channel.Previous, channel.Declined =
+				*channel.Previous, &current, nil, ""
+			lock.Set(item.service, channel)
+		}
+		return nil
+	})
+	return err
 }
 
 func (b *Builder) DeclineUpdate() error {
@@ -177,5 +246,3 @@ func (b *Builder) DiscardPending() error {
 		return nil
 	})
 }
-
-func (b *Builder) PruneDangling() { b.pruneDangling() }

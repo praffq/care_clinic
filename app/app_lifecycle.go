@@ -23,6 +23,16 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	if a.loadConfig().Role == roleServer {
+		if err := a.recoverUpdatePlan(ctx); err != nil {
+			a.logln("error: interrupted update recovery failed: " + err.Error())
+			a.reportError("Update recovery failed", err.Error())
+		} else if snapshot, err := a.updateSnapshot(); err != nil {
+			a.logln("error: installed update state could not be recorded: " + err.Error())
+			a.reportError("Update state unavailable", err.Error())
+		} else if err := a.updateCoordinator.SaveInstalled(snapshot); err != nil {
+			a.logln("error: installed update state could not be recorded: " + err.Error())
+			a.reportError("Update state unavailable", err.Error())
+		}
 		a.recoverEngineUpdate()
 	}
 	a.refreshInstallDir()

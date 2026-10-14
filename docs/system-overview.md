@@ -12,7 +12,9 @@ only changed components, publish GHCR images and immutable GitHub Release
 binaries, and sign a complete manifest in a reviewer-protected environment.
 `updates.json` and its detached Ed25519 signature deploy together to Pages.
 Requirements are configuration, not CI policy. Desktop trusts current and next
-public keys and persists the highest accepted revision.
+public keys and persists the highest accepted revision. Update coordination does
+not change the existing macOS Apple ID signing/notarization or Windows SignPath
+release paths.
 
 ## Clinic control plane
 

@@ -43,6 +43,10 @@ func (e *Clinic) manualBackupNeed() uint64 {
 	return storage.BackupNeed(daily, found)
 }
 
+func (e *Clinic) UpdateBackupNeed() uint64 {
+	return e.manualBackupNeed()
+}
+
 func (e *Clinic) backupRoomFor(need uint64) error {
 	u, err := diskspace.Of(e.backupDir())
 	if err != nil || u.Free >= need {

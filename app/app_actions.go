@@ -13,6 +13,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	"golang.org/x/crypto/bcrypt"
@@ -261,7 +262,15 @@ func (a *App) ClinicAction(action, adminPassword string) (err error) {
 		// The update itself installs and starts the engine; an outdated stopped
 		// engine would otherwise be rejected by the readiness check below.
 		if action == "engine-update" {
-			return a.updateEngine()
+			return a.runCoordinatedUpdate(updates.Engine, a.installStagedDesktopUpdate)
+		}
+		if action == "update" {
+			return a.runCoordinatedUpdate(updates.CAREImages, a.installStagedDesktopUpdate)
+		}
+		if action == "start" {
+			if engine := a.EngineStatus(); engine.UpdateNeeded {
+				return fmt.Errorf("CARE engine %s is required; explicitly update the engine before starting CARE", engine.ExpectedVersion)
+			}
 		}
 		if strings.HasPrefix(action, "rebuild-") {
 			if err := a.requireAdmin(adminPassword); err != nil {
@@ -349,8 +358,6 @@ func actionFunc(e *clinic.Clinic, action string) func() error {
 		return e.ApplyPlugins
 	case "backup-now":
 		return e.BackupNow
-	case "update":
-		return e.ApplyUpdate
 	case "free-space":
 		return e.FreeSpace
 	}

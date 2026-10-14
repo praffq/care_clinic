@@ -112,7 +112,7 @@ declare global {
           ChooseFolder(title: string): Promise<string>;
           LogPath(): Promise<string>;
           OpenLogFolder(): Promise<void>;
-          ExportDiagnostics(): Promise<void>;
+          ExportDiagnostics(passwordWarningAccepted: boolean): Promise<void>;
           WasAutostartLaunched(): Promise<boolean>;
           UninstallRequested(): Promise<boolean>;
           ExitUninstall(): Promise<void>;

@@ -136,6 +136,23 @@ func TestStageFailureLeavesInstalledEngineUntouched(t *testing.T) {
 	}
 }
 
+func TestOpenStagedEngineUpdateRevalidatesPreparedFiles(t *testing.T) {
+	setupUpdateTest(t)
+	if _, err := StageEngineUpdate(toolFiles(t, engineArchive(t, "0.1.1"), "v2")); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := OpenStagedEngineUpdate()
+	if err != nil || staged == nil || staged.Manifest.Version != "0.1.1" || staged.From != "0.1.0" {
+		t.Fatalf("reopened staged engine = %+v, %v", staged, err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir(), "docker"), []byte("tampered"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStagedEngineUpdate(); err == nil || !strings.Contains(err.Error(), "staged CARE engine tool") {
+		t.Fatalf("tampered staged tool was accepted: %v", err)
+	}
+}
+
 func TestCommitKeepsNewEngineAndPrunesOld(t *testing.T) {
 	setupUpdateTest(t)
 	s, err := StageEngineUpdate(toolFiles(t, engineArchive(t, "0.1.1"), "v2"))

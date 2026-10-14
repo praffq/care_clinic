@@ -283,7 +283,6 @@ func swapScript(target, staged string, verification ...string) string {
 		"/usr/sbin/chown -R \"$owner\" \"$slot/new.app\"",
 		"if ! /bin/mv " + t + " \"$slot/previous.app\"; then /bin/rm -rf \"$slot\"; exit 1; fi",
 		"if ! /bin/mv \"$slot/new.app\" " + t + "; then /bin/mv \"$slot/previous.app\" " + t + "; exit 1; fi",
-		"/bin/rm -rf \"$slot\"",
 	}, "\n")
 }
 

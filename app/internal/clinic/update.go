@@ -3,9 +3,14 @@ package clinic
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
+	"github.com/ohcnetwork/care_desktop/app/internal/health"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
 
 type ChannelStatus struct {
@@ -37,9 +42,13 @@ func (e *Clinic) CheckForUpdate() (compose.Update, error) {
 	return e.Builder().PrepareUpdate()
 }
 
+func (e *Clinic) CheckForUpdateManifest(m *careversions.Manifest) (compose.Update, error) {
+	return e.Builder().PrepareUpdateManifest(m)
+}
+
 func (e *Clinic) DeclineUpdate() error { return e.Builder().DeclineUpdate() }
 
-func (e *Clinic) ApplyUpdate() error {
+func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal) error {
 	if err := e.Backups().RecoverRestore(); err != nil {
 		return err
 	}
@@ -48,9 +57,15 @@ func (e *Clinic) ApplyUpdate() error {
 	if !waiting.Any() {
 		return errors.New("there is no prepared update to apply")
 	}
+	var backupID string
 	if waiting.Backend != "" {
-		if err := e.backupBeforeUpdate(); err != nil {
+		var err error
+		backupID, err = e.backupBeforeUpdate()
+		if err != nil {
 			return err
+		}
+		if j != nil {
+			j.Rollback.BackupID = backupID
 		}
 		if err := e.stopWorkers(); err != nil {
 			return err
@@ -63,54 +78,110 @@ func (e *Clinic) ApplyUpdate() error {
 	if !applied.Any() {
 		return errors.New("the prepared update is no longer available - it will be built again on the next check")
 	}
+	if j != nil {
+		if applied.Backend != "" {
+			j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.BackendImage+"-previous")
+		}
+		if applied.Frontend != "" {
+			j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.FrontendImage+"-previous")
+		}
+	}
+	rollback := func(cause error, dbMigrated bool) error {
+		if j != nil {
+			j.Rollback.DBMigrated = dbMigrated
+		}
+		if err := e.RollbackUpdate(backupID, dbMigrated); err != nil {
+			return fmt.Errorf("%w; CARE rollback also failed: %v", cause, err)
+		}
+		if j != nil {
+			j.Rollback.DBMigrated = false
+		}
+		return cause
+	}
 	if applied.Backend != "" {
 		if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300", "backend"); err != nil {
-			return fmt.Errorf("the updated backend did not start; workers and the scheduler remain stopped: %w", err)
+			return rollback(fmt.Errorf("the updated backend did not start: %w", err), false)
 		}
 		e.logln("Applying database migrations...")
+		if j != nil {
+			j.Rollback.DBMigrated = true
+		}
 		if err := e.migrate(); err != nil {
-			return err
+			return rollback(fmt.Errorf("database migration failed: %w", err), true)
 		}
 	}
 	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300"); err != nil {
-		return err
+		return rollback(err, applied.Backend != "")
 	}
-	b.PruneDangling()
+	if err := health.Wait(e.Log, 3*time.Minute); err != nil {
+		return rollback(fmt.Errorf("updated CARE did not become healthy: %w", err), applied.Backend != "")
+	}
 	e.logln("CARE is up to date.")
 	return nil
 }
 
-func (e *Clinic) applyStagedUpdate() error {
-	b := e.Builder()
-	waiting := b.Waiting()
-	if !waiting.Any() {
+func (e *Clinic) RollbackUpdate(backupID string, dbMigrated bool) error {
+	lock := compose.ReadLock(e.InstallDir)
+	if lock.Backend.Previous == nil && lock.Frontend.Previous == nil && !dbMigrated {
 		return nil
 	}
-	if !e.Backups().BackupEncryptionOn() {
-		e.logln("A CARE update is ready, but this install cannot write encrypted backups, " +
-			"so it was not applied. Recover the backup encryption certificate before applying updates.")
-		return nil
+	var failures []error
+	if err := e.Builder().RollbackApplied(); err != nil {
+		failures = append(failures, err)
 	}
-	if waiting.Backend != "" {
-		if err := e.backupBeforeUpdate(); err != nil {
-			e.logln("The CARE update was not applied: " + err.Error())
-			return nil
+	if dbMigrated {
+		if backupID == "" {
+			failures = append(failures, errors.New("database migration changed data but the safety backup ID is missing"))
+		} else if e.BackupRecoveryPath == "" {
+			failures = append(failures, errors.New("database data rollback needs the clinic's verified backup recovery file"))
+		} else {
+			backups, err := e.Backups().ListBackups()
+			if err != nil {
+				failures = append(failures, err)
+			} else {
+				found := false
+				for _, b := range backups {
+					if b.DBDump != backupID {
+						continue
+					}
+					found = true
+					if err := e.Backups().Restore(b.DBDump, b.FilesArchive, e.BackupRecoveryPath); err != nil {
+						failures = append(failures, fmt.Errorf("restore pre-update data backup %s: %w", backupID, err))
+					}
+					break
+				}
+				if !found {
+					failures = append(failures, fmt.Errorf("pre-update data backup %s is unavailable", backupID))
+				}
+			}
 		}
 	}
-	_, err := b.ApplyPending()
-	return err
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300"); err != nil {
+		return err
+	}
+	return health.Wait(e.Log, 3*time.Minute)
 }
 
-func (e *Clinic) backupBeforeUpdate() error {
+func (e *Clinic) backupBeforeUpdate() (string, error) {
 	if !e.Backups().BackupEncryptionOn() {
-		return errors.New("this install cannot write encrypted backups, so the update was not applied - " +
+		return "", errors.New("this install cannot write encrypted backups, so the update was not applied - " +
 			"recover the backup encryption certificate first")
 	}
 	ts := time.Now().Format("20060102-150405")
 	e.logln("Taking a safety backup before the update changes the database...")
 	if err := e.run(nil, "docker", "compose", "run", "--rm", "-T", "backup", "once", "pre-update-"+ts); err != nil {
-		return fmt.Errorf("couldn't take a safety backup, so the update was not applied: %w", err)
+		return "", fmt.Errorf("couldn't take a safety backup, so the update was not applied: %w", err)
 	}
-	e.logln("Safety backup written: care-pre-update-" + ts + ".dump.enc")
-	return nil
+	name := "care-pre-update-" + ts + ".dump.enc"
+	if info, err := os.Stat(filepath.Join(e.backupDir(), name)); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		if err != nil {
+			return "", fmt.Errorf("the update safety backup was not created at %s: %w", filepath.Join(e.backupDir(), name), err)
+		}
+		return "", fmt.Errorf("the update safety backup is not a nonempty regular file: %s", filepath.Join(e.backupDir(), name))
+	}
+	e.logln("Safety backup written: " + filepath.Join(e.backupDir(), name))
+	return name, nil
 }

@@ -18,10 +18,11 @@ import (
 type Clinic struct {
 	InstallDir string
 
-	MDNSName          string
-	AdminPassword     string
-	BackupCertificate string
-	BackupDir         string
+	MDNSName           string
+	AdminPassword      string
+	BackupCertificate  string
+	BackupRecoveryPath string
+	BackupDir          string
 
 	Pins *release.Pins
 

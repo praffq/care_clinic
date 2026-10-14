@@ -2,6 +2,10 @@ import { ArrowUpRight, Check, FileText, Globe, TriangleAlert } from "lucide-reac
 import { useRef, useState, type ReactNode } from "react";
 
 import { Spinner } from "@/components/spinner";
+import {
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { bridge } from "@/lib/bridge";
 import { errorText } from "@/lib/format";
@@ -62,19 +66,41 @@ export function PanelNotice({ title, children, tone = "danger", actions }: {
 
 export function PanelLogButton() {
   const task = usePanelTask();
-  return <div className="panel-log">
+  const [confirming, setConfirming] = useState(false);
+  return <>
+    <div className="panel-log">
     <Button variant="ghost" size="sm" disabled={task.working}
       onClick={() => void task.run(() => bridge.OpenLogFolder(),
         "Couldn't open the logs folder. Try again, or ask the person who looks after this computer.")}>
       <FileText aria-hidden="true" />Open logs folder
     </Button>
     <Button variant="ghost" size="sm" disabled={task.working}
-      onClick={() => void task.run(() => bridge.ExportDiagnostics(),
-        "Couldn't export diagnostics. Check available disk space and try again.")}>
-      <FileText aria-hidden="true" />Export diagnostics
+      onClick={() => setConfirming(true)}>
+      <FileText aria-hidden="true" />Download support logs
     </Button>
     {task.error ? <p className="panel-inline-error" role="alert">{task.error}</p> : null}
-  </div>;
+    </div>
+    <AlertDialog open={confirming} onOpenChange={setConfirming}>
+      <AlertDialogContent>
+        <AlertDialogTitle>Download support logs?</AlertDialogTitle>
+        <AlertDialogDescription>
+          <strong>{`This file contains clinic passwords. Share it only with the CARE support team.`}</strong>
+          {" "}The ZIP includes app and engine logs, update history, clinic versions, health details and environment files, including secrets.
+          It is saved locally and is not uploaded automatically.
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={task.working}>Cancel</AlertDialogCancel>
+          <Button variant="primary" disabled={task.working} onClick={() => {
+            setConfirming(false);
+            void task.run(() => bridge.ExportDiagnostics(true),
+              "Couldn't download support logs. Check available disk space and try again.");
+          }}>
+            {task.working ? <Spinner /> : null}Download ZIP
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
 }
 
 export function PanelPageHeader({ title, subtitle, children }: {

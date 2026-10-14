@@ -79,14 +79,12 @@ func (a *App) recoverEngineUpdate() {
 	}
 }
 
-// updateEngine runs inside a clinic job, automatically on the first launch
-// after an app update or from the panel's retry button. The new engine is
+// updateEngine runs inside a clinic job after staff choose Update. The new engine is
 // downloaded, verified and unpacked first; only then are the containers
 // removed (volumes kept) so they are recreated on the new engine with its
 // logging settings. If the new engine does not start, the previous engine and
-// tools are restored and the clinic is started again on them. Once the new
-// engine and Docker answer the update is kept; a CARE start failure after
-// that is handled like any other start failure, not by changing the engine.
+// tools are restored and the clinic is started again on them. The previous
+// engine is retained until the clinic is healthy on the new engine.
 func (a *App) updateEngine() error {
 	if !vm.Supported() {
 		return errors.New("this computer runs CARE on Docker directly; there is no CARE engine to update")
@@ -105,11 +103,16 @@ func (a *App) updateEngine() error {
 	}
 	a.logln("Updating the CARE engine to " + st.ExpectedVersion + ". The clinic is unavailable until this finishes; its data is kept.")
 	e := a.engine()
-	err := p.UpdateEngine(func() error {
+	err := p.UpdateEngineWithHealth(func() error {
 		if vm.Status(context.Background()).PID == 0 {
 			return nil
 		}
 		return e.RemoveContainers()
+	}, func() error {
+		if err := e.RemoveContainers(); err != nil {
+			return err
+		}
+		return e.Start()
 	})
 	if err != nil {
 		a.logln("The CARE engine update didn't finish; starting the clinic on the previous engine...")
@@ -121,10 +124,5 @@ func (a *App) updateEngine() error {
 		}
 		return err
 	}
-	// Containers left by an engine that was already stopped when the update
-	// began still carry the old logging driver; removing again is harmless.
-	if err := e.RemoveContainers(); err != nil {
-		return err
-	}
-	return e.Start()
+	return nil
 }

@@ -620,19 +620,17 @@ export function CareProvider({ children }: { children: ReactNode }) {
       log(`storage: ${errorText(e)}`);
       setStorageError("Storage couldn't be checked. Try again.");
     });
-    // An app update leaves the previous CARE engine running. Replace it before
-    // the first status refresh, so the clinic isn't reported as running on an
-    // engine this version of CARE Clinic doesn't support.
-    let engineUpdating = false;
+    // An incompatible engine must be updated only after staff explicitly choose
+    // Update in the panel. Never apply it as a side effect of opening the app.
+    let engineUpdateRequired = false;
     if (!restorePending && !pluginPending) {
       try {
         const engine = await bridge.EngineStatus();
-        // A failed update was rolled back; it is retried only from the panel.
-        if (engine.supported && engine.update_failed) {
-          log(`\nThe CARE engine ${engine.expected_version} update failed earlier and the previous engine was kept: ${engine.update_error}`);
-        } else if (engine.supported && engine.update_needed && !busyRef.current) {
-          log(`\nCARE engine ${engine.expected_version} is required — updating it now...`);
-          engineUpdating = await runAction("engine-update");
+        if (engine.supported && engine.update_needed) {
+          engineUpdateRequired = true;
+          log(engine.update_failed
+            ? `\nThe CARE engine ${engine.expected_version} update failed earlier and the previous engine was kept: ${engine.update_error}`
+            : `\nThe CARE engine ${engine.expected_version} is required. Choose Update CARE engine in the panel to apply it.`);
         }
       } catch (e) {
         log(`engine status: ${errorText(e)}`);
@@ -641,7 +639,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
     await reloadBackups();
     await refresh();
     await syncAutostart();
-    if (engineUpdating) return;
+    if (engineUpdateRequired) return;
     try {
       const health = await bridge.ClinicHealth();
       if ((!health.active || restorePending || pluginPending) && !busyRef.current) {

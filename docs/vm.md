@@ -60,13 +60,14 @@ flowchart LR
   Established streams remain concurrent. Restart the engine helper after
   upgrading the desktop app to activate this host-side change.
 - **Update.** When `CARE_VM_VERSION` changes in a new app release, the setup
-  check shows "Update CARE engine". App self-updates leave a running engine in
-  place, so on panel launch the app compares the installed and running
-  engine with the pin and updates it automatically before reporting clinic
-  status (the panel shows "Updating" rather than "Running"). An unfinished
-  restore or plugin rollback takes priority and skips this automatic upgrade
-  until recovery completes. The data disk (images, volumes, clinic data) is
-  kept. The update is one transaction; see [Engine update rollback](#engine-update-rollback).
+  check shows "Update CARE engine". The background checker downloads and
+  verifies the engine in advance, but neither opening the panel nor `Start()`
+  applies it. Staff explicitly choose **Update CARE engine**. The coordinator
+  preflights the host, journals the plan and keeps the previous engine and
+  tools until the clinic is healthy on the new engine. On failure it restores
+  the old engine and starts the clinic again; interrupted work is recovered
+  before ordinary startup. The data disk (images, volumes, clinic data) is
+  kept. See [Engine update rollback](#engine-update-rollback).
 
 ### Persistent clinic-name discovery
 
@@ -163,7 +164,8 @@ tried again before CARE starts.
 A failed update is not retried automatically: the panel shows **CARE engine
 update required** with the cause and a **Try the update again** button. The
 retry clears the failed record and runs the whole transaction again. A newer
-CARE Clinic that pins a different engine updates automatically as usual.
+CARE Clinic that pins a different engine still waits for staff to choose
+**Update CARE engine**; it never applies the change during startup.
 Download failures change nothing and leave no failed record.
 
 Limits:

@@ -43,7 +43,7 @@ export function EngineUpdateNotice({ engine }: { engine: EngineState | null }) {
     This version of CARE Clinic needs CARE engine {engine.expected_version}, but {current ? `${current} is ${engine.running ? "running" : "installed"}` : "an older engine is installed"}.
     {engine.update_failed
       ? <>{" "}The last update didn&apos;t finish and the previous engine was put back{engine.update_error ? `: ${engine.update_error}` : ""}. It isn&apos;t tried again automatically.</>
-      : <>{" "}The automatic update didn&apos;t finish, so the clinic is still on the previous engine and engine and container logs are not collected.</>}
+      : <>{" "}The engine update is waiting for your approval. It will not be applied until you choose Update CARE engine.</>}
     {" "}Updating takes the clinic offline for a few minutes; patient records, files and backups are kept.
     {task.error ? <p className="panel-inline-error" role="alert">{task.error}</p> : null}
   </PanelNotice>;

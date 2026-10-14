@@ -40,29 +40,6 @@ func TestNewerVersion(t *testing.T) {
 	}
 }
 
-func TestPlatformAssetPicksOneInstaller(t *testing.T) {
-	rel := ghRelease{Assets: []ghAsset{
-		{Name: "SHA256SUMS", URL: "https://example.invalid/SHA256SUMS"},
-		{Name: "release-manifest.json", URL: "https://example.invalid/manifest"},
-		{Name: "CARE-Clinic-1.2.3-macos.dmg", URL: "https://example.invalid/dmg"},
-		{Name: "CARE-Clinic-1.2.3-windows-amd64-setup.exe", URL: "https://example.invalid/exe"},
-	}}
-	asset, ok := platformAsset(rel)
-	if !ok {
-		t.Skip("no installer is published for this platform")
-	}
-	if asset.URL == "" || asset.Name == "SHA256SUMS" {
-		t.Fatalf("picked %q as the installer", asset.Name)
-	}
-	if _, ok := findAsset(rel, func(name string) bool { return name == "SHA256SUMS" }); !ok {
-		t.Fatal("checksums were not found alongside the installer")
-	}
-	empty := ghRelease{Assets: []ghAsset{{Name: "CARE-Clinic-1.2.3-macos.dmg"}}}
-	if _, ok := platformAsset(empty); ok {
-		t.Fatal("an asset with no URL was accepted")
-	}
-}
-
 func TestDownloadVerifiedRetriesThenRejectsDamagedInstallers(t *testing.T) {
 	good := []byte("CARE Clinic installer")
 	digest := sha256.Sum256(good)
@@ -182,7 +159,12 @@ func TestSwapScriptReplacesBundleOrKeepsTheOldOne(t *testing.T) {
 	if got := marker(target); got != "new" {
 		t.Fatalf("installed bundle is %q, want new", got)
 	}
-	if left, _ := os.ReadDir(apps); len(left) != 1 {
-		t.Fatalf("the swap left extra entries behind: %v", left)
+	left, err := os.ReadDir(apps)
+	if err != nil || len(left) != 2 {
+		t.Fatalf("the swap did not retain its previous application: %v, %v", left, err)
+	}
+	previous := filepath.Join(apps, ".care-update-"+filepath.Base(tmp), "previous.app")
+	if got := marker(previous); got != "old" {
+		t.Fatalf("previous app slot contains %q, want old app", got)
 	}
 }

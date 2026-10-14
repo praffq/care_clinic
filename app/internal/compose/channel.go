@@ -27,6 +27,7 @@ type Release = careversions.Image
 
 type Channel struct {
 	Current  Release  `json:"current"`
+	Previous *Release `json:"previous,omitempty"`
 	Next     *Release `json:"next,omitempty"`
 	Declined string   `json:"declined,omitempty"`
 }

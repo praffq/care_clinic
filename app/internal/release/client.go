@@ -75,6 +75,29 @@ func (c *Client) Fetch(ctx context.Context, endpoint string) (Manifest, error) {
 	return c.accept(data, sig)
 }
 
+// ReadVerified returns the last accepted manifest after rechecking its
+// signature and persisted revision watermark.
+func (c *Client) ReadVerified() (Manifest, []byte, error) {
+	manifestMu.Lock()
+	defer manifestMu.Unlock()
+	var previous verifiedState
+	stored, err := os.ReadFile(c.StatePath)
+	if err != nil {
+		return Manifest{}, nil, fmt.Errorf("read verified update manifest: %w", err)
+	}
+	if err := json.Unmarshal(stored, &previous); err != nil {
+		return Manifest{}, nil, fmt.Errorf("read manifest trust state: %w", err)
+	}
+	m, err := VerifyManifest(previous.Manifest, previous.Signature, previous.Highest)
+	if err != nil || m.Revision != previous.Highest {
+		if err == nil {
+			err = fmt.Errorf("persisted revision %d does not match manifest revision %d", previous.Highest, m.Revision)
+		}
+		return Manifest{}, nil, fmt.Errorf("invalid persisted manifest trust state: %w", err)
+	}
+	return m, append([]byte(nil), previous.Manifest...), nil
+}
+
 func (c *Client) accept(data, sig []byte) (Manifest, error) {
 	var previous verifiedState
 	stored, err := os.ReadFile(c.StatePath)

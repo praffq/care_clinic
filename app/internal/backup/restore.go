@@ -17,15 +17,16 @@ type Backup struct {
 	FilesArchive string `json:"files_archive"`
 	Label        string `json:"label"`
 	Manual       bool   `json:"manual"`
+	PreUpdate    bool   `json:"pre_update,omitempty"`
 	Encrypted    bool   `json:"encrypted"`
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
-var dumpRe = regexp.MustCompile(`^care-(?:manual-)?(\d{8}-\d{6})\.dump(?:\.enc)?$`)
+var dumpRe = regexp.MustCompile(`^care-(?:(?:manual|pre-update)-)?(\d{8}-\d{6})\.dump(?:\.enc)?$`)
 
-var safeName = regexp.MustCompile(`^(?:care-(?:manual-)?\d{8}-\d{6}\.dump(?:\.enc)?|files-(?:manual-)?\d{8}-\d{6}\.tar\.gz(?:\.enc)?)$`)
+var safeName = regexp.MustCompile(`^(?:care-(?:(?:manual|pre-update)-)?\d{8}-\d{6}\.dump(?:\.enc)?|files-(?:(?:manual|pre-update)-)?\d{8}-\d{6}\.tar\.gz(?:\.enc)?)$`)
 
-var filesRe = regexp.MustCompile(`^files-((?:manual-)?\d{8}-\d{6})\.tar\.gz(?:\.enc)?$`)
+var filesRe = regexp.MustCompile(`^files-(((?:manual|pre-update)-)?\d{8}-\d{6})\.tar\.gz(?:\.enc)?$`)
 
 func SetName(dbDump string) string {
 	name := strings.TrimPrefix(dbDump, "care-")
@@ -81,6 +82,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 		b := Backup{
 			DBDump:    en.Name(),
 			Manual:    strings.HasPrefix(en.Name(), "care-manual-"),
+			PreUpdate: strings.HasPrefix(en.Name(), "care-pre-update-"),
 			Encrypted: strings.HasSuffix(en.Name(), ".enc"),
 			SizeBytes: info.Size(),
 		}
@@ -95,7 +97,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 				break
 			}
 		}
-		b.Label = backupLabel(ts, b.Manual, b.FilesArchive != "", b.Encrypted)
+		b.Label = backupLabel(ts, b.Manual, b.PreUpdate, b.FilesArchive != "", b.Encrypted)
 		out = append(out, b)
 	}
 
@@ -109,7 +111,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 	return out, nil
 }
 
-func backupLabel(ts string, manual, withFiles, encrypted bool) string {
+func backupLabel(ts string, manual, preUpdate, withFiles, encrypted bool) string {
 	when := ts
 	if t, err := time.Parse("20060102-150405", ts); err == nil {
 		when = t.Format("2006-01-02 15:04")
@@ -117,6 +119,8 @@ func backupLabel(ts string, manual, withFiles, encrypted bool) string {
 	kind := "daily"
 	if manual {
 		kind = "manual"
+	} else if preUpdate {
+		kind = "pre-update"
 	}
 	scope := "DB only"
 	if withFiles {

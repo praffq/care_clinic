@@ -220,6 +220,10 @@ export function installTestHost() {
   }
   if (scenario === "panel-requirements") { fixtures.docker.ok = false; }
   if (scenario === "panel-engine-outdated" || scenario === "panel-engine-update-failed") fixtures.engine = { ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true, logs: "" };
+  if (scenario === "panel-engine-rolled-back") fixtures.engine = {
+    ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true,
+    update_failed: true, update_error: "CARE engine: Docker did not start", logs: "",
+  };
   if (scenario === "panel-engine-rolled-back") fixtures.engine = { ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true, update_failed: true, update_error: "CARE engine: Docker did not start", logs: "" };
   if (scenario === "panel-update") fixtures.channel.pending_backend = "preview-backend-next";
   const available = ["available", "downloading", "installing", "verifying", "restarting", "installer", "failed", "download-failed", "unavailable"].includes(scenario);
@@ -453,6 +457,8 @@ export function installTestHost() {
       if (action === "engine-update") {
         if (scenario === "panel-engine-update-failed" && !fixtures.engineRetry) {
           fixtures.engineRetry = true;
+          fixtures.engine.update_failed = true;
+          fixtures.engine.update_error = "could not download the CARE engine: network is unreachable";
           window.setTimeout(() => finishJob(action, "could not download care-engine-0.1.1-linux-arm64.tar.gz: network is unreachable"), 350);
           return;
         }
@@ -658,7 +664,10 @@ export function installTestHost() {
     },
     OpenURL: async () => { logs.push("Test only: release notes requested."); },
     OpenLogFolder: async () => { logs.push("Test only: log file requested."); },
-    ExportDiagnostics: async () => { logs.push("Test only: diagnostics export requested."); },
+    ExportDiagnostics: async (passwordWarningAccepted: boolean) => {
+      if (!passwordWarningAccepted) throw new Error("clinic-password warning was not accepted");
+      logs.push("Test only: diagnostics export requested.");
+    },
     SetQuitDialogReady: async (ready: boolean) => {
       if (!ready) quitRequest = null;
       return quitRequest ? { ...quitRequest } : null;
