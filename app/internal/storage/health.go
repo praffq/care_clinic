@@ -329,11 +329,12 @@ func ReadHealth(backupDir, stateDir string, running bool, now time.Time) BackupH
 		add("backup_failed", LevelCritical, msg)
 	}
 
-	if found && h.WAL.State != "" && h.WAL.State != "off" && h.WAL.State != "unknown" {
-		h.SavedThrough = h.WAL.SavedThrough
-	}
-	if h.SavedThrough < h.LastBackupAt && found {
-		h.SavedThrough = max(h.SavedThrough, m.StartedAt)
+	if found {
+		h.SavedThrough = m.EarliestRestoreAt()
+		switch h.WAL.State {
+		case "ok", "stale", "failing":
+			h.SavedThrough = max(h.SavedThrough, h.WAL.SavedThrough)
+		}
 	}
 	if running && h.WAL.CheckedAt > 0 && now.Sub(time.Unix(h.WAL.CheckedAt, 0)) > StatusStaleAfter {
 		add("status_stale", LevelCritical, "The backup service has not updated its status since "+

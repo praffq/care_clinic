@@ -101,6 +101,7 @@ func TestHealthAlerts(t *testing.T) {
 			if !tc.noManif {
 				writeManifest(t, backups, tc.manifest)
 			}
+
 			if tc.wal != "" {
 				writeState(t, state, WALStatusFile, tc.wal)
 			}
@@ -119,6 +120,35 @@ func TestHealthAlerts(t *testing.T) {
 			}
 			if tc.name == "copy missing" && (!strings.Contains(h.Alerts[0].Message, "Last copied") || h.Copy.LastCopiedAt != 1767200000) {
 				t.Fatalf("missing drive lost its last-copied time: %+v", h)
+			}
+		})
+	}
+}
+
+func TestHealthSavedThroughFloorsAtBaseCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wal  string
+		want int64
+	}{
+		{"missing status", "", 1767233000},
+		{"unknown status", "state=unknown\nsaved_through=1767239900\n", 1767233000},
+		{"unrecognized status", "state=unexpected\nsaved_through=1767239900\n", 1767233000},
+		{"off status", "state=off\nsaved_through=1767239900\n", 1767233000},
+		{"older archived time", "state=ok\nsaved_through=1767232800\n", 1767233000},
+		{"saved changes", "state=ok\nsaved_through=1767239900\n", 1767239900},
+		{"stale archive", "state=stale\nsaved_through=1767239900\n", 1767239900},
+		{"failing archive", "state=failing\nsaved_through=1767239900\n", 1767239900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backups, state := t.TempDir(), t.TempDir()
+			writeManifest(t, backups, nil)
+			if tc.wal != "" {
+				writeState(t, state, WALStatusFile, tc.wal)
+			}
+			h := ReadHealth(backups, state, false, time.Unix(1767240000, 0))
+			if h.SavedThrough != tc.want || h.SavedThrough < h.EarliestRestoreAt {
+				t.Fatalf("saved through = %d, earliest = %d; want %d", h.SavedThrough, h.EarliestRestoreAt, tc.want)
 			}
 		})
 	}
