@@ -1,0 +1,183 @@
+name: Publish
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+    paths:
+      - versions.toml
+      - env-defaults.yml
+      - app/**
+      - images/**
+      - vm/**
+      - deployments/**
+      - .github/**
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The lock spans planning, all component builds, signing and the atomic Pages
+# deployment. Never cancel a release after publishing its immutable assets.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('release-pr-{0}', github.event.pull_request.number) || github.event_name == 'merge_group' && format('release-merge-{0}', github.ref) || 'care-release-publish' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Resolve release sources once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      desktop: ${{ steps.plan.outputs.desktop }}
+      engine: ${{ steps.plan.outputs.engine }}
+      images: ${{ steps.plan.outputs.backend == 'true' || steps.plan.outputs.frontend == 'true' || steps.plan.outputs.support == 'true' }}
+      changed: ${{ steps.plan.outputs.changed }}
+      desktop_version: ${{ steps.plan.outputs.desktop_version }}
+      engine_version: ${{ steps.plan.outputs.engine_version }}
+      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Build shared release tool
+        run: |
+          mkdir -p ci
+          go -C app build -o ../ci/releasectl ./cmd/releasectl
+      - name: Fetch and authenticate previous publication
+        run: |
+          python3 .github/scripts/pipeline.py previous
+          if [ -f previous.json ]; then
+            ci/releasectl verify --manifest previous.json --signature previous.json.sig
+          fi
+      - name: Resolve branch heads and compare previous updates
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ci/releasectl plan --root . --previous previous.json --out plan.json
+          python3 .github/scripts/pipeline.py plan-outputs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-plan
+          path: |
+            plan.json
+            previous.json
+            previous.json.sig
+          if-no-files-found: error
+          retention-days: 7
+  care:
+    name: CARE image checks
+    needs: plan
+    uses: ./.github/workflows/care-images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      build: ${{ needs.plan.outputs.images == 'true' }}
+      publish: ${{ needs.plan.outputs.publish == 'true' }}
+  engine:
+    name: Engine checks
+    needs: plan
+    uses: ./.github/workflows/engine.yml
+    permissions:
+      contents: write
+    with:
+      build: ${{ needs.plan.outputs.engine == 'true' }}
+      publish: ${{ needs.plan.outputs.publish == 'true' }}
+      version: ${{ needs.plan.outputs.engine_version }}
+  desktop:
+    name: Desktop checks
+    needs: plan
+    uses: ./.github/workflows/desktop.yml
+    permissions:
+      contents: write
+      actions: read
+    secrets: inherit
+    with:
+      build: ${{ needs.plan.outputs.desktop == 'true' }}
+      publish: ${{ needs.plan.outputs.publish == 'true' }}
+      version: ${{ needs.plan.outputs.desktop_version }}
+  required:
+    name: CI
+    if: always()
+    needs: [plan, care, engine, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require every integrated check
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/pipeline.py required
+  sign:
+    name: Sign atomic update publication
+    needs: [plan, required]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Configure required reviewers on this environment, including the
+    # UPDATES_SIGNING_KEY secret; approval happens before any secret is loaded.
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: output-*
+          merge-multiple: true
+          path: outputs
+      - name: Generate manifest using sole release configuration
+        run: |
+          mkdir -p ci public
+          go -C app build -o ../ci/releasectl ./cmd/releasectl
+          python3 .github/scripts/pipeline.py merge
+          ci/releasectl manifest --root . --previous previous.json --outputs outputs.json --out public/updates.json
+      - name: Sign and verify exact manifest bytes
+        env:
+          UPDATES_SIGNING_KEY: ${{ secrets.UPDATES_SIGNING_KEY }}
+        run: |
+          ci/releasectl sign --manifest public/updates.json --out public/updates.json.sig
+          ci/releasectl verify --manifest public/updates.json --signature public/updates.json.sig
+          test "$(find public -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Upload one atomic Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: public
+  publish:
+    name: Deploy signed update feed
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - name: Atomically deploy manifest and detached signature
+        id: pages
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

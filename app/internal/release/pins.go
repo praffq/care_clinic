@@ -16,12 +16,15 @@ var (
 	versionPattern   = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$`)
 	numericPattern   = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 	sha256Pattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	linePattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 	digestRefPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
 )
 
 type Pins struct {
 	AppVersion string
+	// CAREVersion is the CARE release this desktop build installs.
+	CAREVersion string
+	// UpdatesURL is where the signed release manifest is published.
+	UpdatesURL string
 
 	PostgresImage string
 	RedisImage    string
@@ -33,11 +36,6 @@ type Pins struct {
 	CaddyWafImage string
 	BackendImage  string
 	FrontendImage string
-
-	// LinesURL is where CI publishes the CARE release-line manifest;
-	// DefaultLine is the line a new clinic installs.
-	LinesURL    string
-	DefaultLine string
 
 	// Optional CI-built images for the proxy and backup sidecar. When set
 	// they are pulled instead of being built on the clinic computer.
@@ -91,8 +89,8 @@ func (p *Pins) envPinMap() []struct {
 		{"CADDY_WAF_IMAGE", &p.CaddyWafImage},
 		{"BACKEND_IMAGE", &p.BackendImage},
 		{"FRONTEND_IMAGE", &p.FrontendImage},
-		{"CARE_LINES_URL", &p.LinesURL},
-		{"CARE_DEFAULT_LINE", &p.DefaultLine},
+		{"CARE_VERSION", &p.CAREVersion},
+		{"CARE_UPDATES_URL", &p.UpdatesURL},
 		{"CARE_VM_VERSION", &p.CareVMVersion},
 		{"CARE_VM_BASE_URL", &p.CareVMBaseURL},
 		{"CARE_VM_AARCH64_SHA256", &p.CareVMAarch64SHA256},
@@ -126,7 +124,7 @@ func (p *Pins) Summary() []string {
 		return nil
 	}
 	return []string{
-		"pins: care     " + p.BackendImage + " + " + p.FrontendImage + " <- line " + p.DefaultLine + " (" + p.LinesURL + ")",
+		"pins: care     " + p.BackendImage + " + " + p.FrontendImage + " <- CARE " + p.CAREVersion + " (" + p.UpdatesURL + ")",
 		"      base     " + strings.Join([]string{p.PostgresImage, p.RedisImage, p.MinioImage}, " · "),
 		"      proxy    " + p.CaddyImage + " + coraza " + p.CorazaVersion,
 	}
@@ -136,6 +134,11 @@ func Load(env []byte) (*Pins, error) {
 	values, err := dotenv.Parse(bytes.NewReader(env))
 	if err != nil {
 		return nil, fmt.Errorf("%s is malformed: %w", EnvFile, err)
+	}
+	for _, key := range []string{"CARE_LINES_URL", "CARE_DEFAULT_LINE"} {
+		if _, ok := values[key]; ok {
+			return nil, fmt.Errorf("%s still sets the retired %s; CARE Clinic installs the CARE release pinned in %s", EnvFile, key, ConfigFile)
+		}
 	}
 	var p Pins
 	var missing []string
@@ -153,6 +156,9 @@ func Load(env []byte) (*Pins, error) {
 	if !versionPattern.MatchString(p.AppVersion) {
 		return nil, fmt.Errorf("CARE_CLINIC_VERSION must be X.Y.Z or X.Y.Z-dev")
 	}
+	if _, err := releaseVersion("CARE_VERSION", p.CAREVersion, false); err != nil {
+		return nil, err
+	}
 	for key, version := range map[string]string{
 		"CARE_VM_VERSION":       p.CareVMVersion,
 		"DOCKER_CLI_VERSION":    p.DockerCLIVersion,
@@ -165,7 +171,7 @@ func Load(env []byte) (*Pins, error) {
 		}
 	}
 	for key, raw := range map[string]string{
-		"CARE_LINES_URL": p.LinesURL, "CARE_VM_BASE_URL": p.CareVMBaseURL,
+		"CARE_UPDATES_URL": p.UpdatesURL, "CARE_VM_BASE_URL": p.CareVMBaseURL,
 		"QEMU_WINDOWS_URL":       p.QEMUWindowsURL,
 		"SEVENZIP_WINDOWS_URL":   p.SevenZipWindowsURL,
 		"SEVENZIP_BOOTSTRAP_URL": p.SevenZipBootstrapURL,
@@ -173,9 +179,6 @@ func Load(env []byte) (*Pins, error) {
 		if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
 			return nil, fmt.Errorf("%s must be an https URL", key)
 		}
-	}
-	if !linePattern.MatchString(p.DefaultLine) {
-		return nil, fmt.Errorf("CARE_DEFAULT_LINE is not a valid line id")
 	}
 	for key, dst := range map[string]*string{
 		"CADDY_WAF_PREBUILT": &p.CaddyWafPrebuilt,

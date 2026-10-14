@@ -63,7 +63,6 @@ const ACTION_LABELS: Record<string, string> = {
   "apply-plugins": "Applying plugins",
   "backup-now": "Backing up",
   update: "Updating CARE",
-  "upgrade-line": "Upgrading CARE",
   "free-space": "Freeing space",
   "engine-update": "Updating CARE engine",
 };
@@ -116,7 +115,6 @@ type CareStore = {
   trouble: boolean;
   careUpdate: CareUpdate | null;
   applyCareUpdate: () => Promise<void>;
-  upgradeCareLine: (id: string) => Promise<void>;
   dismissCareUpdate: () => Promise<void>;
   installAppUpdate: () => Promise<void>;
   acknowledgeAppUpdate: () => boolean;
@@ -375,7 +373,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
   }, [log]);
 
   const runAction = useCallback(
-    async (action: string, adminPassword = "", lineId?: string) => {
+    async (action: string, adminPassword = "") => {
       if (busyRef.current) {
         setOperationError(describeOperationError(action, "something else is still running"));
         return false;
@@ -410,8 +408,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       setOperationError(null);
       log(`\n$ care ${action}`);
       try {
-        if (action === "upgrade-line" && lineId) await bridge.UpgradeCareLine(lineId);
-        else await bridge.ClinicAction(action, adminPassword);
+        await bridge.ClinicAction(action, adminPassword);
         return true;
       } catch (e) {
         log(`error: ${errorText(e)}`);
@@ -427,10 +424,6 @@ export function CareProvider({ children }: { children: ReactNode }) {
 
   const applyCareUpdate = useCallback(async () => {
     await runAction("update");
-  }, [runAction]);
-
-  const upgradeCareLine = useCallback(async (id: string) => {
-    await runAction("upgrade-line", "", id);
   }, [runAction]);
 
   const installAppUpdate = useCallback(async () => {
@@ -923,7 +916,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
         if (code !== 0) {
           setOperationError(describeOperationError(label ?? "operation", lastErrorRef.current));
           if (label === "stop") stoppedOnPurposeRef.current = stopIntentBeforeRef.current;
-        } else if (label === "update" || label === "upgrade-line") {
+        } else if (label === "update") {
           setCareUpdate(null);
         }
         activeActionRef.current = "";
@@ -1060,7 +1053,6 @@ export function CareProvider({ children }: { children: ReactNode }) {
       trouble,
       careUpdate,
       applyCareUpdate,
-      upgradeCareLine,
       dismissCareUpdate,
       installAppUpdate,
       acknowledgeAppUpdate,
@@ -1090,7 +1082,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
     [
       ready, flow, mdnsName, clientURL, selectRole, clearRole, openStep, stepsDone, setStepDone,
       run, setupReset, startInstall, resumeInstall, retryInstall, restartSetup, openPanel,
-      tab, busy, busyLabel, operationError, clearOperationError, system, systemDetail, trouble, careUpdate, applyCareUpdate, upgradeCareLine, dismissCareUpdate,
+      tab, busy, busyLabel, operationError, clearOperationError, system, systemDetail, trouble, careUpdate, applyCareUpdate, dismissCareUpdate,
       installAppUpdate, acknowledgeAppUpdate, restorePending, pluginRecoveryPending, version, platform, backups, backupsError, autostart, autostartReady, autostartSaving, autostartError, storage, storageError, recheckStorage,
       refresh, reloadBackups, syncAutostart,
       runAction, setAutostart, restore, restoreFile, uninstall, log,

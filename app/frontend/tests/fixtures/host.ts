@@ -144,7 +144,7 @@ export function installTestHost() {
       backup: backupSpace, last_run: { state: "ok", reason: "", at: now - 3_600, need_bytes: 0, free_bytes: 0, message: "" },
       newest_backup_at: now - 3_600, stale: false,
     },
-    channel: { line: { id: "2026.1", title: "CARE 2026.1", expired: false }, newer_lines: [], backend: "preview-backend-current", frontend: "preview-frontend-current", pending_backend: "", pending_frontend: "" },
+    channel: { version: "3.1.0", backend: "preview-backend-current", frontend: "preview-frontend-current", pending_backend: "", pending_frontend: "" },
     autostart: true,
     importedBackup: { path: `${backupDir}/${exampleBackup.db_dump}`, dir: backupDir, db_dump: exampleBackup.db_dump, files_archive: exampleBackup.files_archive, label: exampleBackup.label, encrypted: true },
     recoveryFile: "/test-fixtures/recovery/CARE-backup-recovery.pem",
@@ -236,7 +236,6 @@ export function installTestHost() {
   const emit = (event: string, ...data: unknown[]) => {
     listeners.get(event)?.forEach((handler) => handler(...data));
   };
-  let stagedLine: ChannelStatus["line"] | null = null;
   let stagedPlugins: CarePlugin[] | null = null;
   const finishJob = (action: string, error?: string) => {
     if (action === "apply-plugins") {
@@ -248,20 +247,13 @@ export function installTestHost() {
       const title = action === "restore" ? "Restore didn't finish" : action === "backup-now" ? "Backup didn't finish" : "CARE couldn't finish that";
       if (action !== "setup") emit("care-error", title, error);
     } else {
-      if (["start", "restart", "update", "upgrade-line", "restore", "engine-update"].includes(action)) {
+      if (["start", "restart", "update", "restore", "engine-update"].includes(action)) {
         fixtures.health = { active: true, code: 200, detail: "" };
         fixtures.clinicStatus = "backend\nfrontend\ndb\nbackup";
       }
       if (action === "stop") { fixtures.health.active = false; fixtures.clinicStatus = ""; }
       if (action === "restore") state.restore_pending = false;
-      if (action === "upgrade-line" && stagedLine) {
-        fixtures.channel.line = stagedLine;
-        fixtures.channel.newer_lines = fixtures.channel.newer_lines.filter((line) => line.id !== stagedLine!.id);
-        fixtures.channel.pending_line = "";
-        fixtures.channel.recommended = "";
-        stagedLine = null;
-      }
-      if (action === "update" || action === "upgrade-line") {
+      if (action === "update") {
         fixtures.channel.backend = fixtures.channel.pending_backend || fixtures.channel.backend;
         fixtures.channel.frontend = fixtures.channel.pending_frontend || fixtures.channel.frontend;
         fixtures.channel.pending_backend = "";
@@ -445,23 +437,12 @@ export function installTestHost() {
     SetAutostart: async (value: boolean) => { fixtures.autostart = value; },
     WasAutostartLaunched: async () => false,
     CareUpdateStatus: async () => structuredClone(fixtures.channel),
-    UpgradeCareLine: async (id: string) => {
-      requireServer();
-      if (state.restore_pending) throw new Error("a restore is unfinished");
-      const line = fixtures.channel.newer_lines.find((line) => line.id === id);
-      if (!line) throw new Error("unknown CARE release line");
-      stagedLine = { ...line };
-      fixtures.channel.pending_line = id;
-      fixtures.channel.pending_backend = "preview-backend-upgraded";
-      fixtures.channel.pending_frontend = "preview-frontend-upgraded";
-      acceptJob("upgrade-line");
-    },
     CheckCareUpdate: async () => {
       emit("care-check", { running: true, found: false });
       window.setTimeout(() => {
-        const update = { backend: fixtures.channel.pending_backend, frontend: fixtures.channel.pending_frontend, newer_line: fixtures.channel.newer_lines[0]?.id };
-        emit("care-check", { running: false, found: !!(update.backend || update.frontend || update.newer_line) });
-        if (update.backend || update.frontend || update.newer_line) emit("care-update", update);
+        const update = { backend: fixtures.channel.pending_backend, frontend: fixtures.channel.pending_frontend };
+        emit("care-check", { running: false, found: !!(update.backend || update.frontend) });
+        if (update.backend || update.frontend) emit("care-update", update);
       }, 150);
     },
     DismissCareUpdate: async () => { logs.push("Test only: the update was deferred until next start."); },

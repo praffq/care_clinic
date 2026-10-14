@@ -2,6 +2,7 @@ package release
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,17 +15,15 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 	if !proc.Exists("node") {
 		t.Skip("Node.js is not installed")
 	}
-	deployment, err := os.ReadFile("../../../deployments/.env")
+	toml := string(repoFile(t, ConfigFile))
+	base := string(repoFile(t, "deployments/.env"))
+	current, err := ReadConfig([]byte(toml))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := Load(deployment)
-	if err != nil {
-		t.Fatal(err)
+	withVersion := func(version string) string {
+		return strings.Replace(toml, `version = "`+current.Desktop.Version+`"`, `version = "`+version+`"`, 1)
 	}
-	qemuPins := "QEMU_WINDOWS_VERSION=" + pins.QEMUWindowsVersion + "\n" +
-		"QEMU_WINDOWS_SHA256=" + pins.QEMUWindowsSHA256 + "\n" +
-		"CARE_VM_BASE_URL=" + pins.CareVMBaseURL + "\n"
 	data, err := os.ReadFile("../../wails.json")
 	if err != nil {
 		t.Fatal(err)
@@ -55,15 +54,42 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 		}
 	}
 	write("app/frontend/scripts/stage-install.mjs", string(script))
+	// The hook runs the real stage command from the app module.
+	for _, dir := range []string{"go.mod", "go.sum", "cmd/stageconfig", "internal/release", "internal/sys"} {
+		src := filepath.Join("..", "..", dir)
+		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			rel, err := filepath.Rel(filepath.Join("..", ".."), path)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			write(filepath.Join("app", rel), string(data))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("deployments/.env", base)
 	write("app/wails.json", `{"name":"care-clinic","info":{"productVersion":"9.9.9","productName":"CARE Clinic"}}`)
 	write("deployments/minio/entrypoint.sh", "storage entrypoint")
 	write("app/main.go", `package main
-import ("embed"; "fmt")
+import ("embed"; "fmt"; "os")
 //go:embed all:install
 var kit embed.FS
 func main() {
 	data, err := kit.ReadFile("install/.env")
 	if err != nil { panic(err) }
+	if len(os.Args) > 1 {
+		data, err = kit.ReadFile("install/" + os.Args[1])
+		if err != nil { panic(err) }
+	}
 	fmt.Print(string(data))
 }
 `)
@@ -78,8 +104,11 @@ func main() {
 		{"development", "2.3.4-dev"},
 	} {
 		t.Run(tc.state, func(t *testing.T) {
-			manifest := "CARE_CLINIC_VERSION=" + tc.version + "\n" + qemuPins
-			write("deployments/.env", manifest)
+			write("versions.toml", withVersion(tc.version))
+			manifest, err := StageEnv([]byte(withVersion(tc.version)), []byte(base))
+			if err != nil {
+				t.Fatal(err)
+			}
 			install := filepath.Join(root, "app", "install")
 			switch tc.state {
 			case "deleted-again":
@@ -113,12 +142,15 @@ func main() {
 				t.Fatal(err)
 			}
 			if info.Info.ProductVersion != strings.TrimSuffix(tc.version, "-dev") || info.Name != "care-clinic" || info.Info.ProductName != "CARE Clinic" {
-				t.Fatalf("installer metadata was not derived from .env: %s", metadata)
+				t.Fatalf("installer metadata was not derived from versions.toml: %s", metadata)
 			}
 			cmd = proc.Command("go", "run", "main.go")
 			cmd.Dir = filepath.Join(root, "app")
-			if output, err := cmd.CombinedOutput(); err != nil || string(output) != manifest {
+			if output, err := cmd.CombinedOutput(); err != nil || string(output) != string(manifest) {
 				t.Fatalf("compiled kit is missing or stale: %v\n%s", err, output)
+			}
+			if pins, err := Load(manifest); err != nil || pins.AppVersion != tc.version || pins.CAREVersion != current.Care.Version {
+				t.Fatalf("staged kit does not load: %v", err)
 			}
 			if data, err := os.ReadFile(filepath.Join(install, "minio", "entrypoint.sh")); err != nil || string(data) != "storage entrypoint" {
 				t.Fatalf("nested kit file was not staged: %v", err)
@@ -136,22 +168,37 @@ func main() {
 			}
 		})
 	}
-	for _, value := range []string{
-		"",
-		"CARE_CLINIC_VERSION=invalid\n",
-		"CARE_CLINIC_VERSION=01.2.3\n",
-		"CARE_CLINIC_VERSION=1.2.3\nCARE_CLINIC_VERSION=2.0.0\n",
+	last, err := os.ReadFile(filepath.Join(root, "app", "install", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := withVersion("2.3.4-dev")
+	for _, tc := range []struct{ name, config, env string }{
+		{"invalid-version", withVersion("invalid"), base},
+		{"leading-zero", withVersion("01.2.3"), base},
+		{"unknown-field", valid + "\nchannel = \"beta\"\n", base},
+		{"duplicate-version", strings.Replace(valid, "[desktop]\n", "[desktop]\nversion = \"2.0.0\"\n", 1), base},
+		{"missing-config", "", base},
+		{"release-value-in-env", valid, base + "CARE_CLINIC_VERSION=9.9.9\n"},
+		{"retired-line-in-env", valid, base + "CARE_DEFAULT_LINE=3\n"},
 	} {
-		t.Run("invalid-version-"+strings.TrimSpace(value), func(t *testing.T) {
-			write("deployments/.env", value)
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.config == "" {
+				if err := os.Remove(filepath.Join(root, "versions.toml")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				write("versions.toml", tc.config)
+			}
+			write("deployments/.env", tc.env)
 			cmd := proc.Command(command[0], command[1:]...)
 			cmd.Dir = bin
 			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("invalid release version was accepted: %s", output)
+				t.Fatalf("invalid release config was accepted: %s", output)
 			}
 			data, err := os.ReadFile(filepath.Join(root, "app", "install", ".env"))
-			if err != nil || string(data) != "CARE_CLINIC_VERSION=2.3.4-dev\n"+qemuPins {
-				t.Fatalf("invalid version changed the staged kit: %q, %v", data, err)
+			if err != nil || string(data) != string(last) {
+				t.Fatalf("invalid config changed the staged kit: %q, %v", data, err)
 			}
 		})
 	}

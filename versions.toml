@@ -1,0 +1,114 @@
+# The only human-edited release file. Everything CARE Clinic pins for a
+# release lives here; the build stages it into the embedded .env (see
+# app/cmd/stageconfig) and CI resolves it into the signed release manifest.
+schema = 1
+
+[desktop]
+version = "0.1.19"
+requires_engine = ">=0.1.2, <0.2.0"
+updates_url = "https://praffq.github.io/care_clinic/manifest.json"
+
+[engine]
+version = "0.1.2"
+requires_desktop = ">=0.1.15"
+
+[care]
+version = "3.1.0"
+requires_desktop = ">=0.1.15"
+requires_engine = ">=0.1.2"
+
+[care.backend]
+repo = "praffq/care"
+branch = "ENG-737"
+
+[care.frontend]
+repo = "praffq/care_fe"
+branch = "bodhi/questionnaire-actions"
+
+[support_images]
+postgres = "postgres:17.10-alpine"
+redis = "redis:8.8.0-alpine"
+caddy = "caddy:2.11.4"
+silo = "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z"
+
+[caddy]
+coraza = "v2.6.1"
+
+# --- Docker for Linux servers -------------------------------------------------
+[tools.docker_linux_x86_64]
+version = "29.8.1"
+url = "https://download.docker.com/linux/static/stable/x86_64/docker-29.8.1.tgz"
+sha256 = "d8db66739d2e28d4933786d73e918d9be643a67fbd835db1bf740d650a259e70"
+
+[tools.docker_linux_aarch64]
+version = "29.8.1"
+url = "https://download.docker.com/linux/static/stable/aarch64/docker-29.8.1.tgz"
+sha256 = "667395fbffab52901b80181dfbb39ea76da2fbd7642c4fbddd24e42146b07b48"
+
+[tools.compose_linux_x86_64]
+version = "5.5.1"
+url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-x86_64"
+sha256 = "db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
+
+[tools.compose_linux_aarch64]
+version = "5.5.1"
+url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-aarch64"
+sha256 = "732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7"
+
+# --- CARE engine (macOS and Windows) -----------------------------------------
+# The Linux VM that runs Docker, built from vm/ (see docs/vm.md). Its version
+# is [engine].version.
+[tools.care_engine_aarch64]
+version = "0.1.2"
+url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.2-linux-arm64.tar.gz"
+sha256 = "8ef6d09d21de40af3f9051045c34d1e2f132655355aa363a07d94d5204ea663c"
+
+[tools.care_engine_x86_64]
+version = "0.1.2"
+url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.2-linux-amd64.tar.gz"
+sha256 = "9d75fa0fc6b497fb8c0088949140d53690a80fdb68aa2460eb9b92cf2f93346d"
+
+[tools.docker_cli_macos_aarch64]
+version = "29.8.1"
+url = "https://download.docker.com/mac/static/stable/aarch64/docker-29.8.1.tgz"
+sha256 = "5a8f5604d7673202b2af925229d15eb4bbb86f7f542e4ac8cd7aa3f14cfa0f8b"
+
+[tools.docker_cli_macos_x86_64]
+version = "29.8.1"
+url = "https://download.docker.com/mac/static/stable/x86_64/docker-29.8.1.tgz"
+sha256 = "de42b6bb38d0ea08333cdddc18b054d61d4c9f003b3616ae55d85ccea72c47c9"
+
+[tools.docker_cli_windows_x86_64]
+version = "29.8.1"
+url = "https://download.docker.com/win/static/stable/x86_64/docker-29.8.1.zip"
+sha256 = "f99b6e0ac1950e6c47c267b1d7ac53ef973682208523212d03477478c6562aaf"
+
+[tools.compose_macos_aarch64]
+version = "5.5.1"
+url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-darwin-aarch64"
+sha256 = "998735c9b6fe68a4f05895e6ea73d71ad06f9fc7046383ad89e47346781b6af5"
+
+[tools.compose_macos_x86_64]
+version = "5.5.1"
+url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-darwin-x86_64"
+sha256 = "a264d61e824bf08a78867e59cdf32eb09f0aee9ecdf9f6ebfa43f76dc52880f1"
+
+[tools.compose_windows_x86_64]
+version = "5.5.1"
+url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-windows-x86_64.exe"
+sha256 = "a3c0c73033eaede90210345d0cc2233edf4fab8fe0282a91dad8fd8436809d2f"
+
+# Windows QEMU and the 7-Zip extractors, fetched directly from their publishers.
+# 7zr reads the embedded 7z payload without running either installer.
+[tools.qemu_windows_x86_64]
+version = "10.1.0"
+url = "https://qemu.weilnetz.de/w64/2025/qemu-w64-setup-20250826.exe"
+sha256 = "c7592db7716029e814d71c9a7dfc9b76dc72019753ee9afc2fa70b14c9d28b4f"
+
+[tools.sevenzip_bootstrap_windows_x86_64]
+url = "https://github.com/ip7z/7zip/releases/download/26.04/7zr.exe"
+sha256 = "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282"
+
+[tools.sevenzip_windows_x86_64]
+url = "https://github.com/ip7z/7zip/releases/download/26.04/7z2604-x64.exe"
+sha256 = "d54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d"

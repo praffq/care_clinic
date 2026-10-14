@@ -1,14 +1,19 @@
 package compose
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/lines"
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
@@ -28,32 +33,60 @@ func digestRef(name string, c byte) string {
 	return "ghcr.io/ohcnetwork/care-clinic-" + name + "@sha256:" + strings.Repeat(string(c), 64)
 }
 
-func lineFixture(id string, c byte) lines.Line {
-	return lines.Line{
-		ID: id,
-		Backend: lines.Image{
-			Commit:  strings.Repeat(string(c), 40),
-			Image:   digestRef("backend", c),
-			Builder: digestRef("backend-builder", c),
+func versionFixture(c byte) careversions.Manifest {
+	return careversions.Manifest{
+		Version: "3.1.0",
+		Backend: careversions.Image{
+			Commit:     strings.Repeat(string(c), 40),
+			Image:      digestRef("backend", c),
+			Builder:    digestRef("backend-builder", c),
+			SourceHash: strings.Repeat(string(c), 64),
 		},
-		Frontend: lines.Image{
+		Frontend: careversions.Image{
 			Commit:      strings.Repeat(string(c), 40),
 			Image:       digestRef("frontend", c),
 			Builder:     digestRef("frontend-builder", c),
+			SourceHash:  strings.Repeat(string(c), 64),
 			RuntimeKeys: []string{"REACT_CARE_API_URL", "REACT_APP_TITLE"},
 			BuildEnv:    map[string]string{"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard"},
 		},
 	}
 }
 
-func publish(t *testing.T, b *Builder, m lines.Manifest) {
+type fixtureTransport func(*http.Request) (*http.Response, error)
+
+func (f fixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func publish(t *testing.T, b *Builder, m careversions.Manifest) {
 	t.Helper()
-	m.Schema = lines.Schema
-	data, err := json.Marshal(m)
+	hash := strings.Repeat("a", 64)
+	asset := release.Asset{URL: "https://updates.test/installer", SHA256: hash, Size: 42}
+	revision := uint64(1)
+	if previous, err := os.ReadFile(filepath.Join(b.dir, "fixture-updates.json")); err == nil {
+		var old release.Manifest
+		if err := json.Unmarshal(previous, &old); err != nil {
+			t.Fatal(err)
+		}
+		revision = old.Revision + 1
+	}
+	manifest := release.Manifest{
+		Schema: 1, Revision: revision, PublishedAt: "2026-10-14T14:00:00Z",
+		Desktop:       release.DesktopUpdate{Version: "0.1.19", RequiresEngine: ">=0.1.0", Assets: map[string]release.Asset{"darwin-universal": asset, "windows-amd64": asset}},
+		Engine:        release.EngineUpdate{Version: "0.1.2", RequiresDesktop: ">=0.1.0", Assets: map[string]release.Asset{"linux-arm64": asset, "linux-amd64": asset}},
+		Care:          release.CareUpdate{Version: m.Version, RequiresDesktop: ">=0.1.0", RequiresEngine: ">=0.1.0", Backend: m.Backend, Frontend: m.Frontend},
+		SupportImages: map[string]string{"postgres": digestRef("postgres", 'a'), "redis": digestRef("redis", 'a'), "caddy": digestRef("caddy", 'a'), "silo": digestRef("silo", 'a'), "backup": digestRef("backup", 'a')},
+		Blocked:       []string{}, SourceHashes: map[string]string{"desktop": hash, "engine": hash, "support": hash},
+	}
+	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeBuildFile(t, filepath.Dir(b.set.LinesURL), filepath.Base(b.set.LinesURL), string(data))
+	key, err := os.ReadFile(filepath.Join(b.dir, "fixture-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBuildFile(t, b.dir, "fixture-updates.json", string(data))
+	writeBuildFile(t, b.dir, "fixture-updates.json.sig", string(ed25519.Sign(key, data)))
 }
 
 func builderFixture(t *testing.T) *Builder {
@@ -69,8 +102,8 @@ func builderFixture(t *testing.T) *Builder {
 	}
 	b := NewBuilder(proc.Runner{Dir: dir}, dir, &release.Pins{
 		AppVersion:    "0.1.0-dev",
-		LinesURL:      filepath.Join(t.TempDir(), "lines.json"),
-		DefaultLine:   "stable",
+		UpdatesURL:    "https://updates.test/fixture-updates.json",
+		CAREVersion:   "3.1.0",
 		BackendImage:  "care:clinic",
 		FrontendImage: "care_fe:clinic",
 		BackupImage:   "care-backup:clinic",
@@ -79,7 +112,22 @@ func builderFixture(t *testing.T) *Builder {
 		CaddyImage:    "caddy:2",
 		CorazaVersion: "v2.6.1",
 	}, nil)
-	publish(t, b, lines.Manifest{Lines: []lines.Line{lineFixture("stable", 'a')}})
+	pub, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, client := release.PublicKeys, http.DefaultClient
+	release.PublicKeys = []string{base64.StdEncoding.EncodeToString(pub)}
+	http.DefaultClient = &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		data, err := os.ReadFile(filepath.Join(b.dir, filepath.Base(r.URL.Path)))
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(data))), Header: make(http.Header)}, nil
+	})}
+	t.Cleanup(func() { release.PublicKeys, http.DefaultClient = keys, client })
+	writeBuildFile(t, b.dir, "fixture-key", string(private))
+	publish(t, b, versionFixture('a'))
 	return b
 }
 
@@ -115,14 +163,14 @@ func TestImageKeysTrackBuildInputs(t *testing.T) {
 	}{
 		{"app version", [4]bool{}, func(t *testing.T, b *Builder) { b.set.AppVersion = "0.2.0-dev" }},
 		{"backend release", [4]bool{true}, func(t *testing.T, b *Builder) {
-			l := lineFixture("stable", 'a')
-			l.Backend = lineFixture("x", 'b').Backend
-			publish(t, b, lines.Manifest{Lines: []lines.Line{l}})
+			l := versionFixture('a')
+			l.Backend = versionFixture('b').Backend
+			publish(t, b, l)
 		}},
 		{"frontend release", [4]bool{false, true}, func(t *testing.T, b *Builder) {
-			l := lineFixture("stable", 'a')
-			l.Frontend = lineFixture("x", 'b').Frontend
-			publish(t, b, lines.Manifest{Lines: []lines.Line{l}})
+			l := versionFixture('a')
+			l.Frontend = versionFixture('b').Frontend
+			publish(t, b, l)
 		}},
 		{"plugins", [4]bool{true}, func(t *testing.T, b *Builder) {
 			writeBuildFile(t, b.dir, "backend.env", "ADDITIONAL_PLUGS='[{\"name\":\"two\",\"package_name\":\"pkg_two\"}]'\n")
@@ -176,26 +224,24 @@ func TestPlainImagesUseThePublishedDigest(t *testing.T) {
 	}
 }
 
-func TestUnpublishedLineIsAnError(t *testing.T) {
+func TestUnsupportedCAREVersionIsAnError(t *testing.T) {
 	b := builderFixture(t)
-	b.set.DefaultLine = "missing"
+	b.set.CAREVersion = "3.0.0"
 	if _, err := b.backendPlan(); err == nil {
-		t.Fatal("an unpublished line produced an image")
+		t.Fatal("an unsupported CARE version produced an image")
 	}
 }
 
-func TestLineRequiringANewerAppIsRefused(t *testing.T) {
+func TestUnsignedCAREImagesAreRefused(t *testing.T) {
 	b := builderFixture(t)
-	l := lineFixture("stable", 'a')
-	l.MinAppVersion = "9.0.0"
-	publish(t, b, lines.Manifest{Lines: []lines.Line{l}})
-	if _, err := b.frontendPlan(); err == nil || !strings.Contains(err.Error(), "9.0.0") {
-		t.Fatalf("line for a newer app was accepted: %v", err)
+	writeBuildFile(t, b.dir, "fixture-updates.json.sig", "untrusted")
+	if _, err := b.frontendPlan(); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("unsigned images were accepted: %v", err)
 	}
 }
 
 func TestBuildSettingsMergeOnlyCompileTimeValues(t *testing.T) {
-	rel := lineFixture("stable", 'a').Frontend
+	rel := versionFixture('a').Frontend
 	merged, changed := BuildSettings(rel, map[string]string{
 		"REACT_CARE_API_URL":              "https://x",
 		"REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard",
@@ -375,7 +421,7 @@ func TestBuildLabelsMatchConsumedInputs(t *testing.T) {
 			t.Errorf("build did not label its inputs: %s", key)
 		}
 	}
-	rel := lineFixture("stable", 'a')
+	rel := versionFixture('a')
 	for _, want := range []string{
 		"pull\n" + rel.Backend.Builder + "\n",
 		"BACKEND_BUILDER=" + rel.Backend.Builder + "\n",

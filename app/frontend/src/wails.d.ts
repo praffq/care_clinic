@@ -120,7 +120,6 @@ declare global {
           RemoveApp(): Promise<void>;
           AutostartEnabled(): Promise<boolean>;
           SetAutostart(on: boolean): Promise<void>;
-          UpgradeCareLine(id: string): Promise<void>;
           CareUpdateStatus(): Promise<ChannelStatus>;
           CheckCareUpdate(): Promise<void>;
           DismissCareUpdate(): Promise<void>;

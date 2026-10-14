@@ -54,7 +54,7 @@ func protectedKitPath(rel string) bool {
 	root := strings.Split(rel, "/")[0]
 	switch root {
 	case kitInventoryFile, backupStateDir, "keys", "plugins.json", "plugins-pending.json",
-		"plugin-recovery.json", "restore-state.json", "line.json", "lines.json", "channel.lock":
+		"plugin-recovery.json", "restore-state.json", "care-images.json", "channel.lock":
 		return true
 	}
 	return (rel != ".env" && strings.HasSuffix(rel, ".env")) ||

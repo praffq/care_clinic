@@ -45,7 +45,7 @@ func (a *App) ExportDiagnostics() (err error) {
 		"warning": "Logs may contain sensitive information. Review before sharing.",
 	}
 	lock := compose.ReadLock(a.installDir())
-	metadata["care_line"] = lock.Line
+	metadata["care_version"] = a.pins.CAREVersion
 	metadata["backend_commit"] = lock.Get("backend").Current.Commit
 	metadata["frontend_commit"] = lock.Get("frontend").Current.Commit
 	if err := writeDiagnostics(dir, path, metadata); err != nil {

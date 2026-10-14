@@ -1,19 +1,20 @@
-name: CI
+name: Desktop
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  merge_group:
-  workflow_dispatch:
   workflow_call:
+    inputs:
+      build:
+        type: boolean
+        required: true
+      publish:
+        type: boolean
+        required: true
+      version:
+        type: string
+        required: true
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   GOFLAGS: -mod=readonly
@@ -28,10 +29,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
@@ -53,7 +54,7 @@ jobs:
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           actionlint -color -shellcheck="" -pyflakes=""
-      - uses: golangci/golangci-lint-action@v9.3.0
+      - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: v2.13.2
           working-directory: app
@@ -67,14 +68,14 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           package-manager-cache: false
@@ -91,6 +92,10 @@ jobs:
           docker compose version
       - name: Build from a clean checkout
         run: go build ./...
+      - name: Check host-specific engine boundaries
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=darwin GOARCH=amd64 go vet ./...
       - name: Test with race detection
         run: go test -race -count=1 -timeout=15m ./...
       - name: Check module files were not changed
@@ -101,10 +106,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -115,7 +120,7 @@ jobs:
       - name: Check bindings, typecheck, and build frontend
         working-directory: app/frontend
         run: npm run build
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-frontend
           path: app/frontend/dist/
@@ -124,6 +129,7 @@ jobs:
 
   native:
     name: Build ${{ matrix.target }}
+    if: inputs.build
     needs: [lint, go, frontend]
     timeout-minutes: 30
     strategy:
@@ -134,19 +140,19 @@ jobs:
           - { target: desktop-windows, os: windows-2025, platform: windows/amd64, extra: "-nsis" }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           package-manager-cache: false
       - name: Fetch built desktop frontend
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: desktop-frontend
           path: app/frontend/dist
@@ -202,18 +208,20 @@ jobs:
       - name: Verify Windows version metadata
         if: matrix.target == 'desktop-windows'
         shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          $version = (Select-String -Path deployments/.env -Pattern '^CARE_CLINIC_VERSION=(.+)$').Matches.Groups[1].Value.Trim() -replace '-dev$', ''
+          $version = $env:VERSION
           foreach ($file in @("ci-app/CARE Clinic.exe", "ci-app/uninstall.exe") + (Get-ChildItem ci-artifacts/*.exe).FullName) {
             $info = (Get-Item $file).VersionInfo
             "${file}: product='$($info.ProductName)' company='$($info.CompanyName)' version='$($info.ProductVersion)'"
             if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $version) {
-              throw "Version metadata does not match app/wails.json and deployments/.env"
+              throw "Version metadata does not match versions.toml"
             }
           }
       - name: Upload Windows application for signing
         if: matrix.target == 'desktop-windows'
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-windows-app
           path: ci-app/
@@ -221,7 +229,7 @@ jobs:
           retention-days: 7
       - name: Upload Windows installer inputs
         if: matrix.target == 'desktop-windows'
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-windows-installer-inputs
           path: |
@@ -229,7 +237,7 @@ jobs:
             app/build/windows/installer/
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}-unsigned
           path: ci-artifacts/
@@ -237,7 +245,7 @@ jobs:
           retention-days: 7
 
   required:
-    name: CI
+    name: Desktop checks
     if: always()
     needs: [lint, go, frontend, native]
     runs-on: ubuntu-24.04
@@ -246,5 +254,6 @@ jobs:
       - name: Require every check
         env:
           RESULTS: ${{ toJSON(needs) }}
+          BUILD: ${{ inputs.build }}
         run: |
-          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [name, job] of Object.entries(jobs)) { console.log(`${name}: ${job.result}`); if (job.result !== "success") process.exitCode = 1; }'
+          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [name, job] of Object.entries(jobs)) { const optional = name === "native" && process.env.BUILD === "false" && job.result === "skipped"; if (job.result !== "success" && !optional) process.exitCode = 1; }'

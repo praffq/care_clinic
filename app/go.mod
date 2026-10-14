@@ -4,9 +4,11 @@ go 1.26
 
 require (
 	github.com/Code-Hex/vz/v3 v3.8.0
+	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/compose-spec/compose-go/v2 v2.15.0
 	github.com/hashicorp/mdns v1.0.7
 	github.com/miekg/dns v1.1.72
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/wailsapp/wails/v2 v2.16.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.54.0

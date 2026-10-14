@@ -1,0 +1,108 @@
+name: Engine
+
+on:
+  workflow_call:
+    inputs:
+      build:
+        type: boolean
+        required: true
+      publish:
+        type: boolean
+        required: true
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Engine regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: vm/agent/go.mod
+          cache-dependency-path: vm/agent/go.sum
+      - run: |
+          cd app
+          cd ../vm/agent && go test -race -count=1 ./...
+      - run: python3 -m unittest discover -s vm
+      - name: CI adapter tests
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+  build:
+    name: Build engine ${{ matrix.arch }}
+    if: inputs.build
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04, system: x86_64-linux}
+          - {arch: arm64, runner: ubuntu-24.04-arm, system: aarch64-linux}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Stage sole release version and build existing VM bundle
+        env:
+          VERSION: ${{ inputs.version }}
+          SYSTEM: ${{ matrix.system }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          printf '%s\n' "$VERSION" > vm/VERSION
+          nix build "path:$PWD/vm#packages.$SYSTEM.bundle" --out-link engine-result -L
+          mkdir -p engine-assets
+          cp -L engine-result/*.tar.gz engine-assets/
+          test -s "engine-assets/care-engine-$VERSION-linux-$ARCH.tar.gz"
+          tar -xOf "engine-assets/care-engine-$VERSION-linux-$ARCH.tar.gz" ./manifest.json \
+            | python3 -c 'import json,os,sys; m=json.load(sys.stdin); assert m["version"] == os.environ["VERSION"] and m["arch"] == os.environ["ARCH"]'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engine-${{ matrix.arch }}
+          path: engine-assets/
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    name: Publish immutable engine assets
+    if: inputs.build && inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: engine-*
+          merge-multiple: true
+          path: release-assets
+      - name: Hash every asset and publish without replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/pipeline.py assets --component engine --publish
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: output-engine
+          path: outputs/engine.json
+          if-no-files-found: error
+          retention-days: 7

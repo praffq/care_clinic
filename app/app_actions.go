@@ -75,7 +75,7 @@ func (a *App) runLockedJob(fn func() error, markSetup bool, label string) error 
 			_ = a.withdrawAdvertise()
 		} else if err == nil {
 			switch label {
-			case "start", "restart", "restore", "update", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "upgrade-line", "setup":
+			case "start", "restart", "restore", "update", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "setup":
 				a.advPaused.Store(false)
 			}
 		}
@@ -226,8 +226,6 @@ func failureTitle(label string) string {
 		return "The plugins couldn't be applied"
 	case "update":
 		return "The CARE update didn't finish"
-	case "upgrade-line":
-		return "The CARE release line upgrade didn't finish"
 	case "free-space":
 		return "Cleanup didn't finish"
 	case "engine-update":

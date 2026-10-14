@@ -7,7 +7,7 @@
 // starts with), so a fresh install never needs a local rebuild. Every key in
 // images/frontend/runtime-keys.json is compiled as a placeholder instead and
 // filled in when the container starts. The --json file records both lists for
-// the release-line manifest (runtime_keys and build_env).
+// the signed update manifest (runtime_keys and build_env).
 //
 // Keep the placeholder format in sync with PlaceholderPrefix in
 // app/internal/compose/build.go and images/frontend/configure/main.go.

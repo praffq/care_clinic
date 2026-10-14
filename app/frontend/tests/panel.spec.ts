@@ -658,61 +658,20 @@ test("a failed storage read does not present old backup health or location as cu
 });
 
 
-test("release-line upgrades confirm the safety backup and stay busy until the job finishes", async ({ page }) => {
+test("CARE 3.1 is the only software version and has no version picker", async ({ page }) => {
   await openPanel(page);
-  await page.evaluate(() => {
-    window.careTest.fixtures.channel.line = { id: "2026.1", title: "CARE 2026.1", supported_until: "2026-09-30", expired: true };
-    window.careTest.fixtures.channel.newer_lines = [{ id: "2026.2", title: "CARE 2026.2", expired: false }];
-    window.careTest.fixtures.channel.recommended = "2026.2";
-    window.careTest.fixtures.finishJobs = false;
-  });
   await section(page, "Updates").click();
-  await software(page).getByRole("button", { name: "Check CARE software updates" }).click();
-  await expect(software(page)).toContainText("Supported until 2026-09-30");
-  await expect(software(page)).toContainText("no longer supported");
-  await expect(software(page)).toContainText("Recommended");
-  const upgrade = software(page).getByRole("button", { name: "Upgrade to CARE 2026.2", exact: true });
-  await upgrade.click();
-  const dialog = page.getByRole("alertdialog");
-  await expect(dialog).toContainText("encrypted safety backup is taken first");
-  await expect(dialog).toContainText("offline for a few minutes");
-  await expect(dialog).toContainText("Going back requires restoring that backup");
-  await dialog.getByRole("button", { name: "Not now", exact: true }).click();
-  expect(await calls(page, "UpgradeCareLine")).toBe(0);
-  await upgrade.click();
-  await dialog.getByRole("button", { name: "Upgrade CARE", exact: true }).dblclick();
-  await expect.poll(() => calls(page, "UpgradeCareLine")).toBe(1);
-  expect(await page.evaluate(() => window.careTest.calls.find((call) => call.method === "UpgradeCareLine")?.args)).toEqual(["2026.2"]);
-  await expect(software(page)).toContainText("Upgrading the CARE release line");
-  await expect(upgrade).toBeDisabled();
-  await expect(software(page).getByRole("button", { name: "Check CARE software updates" })).toBeDisabled();
-  await page.evaluate(() => window.careTest.finishJob("upgrade-line"));
-  await expect(software(page)).toContainText("CARE 2026.2");
-  await expect(software(page)).not.toContainText("no longer supported");
-  await expect(software(page)).not.toContainText("Newer CARE version available");
-  await expect(software(page).getByRole("button", { name: "Check CARE software updates" })).toBeEnabled();
+  await expect(software(page)).toContainText("CARE 3.1.0");
+  await expect(software(page).getByRole("button", { name: /Upgrade/ })).toHaveCount(0);
+  await expect(software(page).getByRole("combobox")).toHaveCount(0);
 });
 
-test("pending release lines appear alongside normal patch updates", async ({ page }) => {
+test("CARE patch updates remain installable", async ({ page }) => {
   await openPanel(page, "panel-update");
-  await page.evaluate(() => { window.careTest.fixtures.channel.pending_line = "2026.2"; });
   await section(page, "Updates").click();
   await software(page).getByRole("button", { name: "Check CARE software updates" }).click();
-  await expect(software(page)).toContainText("Release line 2026.2 is ready to install");
+  await expect(software(page)).toContainText("An update is ready");
   await expect(software(page).getByRole("button", { name: "Install now", exact: true })).toBeEnabled();
-});
-
-test("unsupported CARE lines block the application install and display the reason", async ({ page }) => {
-  await openPanel(page);
-  await page.evaluate(() => window.careTest.setUpdate({
-    current: "0.1.5", version: "0.2.0", available: true, asset: "clinic.zip", size: 10,
-    notes_url: "", blocked: "Upgrade the clinic's CARE release line before installing CARE Clinic 0.2.0.",
-  }));
-  await section(page, "Updates").click();
-  await desktop(page).getByRole("button", { name: "Check CARE Clinic updates" }).click();
-  await expect(desktop(page)).toContainText("Upgrade the clinic's CARE release line before installing");
-  await expect(desktop(page).getByRole("button", { name: "Update CARE Clinic", exact: true })).toBeDisabled();
-  expect(await calls(page, "InstallAppUpdate")).toBe(0);
 });
 
 test("Linux requirements keep Docker labels and open the manual installation instructions", async ({ page }) => {

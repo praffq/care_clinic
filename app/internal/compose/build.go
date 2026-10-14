@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
-	"github.com/ohcnetwork/care_desktop/app/internal/lines"
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
@@ -78,17 +78,7 @@ func (b *Builder) logln(s string) {
 	}
 }
 
-func (b *Builder) linesSource() string { return lines.Source(b.set.LinesURL) }
-
-// LineID is the release line this clinic follows.
-func (b *Builder) LineID() string {
-	if id := ReadLock(b.dir).Line; id != "" {
-		return id
-	}
-	return b.set.DefaultLine
-}
-
-// target picks the release a service should run, and the line it came from
+// target picks the release a service should run, and the version it came from
 // when it was not already recorded in the lock.
 func (b *Builder) target(service string) (Release, string, error) {
 	if rel, ok := b.staged[service]; ok {
@@ -104,25 +94,17 @@ func (b *Builder) target(service string) (Release, string, error) {
 	if c.Current.Image != "" {
 		return c.Current, "", nil
 	}
-	id := b.LineID()
-	m, err := lines.Load(b.dir, b.linesSource())
+	m, err := careversions.Load(b.dir, b.set)
 	if err != nil {
-		return Release{}, "", fmt.Errorf("couldn't download the list of CARE releases; check the network connection: %w", err)
-	}
-	l, ok := m.Line(id)
-	if !ok {
-		return Release{}, "", fmt.Errorf("CARE release line %q is not published", id)
-	}
-	if err := l.SupportsApp(b.set.AppVersion); err != nil {
-		return Release{}, "", err
+		return Release{}, "", fmt.Errorf("couldn't load CARE image metadata: %w", err)
 	}
 	if service == Frontend {
-		return l.Frontend, id, nil
+		return m.Frontend, m.Version, nil
 	}
-	return l.Backend, id, nil
+	return m.Backend, m.Version, nil
 }
 
-func (b *Builder) recordCurrent(service string, rel Release, line string) error {
+func (b *Builder) recordCurrent(service string, rel Release, version string) error {
 	if b.pending {
 		return nil
 	}
@@ -133,8 +115,8 @@ func (b *Builder) recordCurrent(service string, rel Release, line string) error 
 			c.Next, c.Declined = nil, ""
 		}
 		l.Set(service, c)
-		if l.Line == "" && line != "" {
-			l.Line = line
+		if l.Version == "" && version != "" {
+			l.Version = version
 		}
 	})
 	if err == nil {
@@ -158,7 +140,7 @@ func (b *Builder) FrontendRef() string {
 type plan struct {
 	service string
 	rel     Release
-	line    string
+	version string
 	tag     string
 	key     string
 	build   func() error
@@ -169,11 +151,11 @@ func (b *Builder) backendPlan() (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	rel, line, err := b.target(Backend)
+	rel, version, err := b.target(Backend)
 	if err != nil {
 		return plan{}, err
 	}
-	p := plan{service: Backend, rel: rel, line: line, tag: b.suffixed(b.set.BackendImage), key: rel.Image}
+	p := plan{service: Backend, rel: rel, version: version, tag: b.suffixed(b.set.BackendImage), key: rel.Image}
 	if plugs == "" {
 		p.build = func() error { return b.relabel(rel.Image, p.tag, p.key, "backend") }
 		return p, nil
@@ -211,7 +193,7 @@ func (b *Builder) rebuild(p plan, err error) error {
 	if err := p.build(); err != nil {
 		return err
 	}
-	return b.recordCurrent(p.service, p.rel, p.line)
+	return b.recordCurrent(p.service, p.rel, p.version)
 }
 
 func (b *Builder) ensurePlan(p plan, err error) error {
@@ -221,7 +203,7 @@ func (b *Builder) ensurePlan(p plan, err error) error {
 	if err := b.ensure(p.tag, p.key, p.service, p.build); err != nil {
 		return err
 	}
-	return b.recordCurrent(p.service, p.rel, p.line)
+	return b.recordCurrent(p.service, p.rel, p.version)
 }
 
 func (b *Builder) current(p plan, err error) (bool, error) {
@@ -251,11 +233,11 @@ func (b *Builder) frontendPlan() (plan, error) {
 	if err != nil {
 		return plan{}, fmt.Errorf("frontend.env: %w", err)
 	}
-	rel, line, err := b.target(Frontend)
+	rel, version, err := b.target(Frontend)
 	if err != nil {
 		return plan{}, err
 	}
-	p := plan{service: Frontend, rel: rel, line: line, tag: b.suffixed(b.set.FrontendImage), key: rel.Image}
+	p := plan{service: Frontend, rel: rel, version: version, tag: b.suffixed(b.set.FrontendImage), key: rel.Image}
 	merged, changed := BuildSettings(rel, env)
 	if !changed {
 		p.build = func() error { return b.relabel(rel.Image, p.tag, p.key, "frontend") }
