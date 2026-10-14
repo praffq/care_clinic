@@ -11,7 +11,7 @@
 #     -t <registry>/care-clinic-frontend:<sha>
 #
 # clinic.json must sit next to this file: images/scripts/frontend-env.mjs writes it.
-# Build each architecture natively or under emulation: unlike care_fe's own
+# CI builds each architecture on a native runner: unlike care_fe's own
 # Dockerfile the builder stage is not pinned to the build platform, so the
 # published builder image runs on the clinic's architecture.
 

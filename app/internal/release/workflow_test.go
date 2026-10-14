@@ -81,6 +81,18 @@ func TestCIIncludesGuestAndQEMUPackagingRegressions(t *testing.T) {
 	}
 }
 
+func TestCAREImagesBuildBothArchitecturesNatively(t *testing.T) {
+	data := workflow(t, "care-images.yml")
+	requireText(t, data, "arch: amd64", "runner: ubuntu-24.04",
+		"arch: arm64", "runner: ubuntu-24.04-arm", "runs-on: ${{ matrix.runner }}",
+		"IMAGE_ARCH: ${{ matrix.arch }}", "fail-fast: false",
+		"name: output-images-amd64", "name: output-images-arm64",
+		"build-images.py --assemble", "name: output-images", "needs: build")
+	if strings.Contains(data, "setup-qemu-action") {
+		t.Fatal("CARE's native bundler must not execute under QEMU in image CI")
+	}
+}
+
 func TestThirdPartyActionsUseImmutableSHAs(t *testing.T) {
 	for _, name := range workflowNames {
 		data := workflow(t, name)
