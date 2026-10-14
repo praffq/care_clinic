@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
-	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
@@ -23,10 +23,10 @@ import (
 )
 
 type App struct {
-	ctx       context.Context
-	installFS fs.FS
-	pins      *release.Pins
-	log       *applog.Logger
+	ctx               context.Context
+	installFS         fs.FS
+	pins              *release.Pins
+	log               *applog.Logger
 	updateCoordinator *updates.Coordinator
 
 	cfgMu      sync.RWMutex
@@ -53,7 +53,7 @@ type App struct {
 	quitSequence  uint64
 	quitRequest   *QuitRequest
 
-	stagedUpdateMu sync.Mutex
+	stagedUpdateMu   sync.Mutex
 	stagedAppUpdates map[string]string
 
 	confirmationMu       sync.Mutex
