@@ -111,17 +111,29 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		"secrets.MACOS_CERT_P12", "secrets.MACOS_CERT_PASSWORD", "secrets.MACOS_SIGN_IDENTITY",
 		"secrets.APPSTORE_PRIVATE_KEY", "secrets.APPSTORE_KEY_ID", "secrets.APPSTORE_ISSUER_ID",
 		"secrets.SIGNPATH_API_TOKEN", "Get-AuthenticodeSignature", "SIGNED_UNINSTALLER=",
-		"environment: release-signing",
+		"SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}",
+		"wait-for-completion-timeout-in-seconds: \"3600\"",
+		"output-artifact-directory: signed-app",
+		"output-artifact-directory: signed-installer",
 	)
+	if strings.Contains(workflow(t, "desktop.yml"), "environment:") {
+		t.Fatal("native signing must retain its existing repository credential scope")
+	}
 	data, err := os.ReadFile("../../../.github/scripts/package-macos.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	requireText(t, string(data), "--options runtime", `notarize "$dmg"`,
 		`xcrun stapler validate "$app"`, `xcrun stapler validate "$dmg"`,
-		"--entitlements app/build/darwin/entitlements.plist", "trap cleanup EXIT",
-		"macOS signing is partially configured",
+		"trap cleanup EXIT", `keychain="$RUNNER_TEMP/signing.keychain-db"`,
+		"security list-keychains -d user -s", "security find-identity -v -p codesigning",
+		`if [ "$SIGN_MACOS" = "true" ]`, "--no-wait --output-format json",
+		"for attempt in 1 2 3 4 5 6", `notarytool wait "$id" "${notary[@]}" --timeout 2h`,
+		`notarytool info "$id"`, `notarytool log "$id"`,
 	)
+	if strings.Contains(string(data), "--entitlements") || strings.Contains(string(data), "--wait --timeout") {
+		t.Fatal("native macOS signing arguments must not change during pipeline redesign")
+	}
 }
 
 func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {

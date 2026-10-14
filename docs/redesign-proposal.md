@@ -54,3 +54,11 @@ No unsigned fallback exists. For rotation, first ship a desktop trusting current
 and next operator keys, then switch the protected signing secret to the next
 key. Keep the previous public key until installed desktops can accept its
 replacement. Never put private keys in release files, workflow logs or artifacts.
+
+Native application signing is separate from feed signing. The existing Windows
+SignPath sequence signs the application and uninstaller, rebuilds the installer,
+then signs that installer. Existing macOS certificate and App Store Connect key
+secrets retain their repository scope, keychain setup, six-attempt notarization
+wait loop, stapling and verification. `MACOS_CERT_P12` still enables Apple
+signing; absent native credentials retain the existing unsigned/ad-hoc behavior.
+Only the new detached feed signature requires the `release-signing` environment.

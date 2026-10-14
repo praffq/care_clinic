@@ -264,7 +264,6 @@ jobs:
     needs: required
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: release-signing
     outputs:
       windows: ${{ steps.config.outputs.windows }}
     steps:
@@ -290,7 +289,6 @@ jobs:
     if: needs.signing.outputs.windows == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-    environment: release-signing
     permissions:
       actions: read
       contents: read
@@ -350,20 +348,24 @@ jobs:
           $app = Join-Path $env:GITHUB_WORKSPACE "signed-app\CARE Clinic.exe"
           $uninstaller = Join-Path $env:GITHUB_WORKSPACE "signed-app\uninstall.exe"
           foreach ($file in @($app, $uninstaller)) {
-            if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "$file has an invalid signature" }
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne 'Valid') { throw "$file signature is $($signature.Status): $($signature.StatusMessage)" }
+            "$file signed by $($signature.SignerCertificate.Subject)"
           }
           git diff --exit-code -- app/build/windows/installer/project.nsi
-          if ($LASTEXITCODE -ne 0) { throw "Installer inputs differ from source" }
+          if ($LASTEXITCODE -ne 0) { throw "Installer inputs do not match the checked-out project.nsi" }
           New-Item -ItemType Directory -Force app/build/bin, installer | Out-Null
           Push-Location app/build/windows/installer
           makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DSIGNED_UNINSTALLER=$uninstaller" project.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           Pop-Location
-          $built = @(Get-ChildItem app/build/bin/*installer.exe)
-          if ($built.Count -ne 1) { throw "Expected exactly one installer" }
-          $info = $built[0].VersionInfo
-          if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $env:VERSION) { throw "Installer version metadata differs from versions.toml" }
-          Copy-Item $built[0].FullName "installer/CARE-Clinic-$env:VERSION-windows-amd64-setup.exe"
+          $built = Get-ChildItem app/build/bin/*installer.exe
+          if ($built.Count -ne 1) { throw "Expected one installer, found $($built.Count)" }
+          $info = $built.VersionInfo
+          if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $env:VERSION) {
+            throw "Installer metadata: product='$($info.ProductName)' company='$($info.CompanyName)' version='$($info.ProductVersion)'"
+          }
+          Copy-Item $built.FullName "installer/CARE-Clinic-$env:VERSION-windows-amd64-setup.exe"
       - id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -376,7 +378,9 @@ jobs:
     needs: windows-installer
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-    environment: release-signing
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
@@ -407,7 +411,6 @@ jobs:
           || needs.signing.outputs.windows != 'true' && needs.sign-windows-installer.result == 'skipped')
     runs-on: macos-15
     timeout-minutes: 360
-    environment: release-signing
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -423,6 +426,7 @@ jobs:
       - name: Sign macOS application, notarize and package
         env:
           VERSION: ${{ inputs.version }}
+          SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
