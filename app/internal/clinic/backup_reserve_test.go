@@ -29,11 +29,14 @@ func TestWindowsBackupReservesSharedEngineCapacity(t *testing.T) {
 		{6291456, 0},
 	} {
 		t.Run(strconv.Itoa(tt.free), func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			output := f.start(t, "manual", []string{"once", "manual-20260102-030405"},
-				"BACKUP_MIN_FREE_KB="+backupReserveKB("windows"),
-				"BACKUP_TEST_FREE_KB="+strconv.Itoa(tt.free)).wait(t, tt.code)
-			if tt.code != 0 && strings.Contains(f.trace(t), "manual pg_dump\n") {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			output, err := f.run(t, []string{"BACKUP_MIN_FREE_KB=" + backupReserveKB("windows"),
+				"FAKE_FREE_KB=" + strconv.Itoa(tt.free)}, "backup.sh", "now")
+			if (err == nil) != (tt.code == 0) {
+				t.Fatalf("free=%d: %v\n%s", tt.free, err, output)
+			}
+			if tt.code != 0 && strings.Contains(readTrace(t, f), "pg_basebackup ") {
 				t.Fatalf("backup started below reserve-plus-estimate boundary:\n%s", output)
 			}
 			if (tt.code == 0) != strings.Contains(output, "SUCCESS") {
