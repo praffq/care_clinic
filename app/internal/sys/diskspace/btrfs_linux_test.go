@@ -14,7 +14,7 @@ import (
 
 func TestBtrfsFsInfoLayoutAndIdentity(t *testing.T) {
 	var a btrfsFsInfoArgs
-	if unsafe.Sizeof(a) != 1024 || unsafe.Offsetof(a.FSID) != 16 || unsafe.Offsetof(a.Flags) != 40 || unsafe.Offsetof(a.MetadataUUID) != 56 {
+	if unsafe.Sizeof(a) != 1024 || unsafe.Offsetof(a.FSID) != 16 || unsafe.Offsetof(a.Flags) != 48 || unsafe.Offsetof(a.MetadataUUID) != 64 {
 		t.Fatalf("struct layout does not match btrfs_ioctl_fs_info_args")
 	}
 	if btrfsIocFsInfo != 0x8400941f {
