@@ -73,7 +73,21 @@ pg_dump)
 pg_restore)
 	case "$*" in *--list*) fails list && exit 1; exit 0 ;; esac
 	fails trial && exit 1; exit 0 ;;
+gosu) shift; exec "$@" ;;
+chown) exit 0 ;;
+pg_ctl)
+	case "$*" in
+	*" start"*)
+		while [ "$1" != -l ]; do shift; done
+		printf '%s\n' "${FAKE_RECOVERY_LOG:-}" > "$2" ;;
+	esac
+	exit 0 ;;
 psql)
+	case "$*" in
+	*pg_is_in_recovery*) echo f; exit 0 ;;
+	*pg_last_xact_replay_timestamp*) echo "2026-01-02 03:10:00+00"; exit 0 ;;
+	*"-XtAc select 1") echo 1; exit 0 ;;
+	esac
 	while [ "$#" -gt 0 ] && [ "$1" != -c ]; do
 		[ "$1" = -d ] && { shift; db=$1; }
 		shift
@@ -1020,6 +1034,93 @@ func TestBackupScriptManualSuccessClearsFailedStatus(t *testing.T) {
 	}
 	if !strings.Contains(f.status(t), "state=ok\n") {
 		t.Fatalf("a successful backup left the failed status:\n%s", f.status(t))
+	}
+}
+
+func TestBackupScriptReportsStatusWriteFailures(t *testing.T) {
+	for _, blocked := range []string{".backup-status.tmp", ".backup-ok-at.tmp"} {
+		t.Run(blocked, func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			// A directory where the temp file belongs makes the write fail.
+			if err := os.MkdirAll(filepath.Join(f.state, blocked, "x"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run(t, nil, "backup.sh", "now")
+			if err == nil {
+				t.Fatalf("an unsaved status was reported as success:\n%s", out)
+			}
+			if !strings.Contains(out, "ERROR: could not save") {
+				t.Fatalf("status write failure was not logged:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestBackupScriptReportsMissingStateFolder(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if err := os.RemoveAll(f.state); err != nil {
+		t.Fatal(err)
+	}
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "backup status folder") {
+		t.Fatalf("a missing status folder was not reported: %v\n%s", err, out)
+	}
+}
+
+func TestBackupCycleRefusesLaterTimelineChangeFiles(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	f.archive(t, "000000020000000000000005")
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "later database timeline") {
+		t.Fatalf("a branched change-file chain was accepted: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(f.backups, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("a set was published over a branched chain: %v", err)
+	}
+}
+
+// pitr-stage.sh must not hand a database to the staged swap unless
+// PostgreSQL reports that replay stopped at the requested moment.
+func TestPITRStageRequiresReachedTarget(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if out, err := f.run(t, nil, "backup.sh", "now"); err != nil {
+		t.Fatalf("cycle: %v\n%s", err, out)
+	}
+	for _, tool := range []string{"gosu", "chown", "pg_ctl"} {
+		if err := os.WriteFile(filepath.Join(f.bin, tool), []byte(fakeBackupTools), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, target, log string
+		ok                bool
+	}{
+		{"reached", "2026-01-02 03:10:00+00", "LOG:  recovery stopping before commit of transaction 812, time 2026-01-02 03:10:04+00", true},
+		{"ran out of change files", "2026-01-02 03:10:00+00", "LOG:  redo done at 0/5000060", false},
+		{"latest", "latest", "LOG:  redo done at 0/5000060", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stage := filepath.Join(f.root, "stage-"+strings.ReplaceAll(tc.name, " ", "-"))
+			if err := os.MkdirAll(stage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run(t, []string{"CARE_RESTORE_DIR=" + stage, "CARE_RESTORE_KEY=" + f.key,
+				"FAKE_RECOVERY_LOG=" + tc.log}, "pitr-stage.sh", tc.target)
+			_, dumpErr := os.Stat(filepath.Join(stage, "database.dump"))
+			if tc.ok && (err != nil || dumpErr != nil) {
+				t.Fatalf("staging failed: %v %v\n%s", err, dumpErr, out)
+			}
+			if !tc.ok && (err == nil || dumpErr == nil || !strings.Contains(out, "replay ended before reaching")) {
+				t.Fatalf("an unreached target was staged for the swap: %v %v\n%s", err, dumpErr, out)
+			}
+			if _, err := os.Stat(filepath.Join(stage, "recovery-key.pem")); !os.IsNotExist(err) {
+				t.Fatalf("the recovery key was left in the stage: %v", err)
+			}
+		})
 	}
 }
 

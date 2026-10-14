@@ -5,7 +5,7 @@ import type {
   AppState,
   AppUpdate,
   Backup,
-  BackupPolicy,
+  BackupHealth,
   BackupSpace,
   CarePlugin,
   PluginCatalogEntry,
@@ -102,7 +102,10 @@ declare global {
           ListBackups(): Promise<Backup[]>;
           GetBackupDir(): Promise<string>;
           ExportBackupRecovery(adminPassword: string, recoveryFile: string): Promise<boolean>;
-          GetBackupPolicy(): Promise<BackupPolicy>;
+          GetBackupHealth(): Promise<BackupHealth>;
+          SetBackupCopyDir(dir: string): Promise<string>;
+          ClearBackupCopyDir(): Promise<void>;
+          RestorePointInTime(target: string, recoveryFile: string, adminPassword: string): Promise<void>;
           SetBackupDir(dir: string): Promise<string>;
           ChooseBackupFile(): Promise<string>;
           InspectBackupFile(path: string): Promise<ImportedBackup>;

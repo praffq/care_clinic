@@ -24,7 +24,7 @@ async function openBackups(page: Page, scenario = "panel-healthy") {
   await page.goto(`/tests/fixtures/index.html?scenario=${scenario}`);
   await page.getByRole("button", { name: "Backups", exact: true }).click();
   await expect(root(page).getByRole("button", { name: "Change folder", exact: true })).toBeEnabled();
-  await expect(root(page).getByText("Kept forever", { exact: true })).toBeVisible();
+  await expect(root(page).getByText("Only the newest verified backup is kept", { exact: true })).toBeVisible();
 }
 
 test("backup key re-download works with only the password after the original PEM is deleted", async ({ page }) => {
@@ -223,7 +223,6 @@ for (const viewport of [{ width: 1100, height: 700 }, { width: 720, height: 560 
       preview.fixtures.backups = backups;
       preview.fixtures.storage.backup = {
         ...preview.fixtures.storage.backup, total: 1_000 * 2 ** 30, need: 1.3 * 2 ** 30,
-        days_left: 1_100,
       };
       preview.fixtures.storage.last_run.at = Date.parse("2026-10-01T02:00:00Z") / 1000;
       preview.fixtures.storage.newest_backup_at = preview.fixtures.storage.last_run.at;
@@ -254,19 +253,135 @@ for (const viewport of [{ width: 1100, height: 700 }, { width: 720, height: 560 
   });
 }
 
-test("schedule and retention use native settings, not an invented clock", async ({ page }) => {
+test("latest-only backups show no retention setting and report verified health", async ({ page }) => {
   await openBackups(page);
-  await expect(root(page)).toContainText("Automatic every 24 hours");
-  await page.evaluate(() => { window.careTest.fixtures.backupPolicy.retention_days = 7; });
+  await expect(root(page)).toContainText("Full copy every night");
+  await expect(root(page)).not.toContainText(/Kept for|Kept forever|retention/i);
+  const health = root(page).getByRole("region", { name: "Backup health" });
+  await expect(health).toContainText("✓ Verified");
+  await expect(health).toContainText("Changes saved through");
+  await expect(health).toContainText("Passed");
+  expect(await callCount(page, "GetBackupPolicy")).toBe(0);
+  expect(await callCount(page, "GetBackupHealth")).toBeGreaterThan(0);
+
+  await page.evaluate(() => window.careTest.failNext("GetBackupHealth", "read wal-status: private detail"));
   await refresh(page);
-  await expect(root(page).getByText("Kept for 7 days", { exact: true })).toBeVisible();
-  await expect(root(page).getByText("Kept forever", { exact: true })).toHaveCount(0);
-  await expect(root(page)).not.toContainText("every night");
-  await page.evaluate(() => window.careTest.failNext("GetBackupPolicy", "couldn't read backend.env: private setting details"));
+  await expect(root(page).getByRole("alert").first()).toContainText("Backup status couldn't be read");
+  await expect(root(page)).not.toContainText("private detail");
+});
+
+test("backup alerts surface failures, change-file gaps, stale changes and a missing copy drive", async ({ page }) => {
+  await openBackups(page);
+  await page.evaluate(() => {
+    const h = window.careTest.fixtures.storage.health;
+    h.verified = false;
+    h.alerts = [
+      { code: "backup_failed", level: "critical", message: "Last night's backup failed; the previous verified backup was kept." },
+      { code: "wal_gap", level: "critical", message: "A saved change file is missing." },
+      { code: "wal_stale", level: "low", message: "Changes haven't been saved for a while." },
+      { code: "copy_missing", level: "low", message: "The backup copy drive is disconnected. Last copied yesterday." },
+    ];
+    h.copy = { ...h.copy, state: "disconnected", dir: "/Volumes/USB", last_copied_at: Math.floor(Date.now() / 1000) - 86_400 };
+  });
   await refresh(page);
-  await expect(root(page).getByRole("alert")).toContainText("The backup settings couldn't be read");
-  await expect(root(page)).not.toContainText("Kept forever");
-  await expect(root(page)).not.toContainText("private setting details");
+  for (const text of ["previous verified backup was kept", "saved change file is missing", "haven't been saved", "drive is disconnected"]) {
+    await expect(root(page)).toContainText(text);
+  }
+  const copy = root(page).getByRole("region", { name: "Backup copy" });
+  await expect(copy).toContainText("Disconnected");
+  await expect(copy).toContainText("Last copied");
+  await expect(copy).toContainText("catches up when the drive is connected again");
+  await expect(root(page).getByRole("region", { name: "Backup health" })).toContainText("Not verified");
+});
+
+test("optional copy drive can be chosen, shows status and can be turned off", async ({ page }) => {
+  await openBackups(page);
+  const copy = root(page).getByRole("region", { name: "Backup copy" });
+  await expect(copy).toContainText("Not set up");
+  await page.evaluate(() => { window.careTest.fixtures.folder = "/Volumes/CLINIC-USB"; });
+  await copy.getByRole("button", { name: "Choose drive", exact: true }).click();
+  await expect(copy).toContainText("/Volumes/CLINIC-USB");
+  await expect(copy).toContainText("Up to date");
+  expect(await page.evaluate(() => window.careTest.calls.find((c) => c.method === "SetBackupCopyDir")?.args)).toEqual(["/Volumes/CLINIC-USB"]);
+  await copy.getByRole("button", { name: "Stop copying", exact: true }).click();
+  await expect(copy).toContainText("Not set up");
+  expect(await callCount(page, "ClearBackupCopyDir")).toBe(1);
+
+  await page.evaluate(() => window.careTest.failNext("SetBackupCopyDir", "the backup copy must be in a different place from the backups"));
+  await copy.getByRole("button", { name: "Choose drive", exact: true }).click();
+  await expect(root(page)).toContainText("The backup copy folder wasn't changed");
+});
+
+test("restore to a point in time sends latest or a bounded time through the staged restore", async ({ page }) => {
+  await openBackups(page);
+  const card = root(page).locator(".care-backups-pitr-card");
+  await card.getByRole("button", { name: "Choose time", exact: true }).click();
+  await expect(dialog(page)).toContainText("Restore the database to a point in time?");
+  await expect(dialog(page)).toContainText("only replaces today's records after it checks out");
+  await expect(replace(page)).toBeDisabled();
+  await dialog(page).getByRole("button", { name: "Choose recovery file", exact: true }).click();
+  await password(page).fill(samplePassword);
+  await acknowledge(page).check();
+  await expect(replace(page)).toBeEnabled();
+
+  await dialog(page).getByRole("radio", { name: "A specific time" }).check();
+  await expect(replace(page)).toBeDisabled();
+  const input = dialog(page).getByLabel("Restore time");
+  await input.fill("2000-01-01T00:00");
+  await expect(dialog(page)).toContainText("Choose a time between");
+  await expect(replace(page)).toBeDisabled();
+  const local = (offset: "earliest" | "beyond") => page.evaluate((which) => {
+    const h = window.careTest.fixtures.storage.health;
+    // "beyond" is after the archived saved-through time, which replay cannot reach.
+    const d = new Date((which === "earliest" ? h.earliest_restore_at + 600 : h.saved_through + 120) * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }, offset);
+  await input.fill(await local("beyond"));
+  await expect(dialog(page)).toContainText("the latest saved change");
+  await expect(replace(page)).toBeDisabled();
+  const target = await local("earliest");
+  await input.fill(target);
+  await expect(replace(page)).toBeEnabled();
+  await replace(page).click();
+  await expect(dialog(page)).toBeHidden();
+  const args = await page.evaluate(() => window.careTest.calls.find((c) => c.method === "RestorePointInTime")?.args);
+  expect(args?.[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/);
+  expect(args?.slice(1)).toEqual(["/test-fixtures/recovery/CARE-backup-recovery.pem", samplePassword]);
+  expect(await callCount(page, "RestoreFromFile")).toBe(0);
+});
+
+test("point-in-time restore can be cancelled and is unavailable with a change-file gap", async ({ page }) => {
+  await openBackups(page);
+  const card = root(page).locator(".care-backups-pitr-card");
+  await card.getByRole("button", { name: "Choose time", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Choose recovery file", exact: true }).click();
+  await password(page).fill(samplePassword);
+  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog(page)).toBeHidden();
+  expect(await callCount(page, "RestorePointInTime")).toBe(0);
+
+  await page.evaluate(() => { window.careTest.fixtures.storage.health.wal.gap = "000000010000000000000007"; });
+  await refresh(page);
+  await expect(card.getByRole("button", { name: "Choose time", exact: true })).toBeDisabled();
+  await expect(card).toContainText("a saved change file is missing");
+});
+
+test("restore to the latest saved change and unavailable before a verified backup", async ({ page }) => {
+  await openBackups(page);
+  const card = root(page).locator(".care-backups-pitr-card");
+  await card.getByRole("button", { name: "Choose time", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Choose recovery file", exact: true }).click();
+  await password(page).fill(samplePassword);
+  await acknowledge(page).check();
+  await replace(page).click();
+  await expect(dialog(page)).toBeHidden();
+  expect(await page.evaluate(() => window.careTest.calls.find((c) => c.method === "RestorePointInTime")?.args?.[0])).toBe("latest");
+
+  await openBackups(page);
+  await page.evaluate(() => { window.careTest.fixtures.storage.health.verified = false; });
+  await refresh(page);
+  await expect(root(page).locator(".care-backups-pitr-card").getByRole("button", { name: "Choose time", exact: true })).toBeDisabled();
 });
 
 test("empty and unreadable backup lists are distinct", async ({ page }) => {
@@ -849,10 +964,10 @@ test("presentation keeps native diagnostic detail out of every error message", (
 test("presentation derives capacity only from reported storage fields", () => {
   const space = {
     dir: "/Volumes/USB", free: 1000, total: 2000, need: 100, set_bytes: 50,
-    days_left: 400, shares_docker_drive: false, level: "ok" as const, message: "USB hardware guess",
+    shares_docker_drive: false, level: "ok" as const, message: "USB hardware guess",
   };
-  expect(backupSpaceSummary(space)).toBe("Room for about 1 year of backups");
-  expect(backupSpaceSummary({ ...space, days_left: 728 })).toBe("Room for about 2 years of backups");
+  expect(backupSpaceSummary(space)).toBe("Room for the next backup; only the newest verified backup is kept");
+  expect(backupSpaceSummary({ ...space, free: 150 })).toBe("Room for only one more backup");
   expect(backupSpaceSummary({ ...space, free: 50 })).toBe("Not enough room for the next backup");
   expect(backupSpaceSummary({ ...space, level: "unknown", total: 0 }))
     .toBe("Free space couldn't be checked");

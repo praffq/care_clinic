@@ -3,9 +3,12 @@ package main
 import (
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/backupcopy"
 	"github.com/ohcnetwork/care_desktop/app/internal/health"
 	"github.com/ohcnetwork/care_desktop/app/internal/storage"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
@@ -25,6 +28,53 @@ type storageWatch struct {
 	alerted    string
 	notifyOnce sync.Once
 	notifyOK   bool
+	copying    bool
+	copyErr    string
+}
+
+// backupHealth reads the backup state and adds failures the app itself saw
+// but could not record in the state folder.
+func (a *App) backupHealth(source, stateDir string, running bool, now time.Time) storage.BackupHealth {
+	h := storage.ReadHealth(source, stateDir, running, now)
+	if a.loadConfig().BackupCopyDir == "" && h.Copy.State != "off" {
+		h.Copy = storage.CopyStatus{State: "off", CheckedAt: h.Copy.CheckedAt}
+		h.Alerts = slices.DeleteFunc(h.Alerts, func(al storage.Alert) bool { return strings.HasPrefix(al.Code, "copy_") })
+	}
+	a.store.mu.Lock()
+	copyErr := a.store.copyErr
+	a.store.mu.Unlock()
+	if copyErr != "" {
+		h.Alerts = append(h.Alerts, storage.Alert{Code: "copy_status_unwritable", Level: storage.LevelLow,
+			Message: "The backup copy status could not be saved: " + copyErr})
+	}
+	return h
+}
+
+// startBackupCopy brings the optional second copy up to date in the
+// background; a large first copy must never hold up the storage check.
+func (a *App) startBackupCopy(source, stateDir, dest string) {
+	a.store.mu.Lock()
+	if a.store.copying {
+		a.store.mu.Unlock()
+		return
+	}
+	a.store.copying = true
+	a.store.mu.Unlock()
+	go func() {
+		st, err := backupcopy.Run(source, stateDir, dest, time.Now())
+		if err != nil {
+			a.logln("backup copy: " + err.Error())
+			st.State, st.Message = "failed", err.Error()
+		}
+		a.store.mu.Lock()
+		a.store.copying = false
+		a.store.copyErr = ""
+		if err != nil {
+			a.store.copyErr = err.Error()
+		}
+		a.store.mu.Unlock()
+		a.emit("care-backup-copy", st)
+	}()
 }
 
 func (a *App) DiskStatus() storage.InstallResult {
@@ -97,10 +147,10 @@ func (a *App) backupSpace(target string) (storage.BackupSpace, error) {
 	e := a.engine()
 	u, err := diskspace.Of(target)
 	if err != nil {
-		return storage.BackupSpace{Dir: target, DaysLeft: -1, Level: storage.LevelUnknown,
+		return storage.BackupSpace{Dir: target, Level: storage.LevelUnknown,
 			Message: "Couldn't measure free space: " + err.Error()}, err
 	}
-	daily, _, found, err := storage.LatestSets(e.BackupDirPath())
+	set, found, err := storage.LatestSet(e.BackupDirPath())
 	if err != nil {
 		found = false
 	}
@@ -108,7 +158,7 @@ func (a *App) backupSpace(target string) (storage.BackupSpace, error) {
 	if docker, err := diskspace.Of(a.dockerDataDir()); err == nil {
 		shares = docker.Volume == u.Volume
 	}
-	return storage.AssessBackup(target, u, daily, found, e.BackupKeepsForever(), shares), nil
+	return storage.AssessBackup(target, u, set, found, shares), nil
 }
 
 func (a *App) backupSpaceProblem(target string) string {
@@ -148,12 +198,11 @@ func (a *App) checkStorage() storage.Report {
 		}
 	}
 	r.Backup, _ = a.backupSpace(e.BackupDirPath())
-	if run, err := storage.ReadBackupRun(filepath.Join(a.installDir(), backupStateDir)); err == nil {
-		r.LastRun = run
-	}
-	if _, newest, found, err := storage.LatestSets(e.BackupDirPath()); err == nil && found {
-		r.NewestBackupAt = newest.At.Unix()
-	}
+	stateDir := filepath.Join(a.installDir(), backupStateDir)
+	a.startBackupCopy(e.BackupDirPath(), stateDir, cfg.BackupCopyDir)
+	r.Health = a.backupHealth(e.BackupDirPath(), stateDir, running, now)
+	r.LastRun = r.Health.LastRun
+	r.NewestBackupAt = r.Health.LastBackupAt
 	storage.Summarise(&r, running, now)
 	return r
 }

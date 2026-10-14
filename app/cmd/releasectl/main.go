@@ -231,7 +231,7 @@ func makePlan(root string, c release.Config, old release.Manifest) (plan, error)
 			Source release.Source
 			Env    map[string]string
 		}{c.Care.Frontend, p.BuildEnv}},
-		{"support", []string{"deployments/caddy.Dockerfile", "deployments/backup.Dockerfile", "deployments/scripts/backup.sh"}, struct {
+		{"support", []string{"deployments/caddy.Dockerfile", "deployments/backup.Dockerfile", "deployments/scripts"}, struct {
 			Images map[string]string
 			Coraza string
 		}{c.SupportImages, c.Caddy.Coraza}},

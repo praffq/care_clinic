@@ -139,6 +139,7 @@ type CareStore = {
   setAutostart: (on: boolean) => Promise<void>;
   restore: (backup: Backup, recoveryFile: string, adminPassword: string) => Promise<void>;
   restoreFile: (path: string, recoveryFile: string, adminPassword: string) => Promise<void>;
+  restorePointInTime: (target: string, recoveryFile: string, adminPassword: string) => Promise<void>;
   uninstall: (
     removeImages: boolean,
     removeBackups: boolean,
@@ -530,8 +531,8 @@ export function CareProvider({ children }: { children: ReactNode }) {
     [log, setBusy],
   );
 
-  const restoreFile = useCallback(
-    async (path: string, recoveryFile: string, adminPassword: string) => {
+  const startRestore = useCallback(
+    async (description: string, call: () => Promise<void>) => {
       if (busyRef.current) throw new Error("something else is still running");
       if (restorePendingRef.current) {
         throw new Error("a restore is unfinished; start CARE to recover it before making other changes");
@@ -541,9 +542,9 @@ export function CareProvider({ children }: { children: ReactNode }) {
       activeActionRef.current = "restore";
       lastErrorRef.current = "";
       setOperationError(null);
-      log("\n$ care restore imported backup");
+      log(`\n$ care restore ${description}`);
       try {
-        await bridge.RestoreFromFile(path, recoveryFile, adminPassword);
+        await call();
       } catch (e) {
         log(`error: ${errorText(e)}`);
         setBusy(false);
@@ -553,6 +554,19 @@ export function CareProvider({ children }: { children: ReactNode }) {
       }
     },
     [log, setBusy],
+  );
+
+  const restoreFile = useCallback(
+    (path: string, recoveryFile: string, adminPassword: string) =>
+      startRestore("imported backup", () => bridge.RestoreFromFile(path, recoveryFile, adminPassword)),
+    [startRestore],
+  );
+
+  const restorePointInTime = useCallback(
+    (target: string, recoveryFile: string, adminPassword: string) =>
+      startRestore(target === "latest" ? "to the latest saved change" : "to a point in time",
+        () => bridge.RestorePointInTime(target, recoveryFile, adminPassword)),
+    [startRestore],
   );
 
   const uninstall = useCallback(
@@ -1074,6 +1088,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       setAutostart,
       restore,
       restoreFile,
+      restorePointInTime,
       uninstall,
       log,
     }),
@@ -1083,7 +1098,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       tab, busy, busyLabel, operationError, clearOperationError, system, systemDetail, trouble, careUpdate, applyCareUpdate, dismissCareUpdate,
       installAppUpdate, acknowledgeAppUpdate, restorePending, pluginRecoveryPending, version, platform, backups, backupsError, autostart, autostartReady, autostartSaving, autostartError, storage, storageError, recheckStorage,
       refresh, reloadBackups, syncAutostart,
-      runAction, setAutostart, restore, restoreFile, uninstall, log,
+      runAction, setAutostart, restore, restoreFile, restorePointInTime, uninstall, log,
     ],
   );
 

@@ -8,9 +8,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/backup"
-	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
+	"github.com/ohcnetwork/care_desktop/app/internal/backupcopy"
+	"github.com/ohcnetwork/care_desktop/app/internal/health"
+	"github.com/ohcnetwork/care_desktop/app/internal/storage"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -125,12 +128,96 @@ func (a *App) exportBackupRecovery(adminPassword, recoveryFile string, choose fu
 	return saved, err
 }
 
-func (a *App) GetBackupPolicy() (policy clinic.BackupPolicy, err error) {
+// GetBackupHealth reports the newest verified backup, how far changes are
+// saved, the weekly trial restore, the optional copy and any alerts. Backups
+// run nightly and only the newest verified set is kept; there is no
+// retention setting.
+func (a *App) GetBackupHealth() (h storage.BackupHealth, err error) {
 	defer a.logError(&err)
 	if err := a.requireSetup(); err != nil {
-		return policy, err
+		return h, err
 	}
-	return a.engine().BackupPolicy()
+	return a.backupHealth(a.engine().BackupDirPath(), filepath.Join(a.installDir(), backupStateDir),
+		health.Ping().Active, time.Now()), nil
+}
+
+// SetBackupCopyDir chooses an optional second place (USB drive, second disk
+// or network share) that follows the local backup. The folder must exist now;
+// later it may be disconnected, and the copy catches up when it returns.
+func (a *App) SetBackupCopyDir(dir string) (target string, err error) {
+	defer a.logError(&err)
+	dir = strings.TrimSpace(dir)
+	if err := a.requireSetup(); err != nil {
+		return "", err
+	}
+	if dir == "" || !filepath.IsAbs(dir) {
+		return "", errors.New("choose an absolute folder for the backup copy")
+	}
+	dir = filepath.Clean(dir)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", errors.New("that folder is not available; connect the drive and choose it again")
+	}
+	local := a.engine().BackupDirPath()
+	for _, protected := range []string{local, a.installDir(), filepath.Dir(a.configPath())} {
+		if err := backup.CheckLocation(dir, protected); err != nil {
+			return "", errors.New("the backup copy must be in a different place from the backups and CARE's own folders")
+		}
+		if err := backup.CheckLocation(protected, dir); err != nil {
+			return "", errors.New("the backup copy must be in a different place from the backups and CARE's own folders")
+		}
+	}
+	if recoveryPath := a.loadConfig().BackupRecoveryPath; recoveryPath != "" {
+		if err := backup.CheckLocation(recoveryPath, dir); err != nil {
+			return "", errors.New("keep the backup recovery file separate from the backup copy; choose another folder")
+		}
+	}
+	err = a.withJob(func() error {
+		cfg := a.loadConfig()
+		cfg.BackupCopyDir = dir
+		return a.saveConfig(cfg)
+	})
+	if err != nil {
+		return "", err
+	}
+	a.logln("Backups will also be copied to " + filepath.Join(dir, backupcopy.Folder))
+	a.startBackupCopy(local, filepath.Join(a.installDir(), backupStateDir), dir)
+	return filepath.Join(dir, backupcopy.Folder), nil
+}
+
+// ClearBackupCopyDir stops copying. Files already copied are left in place.
+func (a *App) ClearBackupCopyDir() (err error) {
+	defer a.logError(&err)
+	if err := a.requireSetup(); err != nil {
+		return err
+	}
+	err = a.withJob(func() error {
+		cfg := a.loadConfig()
+		cfg.BackupCopyDir = ""
+		return a.saveConfig(cfg)
+	})
+	if err == nil {
+		if werr := storage.WriteCopyStatus(filepath.Join(a.installDir(), backupStateDir),
+			storage.CopyStatus{State: "off", CheckedAt: time.Now().Unix()}); werr != nil {
+			a.logln("ERROR: could not save the backup copy status: " + werr.Error())
+		}
+		a.logln("Backups are no longer copied to a second place; earlier copies were left as they are.")
+	}
+	return err
+}
+
+// RestorePointInTime rebuilds the database to target ("latest" or an RFC 3339
+// time) from the verified full copy plus saved changes, in a staging
+// database, and swaps it in only after replay and checks succeed.
+func (a *App) RestorePointInTime(target, recoveryFile, adminPassword string) error {
+	return a.run(func() error {
+		if err := a.requireAdmin(adminPassword); err != nil {
+			return err
+		}
+		if err := a.requireStableClinic(); err != nil {
+			return err
+		}
+		return a.engine().Backups().RestorePointInTime(target, recoveryFile, time.Now())
+	}, false, "restore")
 }
 
 func (a *App) SetBackupDir(dir string) (target string, err error) {

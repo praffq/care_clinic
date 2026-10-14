@@ -485,12 +485,15 @@ The API does not require the CARE Clinic admin password for every operational co
 | --- | --- | --- |
 | `ReadEnv(name, adminPassword)` | `string` | Read. Admin plus setup required; `name` is only `backend` or `frontend`. Returns explicit overrides, never effective env or secrets. |
 | `ReadEnvDefaults(name, adminPassword)` | `string` | Read. Same guards; returns the selected section's validated string defaults, without secrets or derived wiring. |
-| `GetBackupPolicy()` | `BackupPolicy` | Query. Requires an installed server. Reports the 86,400-second interval and actual installed retention days; zero means forever. Missing/unreadable settings or invalid/negative retention reject rather than inventing a policy. |
 | `WriteEnv(name, content, adminPassword)` | `void` | Sync. Admin plus stable clinic required; validate override syntax/managed keys, persist overrides privately, regenerate effective env. Does not restart or activate updates. |
 | `ReadPlugins()` | `CarePlugin[]` | Read. Installed server required, no password; read `plugins.json`, or derive the list from `ADDITIONAL_PLUGS` when that file is absent. |
 | `SavePlugins(plugins)` | `void` | Sync. Stable clinic required, no password; validate and stage `plugins-pending.json`, leaving active configuration untouched until apply. |
 | `PluginCatalog()` | `PluginCatalogEntry[]` | Query. The bundled plugin catalog. |
 | `ListBackups()` | `Backup[]` | Query. Returns an empty list if the installed compose file is absent; other file/read errors are not treated as an empty list. |
+| `GetBackupHealth()` | `BackupHealth` | Query. Setup required. Newest verified set, checks, saved-through time, WAL, weekly trial restore, optional copy and alerts. Only the newest verified set is kept; there is no retention setting. |
+| `SetBackupCopyDir(dir)` | `string` | Sync. Setup required. Chooses an existing absolute folder (USB drive, second disk, share) for the optional copy, refusing the backup, install, config or recovery-file locations; returns `<dir>/care-backup-copy` and starts a catch-up copy. |
+| `ClearBackupCopyDir()` | `void` | Sync. Setup required. Stops copying; already copied files stay. |
+| `RestorePointInTime(target, recoveryFile, adminPassword)` | `void` | Job. CARE Clinic admin plus stable clinic required. `target` is `latest` or an RFC 3339 time between `earliest_restore_at` and `saved_through`. Replays the full copy and change files in a throwaway helper, requires the target to be reached, then swaps through the journaled staged restore. Database only. |
 | `GetBackupDir()` | `string` | Query. Effective backup directory, including the engine's default if unconfigured. |
 | `SetBackupDir(dir)` | `string` | Sync. Stable clinic required. Takes a parent folder, appends `care-db-backups`, preserves the key and conditionally restarts the sidecar. |
 | `ChooseBackupFile()` | `string` | Native dialog. Starts in the backup directory; empty string means cancellation. Dialog errors reject and are logged. |
@@ -600,6 +603,7 @@ original text.
 | `quit-requested` | `{id, title, message}` | A running-job close request for the registered frontend dialog. Only its current ID can be answered. |
 | `confirmation-requested` | `{id, title, message}` | A CARE-owned permission question for the registered root dialog. Its caller is still waiting and retains its job lock. |
 | `confirmation-cancelled` | Request ID | Invalidates a permission question after frontend unregistration, runtime cancellation or shutdown. |
+| `care-backup-copy` | `CopyStatus` | Result of an optional second-copy run (`copying`, `ok`, `disconnected`, `failed`, `off`). |
 | `care-storage` | `StorageReport` | Refreshed drive, backup-space and last-run information. Unknown measurements must not be displayed as confirmed free space. |
 
 There is no unique job identifier or measured clinic-installation percentage.
@@ -623,7 +627,7 @@ The core serialized shapes are:
 | `SetupIssue` | `step`, `message`; step is one of the wizard's requirement/configuration IDs. |
 | `SetupFailure` | `can_retry`, `download_interrupted`. Retry availability is checked again natively before acceptance; it is not permission to change setup settings. |
 | `SetupRecoveryStatus` | `backup_saved`, `backup_verified`, `codes_saved`, `backup_path`, `codes_path`, `backup_problem`, `codes_problem`. |
-| `BackupPolicy` | `interval_seconds`, `retention_days`. |
+| `BackupHealth` | `checked_at`, `last_backup_at`, `earliest_restore_at`, `set`, `verified`, `checks`, `saved_through`, `wal`, `trial`, `copy` (`state`, `dir`, `checked_at`, `last_copied_at`, `set`, `wal_through`, `message`), `last_run`, `alerts` (`code`, `level`, `message`). See [backups](backups-and-restore.md#4-latest-verified-backup-continuous-changes-and-the-optional-copy). |
 | `ConfirmationRequest`, `QuitRequest` | `id`, `title`, `message`. IDs identify requests within the current native process, not jobs or authorization sessions. |
 | `DockerStatus`, `NameStatus` | `ok`, `message`. |
 | `Health` | `active`, `code`, `detail`. |

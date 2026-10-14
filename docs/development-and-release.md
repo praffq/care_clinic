@@ -421,7 +421,7 @@ Tests sit beside their packages. They use Go's standard test runner and existing
 
 | Area | Representative coverage |
 | --- | --- |
-| App/settings | Shared authenticated reads, write exclusion, lifecycle guards, and retention persistence. |
+| App/settings | Shared authenticated reads, write exclusion, lifecycle guards, and override persistence. |
 | Clinic | Domain rewriting, worker-stop/migration ordering, native-access outcomes, cleanup ownership, and backup script behavior. |
 | Backup | Encryption/key handling, staged restore control flow, archive validation, and interruption recovery. |
 | Compose | Build freshness, image inputs, deployment routing, and storage bootstrap contracts. |

@@ -27,7 +27,7 @@ const extraSettings = [
 ];
 const environment = [
   "# Simulated clinic settings", "  ", "DJANGO_SECRET_KEY='test-only-secret'",
-  "ADDITIONAL_PLUGS='preview-plugin-config'", "DB_BACKUP_RETENTION_PERIOD=0",
+  "ADDITIONAL_PLUGS='preview-plugin-config'",
   "JWT_REFRESH_TOKEN_LIFETIME=30",
   ...unavailableSettings, "REACT_APP_TITLE=Sunrise Clinic", "REACT_DEFAULT_ENCOUNTER_TYPE=",
   "REACT_ALLOWED_LOCALES=en,ml", ...extraSettings,
@@ -138,8 +138,7 @@ test("environment validators reject unsafe numbers, multiline values and unknown
   const validate = (key: string, value: string) => validateSetting(SETTING_BY_KEY.get(key)!, value);
   expect(validate("JWT_REFRESH_TOKEN_LIFETIME", "4")).toContain("at least 5");
   expect(validate("JWT_REFRESH_TOKEN_LIFETIME", "1.5")).toContain("whole number");
-  expect(validate("DB_BACKUP_RETENTION_PERIOD", "0")).toBeNull();
-  expect(validate("DB_BACKUP_RETENTION_PERIOD", "")).toContain("Enter a number");
+  expect(validate("JWT_REFRESH_TOKEN_LIFETIME", "30")).toBeNull();
   expect(validate("REACT_APP_TITLE", "Clinic\nNEW_KEY=bad")).toContain("one line");
   expect(validate("REACT_APP_TITLE", "Sunrise Clinic")).toBeNull();
   expect(validate("REACT_DEFAULT_ENCOUNTER_TYPE", "")).toBeNull();
@@ -168,15 +167,15 @@ test("support overrides require a valid default area UUID without restricting ot
   expect(validateExtraSetting("REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED", "0")).toBeNull();
 });
 
-test("Advanced exposes only ten everyday clinic choices and keeps local extras overridable", () => {
+test("Advanced exposes only nine everyday clinic choices and keeps local extras overridable", () => {
   expect(GROUPS.map((entry) => entry.id)).toEqual([
-    "branding", "visits", "billing", "backups", "signin",
+    "branding", "visits", "billing", "signin",
   ]);
   expect(SETTINGS.map((setting) => setting.key)).toEqual([
     "REACT_APP_TITLE", "REACT_ALLOWED_LOCALES", "REACT_DEFAULT_ENCOUNTER_TYPE",
     "REACT_ENABLE_MINIMAL_PATIENT_REGISTRATION", "REACT_DEFAULT_PAYMENT_METHOD",
     "REACT_DEFAULT_PAYMENT_TERMS", "REACT_INVENTORY_DEFAULT_TAX_INCLUSIVE",
-    "REACT_ENABLE_AUTO_INVOICE_AFTER_DISPENSE", "DB_BACKUP_RETENTION_PERIOD", "JWT_REFRESH_TOKEN_LIFETIME",
+    "REACT_ENABLE_AUTO_INVOICE_AFTER_DISPENSE", "JWT_REFRESH_TOKEN_LIFETIME",
   ]);
   expect(SETTINGS.every((setting) => !isHiddenKey(setting.key))).toBe(true);
   for (const entry of unavailableSettings) {
@@ -259,7 +258,7 @@ test("support defaults stay inherited until edited and reset removes an equal de
 test("email, SMS, patient sign-in and MFA settings cannot reappear in support-only extras", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
-  await expect(root(page).locator("[data-advanced-group]")).toHaveCount(6);
+  await expect(root(page).locator("[data-advanced-group]")).toHaveCount(5);
   await expect(root(page).getByRole("button", { name: /^Patient sign-in/ })).toHaveCount(0);
   await expect(root(page).getByRole("button", { name: /^Outgoing email/ })).toHaveCount(0);
   await group(page, "Extra settings (for support)");
@@ -293,7 +292,7 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     await screenshot(page, `advanced-recovery-form-${size.width}x${size.height}`);
     await root(page).getByRole("button", { name: "Cancel", exact: true }).click();
     await unlock(page);
-    await expect(root(page)).toContainText("Keep backups forever");
+    await expect(root(page)).toContainText("Sign out after 30 minutes");
     await expect(root(page)).toContainText("Sunrise Clinic");
     await screenshot(page, `advanced-overview-${size.width}x${size.height}`);
     for (const entry of GROUPS) {
@@ -402,7 +401,7 @@ test("categories expand inline, stay keyboard accessible and confirm dirty switc
   await expect(root(page).getByRole("button", { name: "Change password", exact: true })).toBeVisible();
   await expect(root(page).getByRole("heading", { name: "Log file", exact: true })).toBeVisible();
   await expect(root(page).getByRole("button", { name: "Uninstall…", exact: true })).toBeVisible();
-  await expect(root(page).locator("[data-advanced-group]")).toHaveCount(6);
+  await expect(root(page).locator("[data-advanced-group]")).toHaveCount(5);
   const minutes = root(page).getByRole("spinbutton", { name: "Sign out inactive staff after" });
   await minutes.fill("20");
   await details.click();
@@ -818,11 +817,11 @@ test("unreadable settings never show guessed values or enable saving", async ({ 
   await root(page).getByLabel("CARE Clinic admin password", { exact: true }).fill(desktopPassword);
   await root(page).getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(root(page)).toContainText("The clinic settings couldn't be read");
-  await expect(root(page)).not.toContainText("Keep backups forever");
+  await expect(root(page)).not.toContainText("Sign out after 30 minutes");
   await expect(root(page)).not.toContainText("private setting detail");
   await expect(root(page).getByRole("button", { name: /^Staff access/ })).toBeDisabled();
   await root(page).getByRole("button", { name: "Try reading settings again" }).click();
-  await expect(root(page)).toContainText("Keep backups forever");
+  await expect(root(page)).toContainText("Sign out after 30 minutes");
   expect(await count(page, "WriteEnv")).toBe(0);
 });
 

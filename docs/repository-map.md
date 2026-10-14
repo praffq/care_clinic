@@ -108,7 +108,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_osremove.go`](../app/app_osremove.go) | `--uninstall`/`--uninstall-check` modes for the Windows uninstaller, the shared "still set up" check, and in-app removal of the desktop app. | [Cleanup](cleanup-and-uninstall.md#removing-the-desktop-app). |
 | [`app_residue.go`](../app/app_residue.go) | Residue scanning, recovery of old install location, confirmed purge, preserving the selected first-run name. | [Cleanup](cleanup-and-uninstall.md). |
 | [`password.go`](../app/password.go) | Shared setup password policy. | [Wails application](wails-application.md). |
-| [`app_env_test.go`](../app/app_env_test.go) | Synthetic-app regressions for concurrent settings reads, guards, conflicting writes, and saved retention values. | [Configuration](configuration-and-settings.md). |
+| [`app_env_test.go`](../app/app_env_test.go) | Synthetic-app regressions for concurrent settings reads, guards, conflicting writes, and saved override values. | [Configuration](configuration-and-settings.md). |
 
 ### Application-boundary regression groups
 
@@ -403,7 +403,7 @@ See [Wails API](wails-application.md) and [configuration](configuration-and-sett
 | [`backup.Dockerfile`](../deployments/backup.Dockerfile) | Tools and permissions required by backup/restore helper containers. |
 | [`backend-plugins.Dockerfile`](../deployments/backend-plugins.Dockerfile) | Adds plugins using the published backend builder/runtime images. |
 | [`frontend-rebuild.Dockerfile`](../deployments/frontend-rebuild.Dockerfile) | Recompiles changed non-runtime settings using the published frontend builder/runtime images. |
-| [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Scheduled/manual backup modes, encryption, writer locking, publication and retention. |
+| [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Verified latest-only backup cycle, manifest checks, trial restore, WAL status/pruning, writer locking and status files. |
 | [`minio/entrypoint.sh`](../deployments/minio/entrypoint.sh) | Starts Silo, waits for readiness, configures credentials and buckets under the retained storage-service identity. |
 
 Generated public trust files and restore/build working files belong to the installed copy, not the source kit.

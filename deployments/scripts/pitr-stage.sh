@@ -13,7 +13,7 @@ umask 077
 
 target=${1:?usage: pitr-stage.sh latest|TIME}
 manifest="$BACKUP_DIR/manifest.json"
-stage=/restore
+stage=${CARE_RESTORE_DIR:-/restore}
 data="$stage/pgdata"
 sock="$stage/sock"
 key="$stage/recovery-key.pem"
@@ -39,7 +39,7 @@ log "change files $start_wal to $newest are complete"
 
 rm -rf "$data" "$sock"
 mkdir -p "$data" "$sock"
-cp /restore-key.pem "$key"
+cp "${CARE_RESTORE_KEY:-/restore-key.pem}" "$key"
 chown postgres:postgres "$key" "$data" "$sock"
 chmod 600 "$key"
 chmod 700 "$data" "$sock"
@@ -59,6 +59,8 @@ chown -R postgres:postgres "$data"
 {
 	echo "restore_command = 'CARE_RECOVERY_KEY=$key CARE_WAL_DIR=$WAL_DIR /bin/sh ${CARE_SCRIPTS:-/scripts}/wal-restore.sh %f %p'"
 	echo "archive_mode = off"
+	# Only the live clinic's own timeline is archived; never follow a branch.
+	echo "recovery_target_timeline = 'current'"
 	echo "listen_addresses = ''"
 	echo "unix_socket_directories = '$sock'"
 	if [ "$target" != latest ]; then
@@ -87,6 +89,15 @@ while :; do
 	sleep 2
 done
 psql -h "$sock" -U "$user" -d "$db" -XtAc "select 1" >/dev/null || die "the staged database is not healthy"
+if [ "$target" != latest ]; then
+	# PostgreSQL logs this only when replay stopped at the requested moment;
+	# running out of change files first must not pass as the requested time.
+	if ! grep -Eq 'recovery stopping (before|after) ' "$sock/recovery.log"; then
+		tail -n 20 "$sock/recovery.log" | sed 's/^/[restore]   /'
+		die "replay ended before reaching $target; nothing was changed"
+	fi
+	grep -E 'recovery stopping (before|after) ' "$sock/recovery.log" | tail -n1 | sed 's/^/[restore]   /'
+fi
 log "staged database promoted at $(psql -h "$sock" -U "$user" -d postgres -XtAc "select coalesce(pg_last_xact_replay_timestamp()::text, 'the full copy')")"
 pg_dump -h "$sock" -U "$user" -d "$db" -Fc -f "$stage/database.dump"
 pg_restore --list "$stage/database.dump" >/dev/null || die "the staged database dump is unreadable"

@@ -134,10 +134,6 @@ export function groupSummary(group: Group, draft: EnvDraft): string {
     return setting.options.find((option) => option.value === value(key))?.label ?? "Check current settings";
   };
   switch (group.id) {
-    case "backups": {
-      const days = Number(value("DB_BACKUP_RETENTION_PERIOD"));
-      return !Number.isSafeInteger(days) || days < 0 ? "Check backup retention" : days === 0 ? "Keep backups forever" : `Keep backups for ${days} ${days === 1 ? "day" : "days"}`;
-    }
     case "signin":
       return `Sign out after ${value("JWT_REFRESH_TOKEN_LIFETIME")} minutes without activity`;
     case "branding": {

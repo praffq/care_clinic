@@ -1,4 +1,4 @@
-import { Database, Eye, EyeOff, FileKey, FolderOpen, LoaderCircle, LockKeyhole, RotateCcw } from "lucide-react";
+import { Clock3, Database, Eye, EyeOff, FileKey, FolderOpen, LoaderCircle, LockKeyhole, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
@@ -9,16 +9,40 @@ import { Button } from "@/components/ui/button";
 import { bridge, onCareEvent } from "@/lib/bridge";
 import { errorText } from "@/lib/format";
 import { useCare } from "@/state/care-store";
-import type { ImportedBackup } from "@/types";
+import type { BackupHealth, ImportedBackup } from "@/types";
 
 import { backupDate, BackupNotice, backupProblem, backupWhen, type BackupProblem } from "./backup-ui";
 import { usePanelUpdateLock } from "./panel-update-lock";
 
 type RestoreOutcome = "idle" | "running" | "complete" | "failed";
 
-export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
+/** Local datetime-local value for a Unix time, to the minute. */
+function localInput(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** The newest moment replay can reach: the archived "saved through" time, never before the full copy finished. */
+export function latestRestorable(health?: BackupHealth | null): number {
+  return Math.max(health?.saved_through ?? 0, health?.earliest_restore_at ?? 0);
+}
+
+/** The RFC 3339 target sent to RestorePointInTime, or "" if it is outside what the backup can reach. */
+export function pointInTimeTarget(kind: "latest" | "time", value: string, earliest: number, latest: number): string {
+  if (kind === "latest") return "latest";
+  const at = new Date(value);
+  if (!value || Number.isNaN(at.getTime())) return "";
+  if (at.getTime() < earliest * 1000 || at.getTime() > latest * 1000) return "";
+  return at.toISOString();
+}
+
+export function RestoreBackupFile({ disabled, health }: { disabled: boolean; health?: BackupHealth | null }) {
   const updateLock = usePanelUpdateLock();
-  const { busy, busyLabel, restorePending, restoreFile, log, setTab } = useCare();
+  const { busy, busyLabel, restorePending, restoreFile, restorePointInTime, log, setTab } = useCare();
+  const [mode, setMode] = useState<"file" | "time">("file");
+  const [timeKind, setTimeKind] = useState<"latest" | "time">("latest");
+  const [timeValue, setTimeValue] = useState("");
   const [found, setFound] = useState<ImportedBackup | null>(null);
   const [open, setOpen] = useState(false);
   const [choosing, setChoosing] = useState<"backup" | "recovery" | null>(null);
@@ -94,6 +118,7 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
       if (!path || !current()) return;
       const inspected = await bridge.InspectBackupFile(path);
       if (!current()) return;
+      setMode("file");
       setFound(inspected);
       setRecoveryFile("");
       setAdminPassword("");
@@ -143,6 +168,20 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
     }
   };
 
+  const openPointInTime = () => {
+    if (operation.current || blocked.current || updateLock.isActive()) return;
+    setMode("time");
+    setTimeKind("latest");
+    setTimeValue("");
+    setRecoveryFile("");
+    setAdminPassword("");
+    setShowPassword(false);
+    setAcknowledged(false);
+    setDialogProblem(null);
+    setOutcome("idle");
+    setOpen(true);
+  };
+
   const close = (next: boolean) => {
     if (requested.current) return;
     setOpen(next);
@@ -155,8 +194,58 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
     }
   };
 
+  const submitPointInTime = async () => {
+    const target = pointInTimeTarget(timeKind, timeValue, health?.earliest_restore_at ?? 0, latestRestorable(health));
+    if (operation.current || blocked.current || updateLock.isActive() || !health?.verified || !target ||
+      !acknowledged || !adminPassword || !recoveryFile) return;
+    const version = ++operationVersion.current;
+    const currentOperation = () => mounted.current && version === operationVersion.current;
+    operation.current = true;
+    setChecking(true);
+    setDialogProblem(null);
+    try {
+      const verified = await bridge.VerifyAdminPassword(adminPassword);
+      if (!currentOperation() || updateLock.isActive()) return;
+      if (!verified) {
+        setDialogProblem(backupProblem("the CARE Clinic admin password does not match", "restore"));
+        passwordInput.current?.focus();
+        return;
+      }
+      if (blocked.current) {
+        setDialogProblem(backupProblem(restorePending ? "a restore is unfinished" : "something else is still running", "restore"));
+        return;
+      }
+      requested.current = true;
+      lastFailure.current = null;
+      setProblem(null);
+      setOutcome("running");
+      await restorePointInTime(target, recoveryFile, adminPassword);
+      if (!currentOperation()) return;
+      setAdminPassword("");
+      setShowPassword(false);
+      setAcknowledged(false);
+      setOpen(false);
+    } catch (error) {
+      if (currentOperation()) {
+        requested.current = false;
+        setOutcome("idle");
+        setDialogProblem(backupProblem(error, "restore"));
+        log("The point-in-time restore request was not accepted. Check the time, recovery file and CARE Clinic password.");
+      }
+    } finally {
+      if (version === operationVersion.current) {
+        operation.current = false;
+        if (mounted.current) setChecking(false);
+      }
+    }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (mode === "time") {
+      await submitPointInTime();
+      return;
+    }
     if (operation.current || blocked.current || updateLock.isActive() || !found || !acknowledged ||
       !adminPassword || (found.encrypted && !recoveryFile)) return;
     const version = ++operationVersion.current;
@@ -219,8 +308,14 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
 
   const restoring = (busy && busyLabel === "Restoring") || outcome === "running";
   const waiting = disabled || busy || restorePending || !!choosing || checking || restoring || updateLock.active;
-  const canSubmit = !waiting && !!found && acknowledged && !!adminPassword &&
-    (!found.encrypted || !!recoveryFile);
+  const earliest = health?.earliest_restore_at ?? 0;
+  const latest = latestRestorable(health);
+  const pitrTarget = pointInTimeTarget(timeKind, timeValue, earliest, latest);
+  const canPointInTime = !!health?.verified && earliest > 0 && !health?.wal?.gap;
+  const canSubmit = mode === "time"
+    ? !waiting && canPointInTime && !!pitrTarget && acknowledged && !!adminPassword && !!recoveryFile
+    : !waiting && !!found && acknowledged && !!adminPassword && (!found.encrypted || !!recoveryFile);
+  const needsRecovery = mode === "time" || !!found?.encrypted;
   const made = found ? backupWhen(backupDate(found.db_dump)) : "";
   const madeInSentence = made.replace(/^(Today|Yesterday)\b/, (day) => day.toLowerCase());
 
@@ -260,6 +355,21 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
         ) : null}
       </div>
 
+      <div className="care-backups-card care-backups-restore-card care-backups-pitr-card">
+        <div className="care-backups-card-row">
+          <span className="care-backups-icon"><Clock3 aria-hidden="true" /></span>
+          <div className="care-backups-grow">
+            <h2>Restore to a point in time</h2>
+            <p>{canPointInTime
+              ? `Rebuild the database as it was at any time from ${backupWhen(new Date(earliest * 1000))} until the latest saved change. Uploaded files are not changed.`
+              : health?.wal?.gap
+                ? "Unavailable while a saved change file is missing. The next verified full backup starts a new unbroken chain."
+                : "Available after the first verified backup on this computer."}</p>
+          </div>
+          <Button disabled={waiting || !canPointInTime} onClick={openPointInTime}>Choose time</Button>
+        </div>
+      </div>
+
       {restoring ? (
         <BackupNotice title="Restoring the selected backup…" tone="info" log={false}>
           CARE is checking and restoring the backup. Keep CARE Clinic open and don't turn this computer off.
@@ -283,16 +393,41 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
               <span className="care-backups-icon care-backups-icon--danger"><RotateCcw aria-hidden="true" /></span>
               <div>
                 <AlertDialogTitle ref={heading} tabIndex={-1}>
-                  Restore the backup {made === "Date unavailable" ? "you selected" : `from ${madeInSentence}`}?
+                  {mode === "time" ? "Restore the database to a point in time?"
+                    : `Restore the backup ${made === "Date unavailable" ? "you selected" : `from ${madeInSentence}`}?`}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  Today's clinic records will be replaced with this copy. Changes made since this backup will be lost.
-                  CARE pauses while it restores. This can't be undone.
+                  {mode === "time"
+                    ? "CARE rebuilds the database from the newest verified backup and saved changes in a separate copy, and only replaces today's records after it checks out. Changes after the chosen time will be lost. Uploaded files are not changed."
+                    : "Today's clinic records will be replaced with this copy. Changes made since this backup will be lost."}
+                  {" "}CARE pauses while it restores. This can't be undone.
                 </AlertDialogDescription>
               </div>
             </div>
 
-            {found ? (
+            {mode === "time" ? (
+              <fieldset className="care-restore-file care-restore-time" disabled={waiting}>
+                <legend>Restore to</legend>
+                <label>
+                  <input type="radio" name="care-restore-time" checked={timeKind === "latest"} onChange={() => setTimeKind("latest")} />
+                  <span>The latest saved change{health?.saved_through ? ` (${backupWhen(new Date(health.saved_through * 1000))})` : ""}</span>
+                </label>
+                <label>
+                  <input type="radio" name="care-restore-time" checked={timeKind === "time"} onChange={() => setTimeKind("time")} />
+                  <span>A specific time</span>
+                </label>
+                {timeKind === "time" ? (
+                  <input
+                    type="datetime-local" aria-label="Restore time"
+                    min={earliest ? localInput(earliest) : undefined} max={localInput(latest)}
+                    value={timeValue} onChange={(event) => setTimeValue(event.target.value)}
+                  />
+                ) : null}
+                {timeKind === "time" && timeValue && !pitrTarget ? (
+                  <p>Choose a time between {backupWhen(new Date(earliest * 1000))} and {backupWhen(new Date(latest * 1000))}, the latest saved change.</p>
+                ) : null}
+              </fieldset>
+            ) : found ? (
               <div className="care-restore-file">
                 <strong title={found.path}>{found.db_dump}</strong>
                 <span>{found.files_archive ? "Database and uploaded files" : "Database only"}{found.encrypted ? " · encrypted" : " · not encrypted"}</span>
@@ -303,7 +438,7 @@ export function RestoreBackupFile({ disabled }: { disabled: boolean }) {
             ) : null}
 
             <div className="care-restore-fields">
-              {found?.encrypted ? (
+              {needsRecovery ? (
                 <div className="care-restore-field">
                   <label id="care-restore-recovery-label">Backup recovery file</label>
                   <div className="care-restore-input">

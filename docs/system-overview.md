@@ -67,6 +67,11 @@ recovery. WAL pruning is bounded by a newly verified full copy's start LSN.
 Optional removable-storage copying cannot block clinic operation and verifies
 new copies before deleting old ones. Weekly trial restores require enough
 space. UI surfaces verification, recoverable time and failures.
+Point-in-time targets are bounded by the physical copy's completion and the
+archived saved-through time. Staged replay must confirm it reached the requested
+target before the journaled database swap. Timeline history is retained, but
+cross-timeline archive chains are explicitly rejected. See
+[backups and restore](backups-and-restore.md) for operation and alerts.
 
 The support ZIP includes logs, journal/history, version and health evidence,
 and env files including secrets. Download requires the explicit clinic-password

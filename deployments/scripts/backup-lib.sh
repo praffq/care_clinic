@@ -110,6 +110,18 @@ wal_chain_check() {
 		echo "[wal] ERROR: the newest archived change file is older than the full copy" >&2
 		return 1
 	fi
+	# Archives on a later timeline mean the clinic's database branched (it
+	# was recovered in place). That is not supported: refuse rather than
+	# claim one unbroken chain.
+	for f in "$WAL_DIR"/*.sha256; do
+		[ -f "$f" ] || continue
+		case "${f##*/}" in *.history.sha256) continue ;; esac
+		other=$(printf '%s' "${f##*/}" | cut -c1-8)
+		if [ "$((0x$other))" -gt "$((0x$timeline))" ]; then
+			echo "[wal] ERROR: change files from a later database timeline ($other) are present; a new full backup cannot be chained to them" >&2
+			return 1
+		fi
+	done
 	n=$first
 	while [ "$n" -le "$last" ]; do
 		name=$(segment_name "$timeline" "$n" "$per")

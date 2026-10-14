@@ -184,12 +184,5 @@ export function backupSpaceSummary(space: BackupSpace): string {
   if (space.level === "unknown" || !space.total) return "Free space couldn't be checked";
   if (space.free < space.need) return "Not enough room for the next backup";
   if (space.free < 2 * space.need) return "Room for only one more backup";
-  if (space.days_left >= 365) {
-    const years = Math.round(space.days_left / 365);
-    return `Room for about ${years} ${years === 1 ? "year" : "years"} of backups`;
-  }
-  if (space.days_left > 0) {
-    return `Room for about ${space.days_left} ${space.days_left === 1 ? "day" : "days"} of backups`;
-  }
-  return "Space available for backups";
+  return "Room for the next backup; only the newest verified backup is kept";
 }

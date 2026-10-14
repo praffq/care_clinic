@@ -33,9 +33,9 @@ func settingsApp(t *testing.T) *App {
 	}
 	for name, data := range map[string]string{
 		"docker-compose.yml":     "name: care-clinic\n",
-		"backend.env":            "DB_BACKUP_RETENTION_PERIOD=14\nADDITIONAL_PLUGS=[]\n",
+		"backend.env":            "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n",
 		"frontend.env":           "REACT_CARE_API_URL=https://care.local\n",
-		"backend.overrides.env":  "DB_BACKUP_RETENTION_PERIOD=14\nADDITIONAL_PLUGS=[]\n",
+		"backend.overrides.env":  "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n",
 		"frontend.overrides.env": "REACT_APP_TITLE=Clinic\n",
 	} {
 		if err := os.WriteFile(filepath.Join(a.installDir(), name), []byte(data), 0o600); err != nil {
@@ -66,7 +66,7 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if text != "DB_BACKUP_RETENTION_PERIOD=14\nADDITIONAL_PLUGS=[]\n" {
+			if text != "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n" {
 				return fmt.Errorf("backend settings were not loaded from their file")
 			}
 			return nil
@@ -102,7 +102,7 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			t.Errorf("concurrent settings read failed: %v", err)
 		}
 	}
-	if err := a.WriteEnv("backend", "DB_BACKUP_RETENTION_PERIOD=0\n", settingsPassword); err == nil {
+	if err := a.WriteEnv("backend", "JWT_REFRESH_TOKEN_LIFETIME=0\n", settingsPassword); err == nil {
 		t.Fatal("a write bypassed the active readers")
 	}
 }
@@ -157,16 +157,16 @@ func TestSettingsReadsKeepAuthorizationAndLifecycleGuards(t *testing.T) {
 	}
 }
 
-func TestRetentionReadUsesSavedValue(t *testing.T) {
+func TestOverrideReadUsesSavedValue(t *testing.T) {
 	a := settingsApp(t)
-	for _, days := range []string{"14", "37", "0"} {
-		want := "DB_BACKUP_RETENTION_PERIOD=" + days + "\nADDITIONAL_PLUGS=[]\n"
+	for _, days := range []string{"14", "37", "5"} {
+		want := "JWT_REFRESH_TOKEN_LIFETIME=" + days + "\nADDITIONAL_PLUGS=[]\n"
 		if err := a.WriteEnv("backend", want, settingsPassword); err != nil {
 			t.Fatal(err)
 		}
 		got, err := a.ReadEnv("backend", settingsPassword)
 		if err != nil || got != want {
-			t.Fatalf("saved retention was not loaded: %q, %v", got, err)
+			t.Fatalf("saved override was not loaded: %q, %v", got, err)
 		}
 	}
 }
@@ -192,7 +192,7 @@ func TestWriteEnvCannotChangePluginsOutsidePluginTransaction(t *testing.T) {
 		t.Fatal("rejected plugin edit changed backend.env")
 	}
 
-	otherChange := strings.Replace(string(before), "DB_BACKUP_RETENTION_PERIOD=14", "DB_BACKUP_RETENTION_PERIOD=30", 1)
+	otherChange := strings.Replace(string(before), "JWT_REFRESH_TOKEN_LIFETIME=14", "JWT_REFRESH_TOKEN_LIFETIME=30", 1)
 	if err := a.WriteEnv("backend", otherChange, settingsPassword); err != nil {
 		t.Fatalf("an unrelated backend setting could not be changed with plugins preserved: %v", err)
 	}

@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,48 +18,43 @@ func writeSized(t *testing.T, dir, name string, size int) {
 	}
 }
 
-func TestLatestSetsPrefersNewestDailyForSizing(t *testing.T) {
+func TestLatestSetSizesTheNewestVerifiedSetWithItsFullCopy(t *testing.T) {
 	dir := t.TempDir()
 	writeSized(t, dir, "care-20260101-020000.dump.enc", 100)
 	writeSized(t, dir, "files-20260101-020000.tar.gz.enc", 300)
 	writeSized(t, dir, "care-20260102-020000.dump.enc", 200)
 	writeSized(t, dir, "files-20260102-020000.tar.gz.enc", 500)
-	writeSized(t, dir, "care-manual-20260103-090000.dump.enc", 250)
+	if err := os.Mkdir(filepath.Join(dir, "base-20260102-020000"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSized(t, filepath.Join(dir, "base-20260102-020000"), "base.tar.gz.enc", 700)
+	writeSized(t, dir, "care-pre-update-20260103-090000.dump.enc", 250)
+	writeSized(t, dir, "care-manual-20260104-090000.dump.enc", 250)
 	writeSized(t, dir, "unrelated.txt", 999)
 
-	daily, newest, found, err := LatestSets(dir)
+	set, found, err := LatestSet(dir)
 	if err != nil || !found {
 		t.Fatalf("found=%v err=%v", found, err)
 	}
-	if daily.Stamp != "20260102-020000" || daily.DumpBytes != 200 || daily.FilesBytes != 500 {
-		t.Fatalf("daily = %+v", daily)
-	}
-	if !newest.Manual || newest.Stamp != "20260103-090000" {
-		t.Fatalf("newest = %+v", newest)
+	if set.Stamp != "20260102-020000" || set.DumpBytes != 200 || set.FilesBytes != 500 || set.BaseBytes != 700 || set.Bytes() != 1400 {
+		t.Fatalf("set = %+v", set)
 	}
 }
 
-func TestLatestSetsSizesManualSetsWithTheirFiles(t *testing.T) {
+func TestLatestSetIgnoresLinksAndMissingParts(t *testing.T) {
 	dir := t.TempDir()
 	writeSized(t, dir, "care-20260101-020000.dump.enc", 100)
-	writeSized(t, dir, "files-20260101-020000.tar.gz.enc", 300)
-	writeSized(t, dir, "care-manual-20260102-090000.dump.enc", 150)
-	writeSized(t, dir, "files-manual-20260102-090000.tar.gz.enc", 400)
-
-	daily, newest, found, err := LatestSets(dir)
-	if err != nil || !found {
-		t.Fatalf("found=%v err=%v", found, err)
+	if err := os.Symlink(filepath.Join(dir, "care-20260101-020000.dump.enc"), filepath.Join(dir, "care-20260109-020000.dump.enc")); err != nil {
+		t.Skip(err)
 	}
-	if daily.FilesBytes != 300 {
-		t.Fatalf("daily set picked up a manual archive: %+v", daily)
-	}
-	if !newest.Manual || newest.DumpBytes != 150 || newest.FilesBytes != 400 {
-		t.Fatalf("newest = %+v", newest)
+	set, found, err := LatestSet(dir)
+	if err != nil || !found || set.Stamp != "20260101-020000" || set.Bytes() != 100 {
+		t.Fatalf("set=%+v found=%v err=%v", set, found, err)
 	}
 }
 
-func TestLatestSetsMissingFolder(t *testing.T) {
-	_, _, found, err := LatestSets(filepath.Join(t.TempDir(), "nope"))
+func TestLatestSetMissingFolder(t *testing.T) {
+	_, found, err := LatestSet(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || found {
 		t.Fatalf("found=%v err=%v", found, err)
 	}
@@ -71,15 +68,10 @@ func TestBackupNeed(t *testing.T) {
 	if got := BackupNeed(small, true); got != BackupFloor {
 		t.Fatalf("small set: need = %s, want floor", Human(got))
 	}
-	big := BackupSet{DumpBytes: 2 * GB, FilesBytes: 4 * GB}
-	want := (2*GB+8*GB)*5/4 + backupMargin
+	big := BackupSet{BaseBytes: 3 * GB, DumpBytes: 2 * GB, FilesBytes: 4 * GB}
+	want := 9*GB*5/4 + backupMargin
 	if got := BackupNeed(big, true); got != want {
 		t.Fatalf("big set: need = %s, want %s", Human(got), Human(want))
-	}
-	dbHeavy := BackupSet{DumpBytes: 6 * GB, FilesBytes: 1 * GB}
-	want = 12*GB*5/4 + backupMargin
-	if got := BackupNeed(dbHeavy, true); got != want {
-		t.Fatalf("db-heavy set: need = %s, want %s", Human(got), Human(want))
 	}
 }
 
@@ -114,22 +106,23 @@ func TestCheckInstall(t *testing.T) {
 	}
 }
 
-func TestAssessBackup(t *testing.T) {
-	set := BackupSet{DumpBytes: 1 * GB, FilesBytes: 1 * GB}
+func TestAssessBackupKeepsOnlyTheNewestSet(t *testing.T) {
+	set := BackupSet{BaseBytes: 1 * GB, DumpBytes: 1 * GB, FilesBytes: 1 * GB}
 	need := BackupNeed(set, true)
 
-	if b := AssessBackup("/b", diskspace.Usage{Free: need - 1}, set, true, false, false); b.Level != LevelCritical {
+	if b := AssessBackup("/b", diskspace.Usage{Free: need - 1}, set, true, false); b.Level != LevelCritical {
 		t.Fatalf("below need: %+v", b)
 	}
-	if b := AssessBackup("/b", diskspace.Usage{Free: need + 1}, set, true, false, false); b.Level != LevelLow {
-		t.Fatalf("one backup left: %+v", b)
+	if b := AssessBackup("/b", diskspace.Usage{Free: need + 1}, set, true, false); b.Level != LevelLow {
+		t.Fatalf("barely fits: %+v", b)
 	}
-	b := AssessBackup("/b", diskspace.Usage{Free: need + 20*set.Bytes()}, set, true, true, false)
-	if b.Level != LevelLow || b.DaysLeft != 20 {
-		t.Fatalf("keep-forever, 20 days: %+v", b)
+	b := AssessBackup("/b", diskspace.Usage{Free: 100 * need}, set, true, true)
+	if b.Level != LevelOK || !b.SharesDockerDrive || !strings.Contains(b.Message, "Only the newest verified backup is kept") {
+		t.Fatalf("plenty of room: %+v", b)
 	}
-	if b := AssessBackup("/b", diskspace.Usage{Free: need + 20*set.Bytes()}, set, true, false, false); b.Level != LevelOK || b.DaysLeft != -1 {
-		t.Fatalf("with retention: %+v", b)
+	data, err := json.Marshal(b)
+	if err != nil || strings.Contains(string(data), "days_left") || strings.Contains(string(data), "retention") {
+		t.Fatalf("backup space still exposes a retention contract: %s %v", data, err)
 	}
 }
 

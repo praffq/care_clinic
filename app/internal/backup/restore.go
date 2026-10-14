@@ -182,6 +182,16 @@ func (s *Store) RestoreFrom(srcDir, dbDump, filesArchive, recoveryFile string) e
 			return err
 		}
 	}
+	return s.stagedRestore(filesArchive != "", func(j *restoreJournal) error {
+		return s.stageDump(j, srcDir, dbDump, filesArchive, key)
+	})
+}
+
+// stagedRestore runs the journaled restore: stage writes the replacement
+// /restore/database.dump (and files) into the stage volume; the dump is then
+// restored into a separate database, migrated and swapped only after every
+// check passes, with rollback until the swap is committed.
+func (s *Store) stagedRestore(withFiles bool, stage func(*restoreJournal) error) error {
 	if pending, err := s.readRestoreJournal(); err != nil {
 		return err
 	} else if pending != nil {
@@ -193,14 +203,20 @@ func (s *Store) RestoreFrom(srcDir, dbDump, filesArchive, recoveryFile string) e
 	if err := s.EnsureRestoreImages(); err != nil {
 		return err
 	}
-	j, err := s.newRestoreJournal(filesArchive != "")
+	j, err := s.newRestoreJournal(withFiles)
 	if err != nil {
 		return err
 	}
 	if err := s.writeRestoreJournal(j); err != nil {
 		return err
 	}
-	if err := s.prepareRestore(j, srcDir, dbDump, filesArchive, key); err != nil {
+	if err := s.createRestoreVolume(j, j.stageVolume()); err != nil {
+		return s.restoreFailure(j, err)
+	}
+	if err := stage(j); err != nil {
+		return s.restoreFailure(j, err)
+	}
+	if err := s.prepareRestore(j); err != nil {
 		return s.restoreFailure(j, err)
 	}
 	s.logln("Stopping and checking all CARE writers, including backups and uploads...")
@@ -256,11 +272,8 @@ func (s *Store) mustExist(dir, name string) error {
 	return nil
 }
 
-func (s *Store) prepareRestore(j *restoreJournal, srcDir, dump, archive, key string) error {
+func (s *Store) stageDump(j *restoreJournal, srcDir, dump, archive, key string) error {
 	s.logln("Copying and fully validating the backup without changing the current database or files...")
-	if err := s.createRestoreVolume(j, j.stageVolume()); err != nil {
-		return err
-	}
 	script := "set -eu\numask 077\n" + stageBackupFile(dump, "database.dump")
 	if archive != "" {
 		script += stageBackupFile(archive, "files.tar.gz")
@@ -284,6 +297,10 @@ func (s *Store) prepareRestore(j *restoreJournal, srcDir, dump, archive, key str
 			return fmt.Errorf("files archive validation or staged extraction failed: %w", err)
 		}
 	}
+	return nil
+}
+
+func (s *Store) prepareRestore(j *restoreJournal) error {
 	if err := s.startRestoreDB(); err != nil {
 		return err
 	}

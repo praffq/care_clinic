@@ -73,7 +73,7 @@ func LoadDefaults(path string) (Defaults, error) {
 			if key.Tag != "!!str" || value.Tag != "!!str" || !keyPattern.MatchString(key.Value) {
 				return result, fmt.Errorf("env-defaults.yml: %s requires string keys and values", name)
 			}
-			if Managed(key.Value) || key.Value == "ADDITIONAL_PLUGS" || key.Value == "CORAZA_MODE" || key.Value == "DB_BACKUP_RETENTION_PERIOD" || key.Value == "REACT_APP_TITLE" || key.Value == "REACT_ALLOWED_LOCALES" {
+			if Managed(key.Value) || key.Value == "ADDITIONAL_PLUGS" || key.Value == "CORAZA_MODE" || key.Value == "REACT_APP_TITLE" || key.Value == "REACT_ALLOWED_LOCALES" {
 				return result, fmt.Errorf("env-defaults.yml: %s is clinic-managed, not a release default", key.Value)
 			}
 			if (name == "fe") != strings.HasPrefix(key.Value, "REACT_") {

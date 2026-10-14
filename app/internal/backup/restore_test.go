@@ -221,7 +221,7 @@ func TestRestoreDockerProcess(t *testing.T) {
 		}
 		step := suffix[25:]
 		switch step {
-		case "preflight", "extract", "stop-db-helpers":
+		case "preflight", "extract", "stop-db-helpers", "pitr":
 		case "database-state":
 			data, _ := json.Marshal(state.Databases)
 			output = string(data)

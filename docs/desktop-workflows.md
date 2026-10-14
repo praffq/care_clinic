@@ -228,9 +228,12 @@ available where it can be managed in Backups.
 ### Backups and restore
 
 Scheduled backups run at a 24-hour interval while their service is running, not
-at a fixed nightly clock time. The displayed retention comes from the installed
-settings; zero means keep backups indefinitely. Start CARE before taking a
-manual backup.
+at a fixed nightly clock time. Only the newest verified backup set is kept; the
+previous one is deleted only after the new one passes every check. Backups shows
+the last backup time, a verified badge, the time changes are saved through, the
+weekly trial restore, the optional extra copy, and alerts. **Restore to a point
+in time** replays saved changes up to a chosen moment. Start CARE before taking
+a manual backup.
 
 **Re-download backup key** asks for the current CARE Clinic admin password and saves
 another copy of the original recovery file. After installation or explicit

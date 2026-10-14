@@ -67,8 +67,10 @@ See [client recovery and earlier-install cleanup](docs/client-recovery.md).
   app through the operating system. Trusted certificates that did not come from
   CARE remain and may still permit browser access. Uninstall the setup in CARE
   Clinic before removing the executable through the operating system.
-- **Backups** — encrypted backups every 24 hours, with actual configured retention,
-  backup-now and one explicit **Restore from a backup file** path for local or
+- **Backups** — one latest verified encrypted backup set (full copy, dump and
+  files, replaced only after checks pass), continuous encrypted change files for
+  point-in-time restore, a weekly trial restore, an optional second copy on a
+  USB drive or network folder, backup-now and one explicit **Restore from a backup file** path for local or
   imported files. Restoring requires the CARE Clinic admin password, a recovery file
   for encrypted backups, and acknowledgement that clinic records will be replaced.
 - **Logs** — installation, app/engine updates, guest and container diagnostics in

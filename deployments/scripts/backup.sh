@@ -74,15 +74,37 @@ free_kb() { df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }'; }
 kb_of() { if [ -e "$1" ]; then du -sk "$1" 2>/dev/null | cut -f1; else echo 0; fi; }
 bytes_of() { wc -c <"$1" | tr -d ' '; }
 
-write_status() {
-	[ -d "$STATE_DIR" ] || return 0
-	tmp="$STATE_DIR/.backup-status.tmp"
-	printf 'state=%s\nreason=%s\nat=%s\nneed_kb=%s\nfree_kb=%s\nmessage=%s\n' \
-		"$1" "$2" "$(now)" "${3:-0}" "${4:-0}" "${5:-}" >"$tmp" 2>/dev/null &&
-		mv "$tmp" "$STATE_DIR/backup-status" 2>/dev/null || true
+# Status writes are how the app learns about backups; a failed write is
+# logged and reported to the caller instead of being silently dropped.
+state_dir_ok() {
+	[ -d "$STATE_DIR" ] && return 0
+	log "ERROR: the backup status folder $STATE_DIR is missing; status cannot be saved"
+	return 1
 }
 
-stamp_file() { [ -d "$STATE_DIR" ] && now >"$STATE_DIR/$1" 2>/dev/null || true; }
+write_status() {
+	state_dir_ok || return 1
+	tmp="$STATE_DIR/.backup-status.tmp"
+	if (printf 'state=%s\nreason=%s\nat=%s\nneed_kb=%s\nfree_kb=%s\nmessage=%s\n' \
+		"$1" "$2" "$(now)" "${3:-0}" "${4:-0}" "${5:-}" >"$tmp") &&
+		mv "$tmp" "$STATE_DIR/backup-status"; then
+		return 0
+	fi
+	rm -f "$tmp" 2>/dev/null || :
+	log "ERROR: could not save the backup status ($1) to $STATE_DIR/backup-status"
+	return 1
+}
+
+stamp_file() {
+	state_dir_ok || return 1
+	tmp="$STATE_DIR/.$1.tmp"
+	if (now >"$tmp") && mv "$tmp" "$STATE_DIR/$1"; then
+		return 0
+	fi
+	rm -f "$tmp" 2>/dev/null || :
+	log "ERROR: could not save $STATE_DIR/$1"
+	return 1
+}
 read_stamp() {
 	v=$(cat "$STATE_DIR/$1" 2>/dev/null || true)
 	case "$v" in ''|*[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
@@ -216,7 +238,7 @@ trial_restore() {
 	TRIAL_STATE=passed
 	TRIAL_MESSAGE="restored $(wc -l <"$work/trial.counts" | tr -d ' ') tables with matching row counts"
 	log "trial restore: passed"
-	stamp_file trial-at
+	stamp_file trial-at || true
 }
 
 # ---------------------------------------------------------------- WAL helpers
@@ -336,8 +358,10 @@ cycle() {
 	mkdir -p "$work" "$WAL_DIR"
 	if run_cycle "$ts" "$work" "$started"; then
 		rm -rf "$work"
-		stamp_file backup-ok-at
-		write_status ok "" 0 "$(free_kb "$BACKUP_DIR")" ""
+		if ! stamp_file backup-ok-at || ! write_status ok "" 0 "$(free_kb "$BACKUP_DIR")" ""; then
+			log "verified backup $ts: published and verified, but its status could not be saved"
+			return 1
+		fi
 		log "verified backup $ts: SUCCESS"
 		return 0
 	fi
@@ -372,6 +396,8 @@ run_cycle() {
 		tail -n 5 "$work/basebackup.log" | sed 's/^/[backup]   /'
 		fail "the full database copy failed"; return 1
 	fi
+	# Restores can target any moment after the copy finished (when it became consistent).
+	base_ended=$(now)
 	if ! pg_verifybackup -q "$work/base" >"$work/verify.log" 2>&1; then
 		tail -n 5 "$work/verify.log" | sed 's/^/[backup]   /'
 		fail "pg_verifybackup rejected the full copy"; return 1
@@ -428,14 +454,14 @@ run_cycle() {
 	base_file=$(file_json "base-$ts/base.tar.gz.enc" "$base_plain")
 	dump_file=$(file_json "care-$ts.dump.enc" "$dump_plain")
 	files_file=$(file_json "files-$ts.tar.gz.enc" "$files_plain")
-	jq -n --arg set "$ts" --argjson created "$(now)" --argjson started "$started" \
+	jq -n --arg set "$ts" --argjson created "$(now)" --argjson started "$started" --argjson base_ended "$base_ended" \
 		--arg start_lsn "$start_lsn" --arg end_lsn "$end_lsn" --arg start_wal "$start_wal" \
 		--argjson timeline "$timeline" --argjson seg "$seg_bytes" --arg newest "$newest" \
 		--arg serial "$(cert_serial)" --argjson trial "$trial" \
 		--argjson base "$base_file" --argjson dump "$dump_file" --argjson files "$files_file" \
 		'{version: 1, set: $set, created_at: $created, started_at: $started,
 		  certificate_serial: $serial,
-		  base: {start_lsn: $start_lsn, end_lsn: $end_lsn, start_wal: $start_wal, timeline: $timeline, wal_segment_bytes: $seg},
+		  base: {start_lsn: $start_lsn, end_lsn: $end_lsn, ended_at: $base_ended, start_wal: $start_wal, timeline: $timeline, wal_segment_bytes: $seg},
 		  files: [$base, $dump, $files],
 		  wal: {dir: "wal", from: $start_wal, through: $newest},
 		  checks: {checksums: "ok", decrypt_test: "ok", pg_restore_list: "ok", pg_verifybackup: "ok", pg_waldump: "ok", wal_chain: "ok"},
@@ -527,8 +553,8 @@ pre_update() {
 # wal_status records how far the clinic's changes are safely archived:
 # saved_through is the last moment nothing was waiting to be archived.
 wal_status() {
-	[ -d "$STATE_DIR" ] || return 0
-	row=$(archiver_row 2>/dev/null) || { write_wal_status unknown 0 0 0 "" "the database is not reachable"; return 0; }
+	state_dir_ok || return 1
+	row=$(archiver_row 2>/dev/null) || { write_wal_status unknown 0 0 0 "" "the database is not reachable"; return; }
 	IFS='|' read -r last_wal last_at failed_count failed_wal failed_at cur_wal cur_off seg_bytes mode <<ROW
 $row
 ROW
@@ -536,7 +562,7 @@ ROW
 	cur_off=${cur_off:-0} seg_bytes=${seg_bytes:-16777216} mode=${mode:-off}
 	if [ "$mode" != on ]; then
 		write_wal_status off 0 "$last_at" "$failed_at" "" "change-file archiving is switched off"
-		return 0
+		return
 	fi
 	t=$(now)
 	clean_at=$(read_stamp wal-clean-at)
@@ -554,12 +580,12 @@ ROW
 		[ "$cur_off" -eq 0 ] && [ -z "$last_wal" ] && [ "$cur_n" -le 1 ] && caught_up=1
 	fi
 	if [ "$caught_up" -eq 1 ]; then
-		echo "$t" >"$STATE_DIR/wal-clean-at"
+		stamp_file wal-clean-at || return 1
 		rm -f "$STATE_DIR/wal-pending-since"
 		clean_at=$t
 		pending_since=0
 	elif [ "$pending_since" -eq 0 ]; then
-		echo "$t" >"$STATE_DIR/wal-pending-since"
+		stamp_file wal-pending-since || return 1
 		pending_since=$t
 	fi
 	saved=$clean_at
@@ -601,9 +627,13 @@ quick_gap() {
 }
 
 write_wal_status() {
+	state_dir_ok || return 1
 	tmp="$STATE_DIR/.wal-status.tmp"
-	printf 'state=%s\nchecked_at=%s\nsaved_through=%s\nlast_archived_at=%s\nlast_failed_at=%s\ngap=%s\nmessage=%s\n' \
-		"$1" "$(now)" "$2" "$3" "$4" "$5" "$6" >"$tmp" 2>/dev/null && mv "$tmp" "$STATE_DIR/wal-status" 2>/dev/null || true
+	(printf 'state=%s\nchecked_at=%s\nsaved_through=%s\nlast_archived_at=%s\nlast_failed_at=%s\ngap=%s\nmessage=%s\n' \
+		"$1" "$(now)" "$2" "$3" "$4" "$5" "$6" >"$tmp") && mv "$tmp" "$STATE_DIR/wal-status" && return 0
+	rm -f "$tmp" 2>/dev/null || :
+	log "ERROR: could not save the change-file status to $STATE_DIR/wal-status"
+	return 1
 }
 
 due() {
@@ -639,10 +669,10 @@ esac
 
 log "sidecar started; verified encrypted backups -> $BACKUP_DIR (one set kept, change files archived continuously)"
 while :; do
-	wal_status || true
+	wal_status || log "ERROR: change-file status was not updated - see errors above"
 	if due; then
 		with_backup_lock cycle || log "backup cycle failed - see errors above"
-		wal_status || true
+		wal_status || log "ERROR: change-file status was not updated - see errors above"
 	fi
 	sleep "$TICK"
 done

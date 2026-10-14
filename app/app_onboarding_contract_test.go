@@ -6,12 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
 )
 
 // Check the bridge signatures without opening a native dialog.
@@ -59,7 +58,7 @@ func onboardingJobUnlocked(t *testing.T, a *App) {
 	a.jobMu.Unlock()
 }
 
-func TestOnboardingBackupPolicyRequiresAnInstalledServer(t *testing.T) {
+func TestOnboardingBackupHealthRequiresAnInstalledServer(t *testing.T) {
 	for _, state := range []string{"unchosen", "client", "preinstall", "partial", "removing", "missing compose", "directory compose"} {
 		t.Run(state, func(t *testing.T) {
 			a := roleApp(t)
@@ -83,7 +82,7 @@ func TestOnboardingBackupPolicyRequiresAnInstalledServer(t *testing.T) {
 			if err := os.MkdirAll(a.installDir(), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(a.installDir(), "backend.env"), []byte("DB_BACKUP_RETENTION_PERIOD=37\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(a.installDir(), "backend.env"), []byte("UNRELATED=preserved\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			composePath := filepath.Join(a.installDir(), "docker-compose.yml")
@@ -96,9 +95,9 @@ func TestOnboardingBackupPolicyRequiresAnInstalledServer(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			policy, err := a.GetBackupPolicy()
-			if err == nil || policy != (clinic.BackupPolicy{}) {
-				t.Fatalf("%s returned a usable policy: %+v, %v", state, policy, err)
+			h, err := a.GetBackupHealth()
+			if err == nil || h.Verified || h.LastBackupAt != 0 || len(h.Alerts) != 0 {
+				t.Fatalf("%s returned usable backup health: %+v, %v", state, h, err)
 			}
 			want := map[string]string{
 				"unchosen":          "clinic server",
@@ -118,41 +117,43 @@ func TestOnboardingBackupPolicyRequiresAnInstalledServer(t *testing.T) {
 	}
 }
 
-func TestOnboardingBackupPolicyReadsCurrentInstalledSettings(t *testing.T) {
+func TestOnboardingBackupHealthReadsWithoutWriting(t *testing.T) {
 	a := settingsApp(t)
 	if err := a.saveConfig(a.loadConfig()); err != nil {
 		t.Fatal(err)
 	}
 	unchanged := onboardingConfigUnchanged(t, a)
-	for _, tc := range []struct {
-		body string
-		days int
-	}{
-		{"DB_BACKUP_RETENTION_PERIOD=37\n", 37},
-		{"DB_BACKUP_RETENTION_PERIOD=0\n", 0},
-		{"UNRELATED=preserved\n", 0},
-	} {
-		path := filepath.Join(a.installDir(), "backend.env")
-		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		policy, err := a.GetBackupPolicy()
-		if err != nil || policy.IntervalSeconds != 86400 || policy.RetentionDays != tc.days {
-			t.Fatalf("policy did not reflect backend.env: %+v, %v", policy, err)
-		}
-		body, err := os.ReadFile(path)
-		if err != nil || string(body) != tc.body {
-			t.Fatalf("policy read changed backend.env: %q, %v", body, err)
-		}
-		unchanged()
+	path := filepath.Join(a.installDir(), "backend.env")
+	before, _ := os.ReadFile(path)
+	h, err := a.GetBackupHealth()
+	if err != nil || h.Verified {
+		t.Fatalf("health without a backup: %+v, %v", h, err)
 	}
-	if err := os.Remove(filepath.Join(a.installDir(), "backend.env")); err != nil {
-		t.Fatal(err)
+	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+		t.Fatal("reading backup health changed backend.env")
 	}
-	if policy, err := a.GetBackupPolicy(); err == nil || policy != (clinic.BackupPolicy{}) {
-		t.Fatalf("missing settings became a keep-forever policy: %+v, %v", policy, err)
+	data, err := json.Marshal(h)
+	if err != nil || strings.Contains(string(data), "retention") {
+		t.Fatalf("backup health exposes a retention contract: %s %v", data, err)
 	}
 	unchanged()
+	onboardingJobUnlocked(t, a)
+}
+
+// Only the newest verified backup is kept; there is no retention setting to
+// read or change from the UI.
+func TestNoBackupRetentionBridge(t *testing.T) {
+	typ := reflect.TypeOf((*App)(nil))
+	for _, name := range []string{"GetBackupPolicy", "SetBackupPolicy", "SetBackupRetention", "GetBackupRetention"} {
+		if _, ok := typ.MethodByName(name); ok {
+			t.Fatalf("App still exposes %s", name)
+		}
+	}
+	for _, name := range []string{"GetBackupHealth", "SetBackupCopyDir", "ClearBackupCopyDir", "RestorePointInTime"} {
+		if _, ok := typ.MethodByName(name); !ok {
+			t.Fatalf("App lacks %s", name)
+		}
+	}
 }
 
 func TestOnboardingRecoverySheetRejectsUnavailableOrIncompleteCodes(t *testing.T) {

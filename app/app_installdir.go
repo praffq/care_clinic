@@ -290,7 +290,7 @@ func (a *App) ensureInstallDir() (string, error) {
 	return dest, writeKitInventory(dest, current)
 }
 
-const backupStateDir = "backup-state"
+const backupStateDir = "backup-state" // storage.StateDirName
 
 func (a *App) engine() *clinic.Clinic {
 	cfg := a.loadConfig()

@@ -52,7 +52,7 @@ flowchart LR
 
 These are conventions, not hard-coded assumptions about every user's home or environment. The actual paths come from the functions above.
 
-The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); Linux and macOS keep `<user home>/Desktop/care-db-backups`. Linux deliberately does not follow `XDG_DESKTOP_DIR` here: changing an empty-config installation's effective destination would hide existing backups from listing, retention and removal. Folder-opening helpers may still use localized XDG Desktop settings. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
+The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); Linux and macOS keep `<user home>/Desktop/care-db-backups`. Linux deliberately does not follow `XDG_DESKTOP_DIR` here: changing an empty-config installation's effective destination would hide existing backups from listing, replacement and removal. Folder-opening helpers may still use localized XDG Desktop settings. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
 
 The installed kit contains the following recognizable parts:
 
@@ -124,6 +124,7 @@ See [client removal](native-integrations.md#removing-client-access).
 | `removing` | `Removing` | Destructive cleanup began but may not have completed. Omitted when false. |
 | `mdns_name` | `MDNSName` | Saved clinic name, normally such as `care.local`. |
 | `backup_dir` | `BackupDir` | Effective selected backup directory, not just the picker parent. Empty means use the engine default. |
+| `backup_copy_dir` | `BackupCopyDir` | Optional existing second-copy parent folder; the copier writes `care-backup-copy` inside it. Empty disables copying without deleting existing copies. |
 | `admin_pw_hash` | `AdminPwHash` | Bcrypt hash for local CARE Clinic administrative authorization. |
 | `admin_recovery_hashes` | `AdminRecoveryHashes` | Six SHA-256 code-hash slots; a used slot is cleared. No plaintext codes. |
 | `admin_recovery_path` | `AdminRecoveryPath` | Exported CARE Clinic recovery-code sheet location. Setup checks that a regular, readable file still contains the six distinct saved codes; symlinks and oversized sheets are rejected. |
@@ -371,7 +372,7 @@ it currently equals the default. Later release defaults cannot replace it.
 **Reset to default** removes the override so the latest default wins. The same
 distinction applies to `"0"`, `"false"` and every other string.
 
-Both files must load before the editor accepts a draft. A failed frontend read can therefore also leave a backend field such as retention unloaded. The shared read gate is essential: parallel file reads must not produce an exclusive-job conflict on an idle application.
+Both files must load before the editor accepts a draft. A failed frontend read can therefore also leave backend fields unloaded. The shared read gate is essential: parallel file reads must not produce an exclusive-job conflict on an idle application.
 
 ### Parsing and customization boundaries
 
@@ -504,6 +505,19 @@ The active plugin list is stored in `plugins.json` beside `backend.env`. Its bac
 
 ## Changing the backup destination
 
+The primary backup stays on local disk. Only the latest verified set is kept;
+there is no configurable retention period. A full copy, portable dump and files
+archive must pass manifest checks before replacing the previous set. Continuous
+encrypted WAL supports point-in-time restore within the saved-through range.
+Weekly trial restores run only when the database disk has space plus margin.
+
+The Backups page separately chooses an optional second-copy destination
+(`SetBackupCopyDir` / `ClearBackupCopyDir`). An absent USB drive or share reports
+disconnected and catches up after reconnecting; local archiving continues.
+Copies are verified before older destination files are removed. These settings
+are desktop configuration, not environment overrides. See
+[backups and restore](backups-and-restore.md) for verification, recovery and alerts.
+
 `SetBackupDir` takes a selected parent and appends `care-db-backups`. It validates placement and writability, checks for another installation's recovery data, and inspects whether the backup sidecar is running.
 
 Placement excludes the installation, saved-settings and log directories, resolving
@@ -521,7 +535,7 @@ destination from being activated without its matching public certificate.
 
 ## Relevant regression coverage
 
-[`app_env_test.go`](../app/app_env_test.go) covers concurrent environment/plugin reads, mutation exclusion, closing, administrator/lifecycle guards, and retention save/read values including zero. [`plugins_test.go`](../app/internal/plugins/plugins_test.go) covers literal plugin configuration round trips and duplicate removal.
+[`app_env_test.go`](../app/app_env_test.go) covers concurrent environment/plugin reads, mutation exclusion, closing, administrator/lifecycle guards, and saved override values. [`plugins_test.go`](../app/internal/plugins/plugins_test.go) covers literal plugin configuration round trips and duplicate removal.
 
 The underlying atomic-file behavior and the clinic's domain rewriting have their own tests, indexed in [the repository map](repository-map.md). Those layers matter independently of how a friendly control is rendered.
 

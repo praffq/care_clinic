@@ -24,21 +24,21 @@ type BackupSpace struct {
 	Total             uint64 `json:"total"`
 	Need              uint64 `json:"need"`
 	SetBytes          uint64 `json:"set_bytes"`
-	DaysLeft          int    `json:"days_left"`
 	SharesDockerDrive bool   `json:"shares_docker_drive"`
 	Level             Level  `json:"level"`
 	Message           string `json:"message"`
 }
 
 type Report struct {
-	CheckedAt      int64       `json:"checked_at"`
-	Level          Level       `json:"level"`
-	Headline       string      `json:"headline"`
-	Drives         []Drive     `json:"drives"`
-	Backup         BackupSpace `json:"backup"`
-	LastRun        BackupRun   `json:"last_run"`
-	NewestBackupAt int64       `json:"newest_backup_at"`
-	Stale          bool        `json:"stale"`
+	CheckedAt      int64        `json:"checked_at"`
+	Level          Level        `json:"level"`
+	Headline       string       `json:"headline"`
+	Drives         []Drive      `json:"drives"`
+	Backup         BackupSpace  `json:"backup"`
+	LastRun        BackupRun    `json:"last_run"`
+	NewestBackupAt int64        `json:"newest_backup_at"`
+	Stale          bool         `json:"stale"`
+	Health         BackupHealth `json:"health"`
 }
 
 type InstallResult struct {
@@ -99,7 +99,7 @@ func AssessDrive(id, label string, u diskspace.Usage) Drive {
 	return d
 }
 
-func AssessBackup(dir string, u diskspace.Usage, set BackupSet, found, keepForever, sharesDocker bool) BackupSpace {
+func AssessBackup(dir string, u diskspace.Usage, set BackupSet, found, sharesDocker bool) BackupSpace {
 	need := BackupNeed(set, found)
 	b := BackupSpace{
 		Dir:               dir,
@@ -107,29 +107,20 @@ func AssessBackup(dir string, u diskspace.Usage, set BackupSet, found, keepForev
 		Total:             u.Total,
 		Need:              need,
 		SetBytes:          set.Bytes(),
-		DaysLeft:          -1,
 		SharesDockerDrive: sharesDocker,
 		Level:             LevelOK,
-	}
-	if keepForever && found && !set.Manual {
-		b.DaysLeft = DaysLeft(u.Free, need, set.Bytes())
 	}
 	switch {
 	case u.Free < need:
 		b.Level = LevelCritical
 		b.Message = fmt.Sprintf("Not enough room for the next backup. It needs about %s and only %s is free.",
 			Human(need), Human(u.Free))
-	case u.Free < 2*need:
+	case u.Free < need+need/2:
 		b.Level = LevelLow
-		b.Message = fmt.Sprintf("Room for only one more backup. Each one needs about %s; %s is free.",
+		b.Message = fmt.Sprintf("The next backup only just fits. It needs about %s; %s is free.",
 			Human(need), Human(u.Free))
-	case b.DaysLeft >= 0 && b.DaysLeft < 30:
-		b.Level = LevelLow
-		b.Message = fmt.Sprintf("Backups are kept forever, so this drive fills up in about %d days.", b.DaysLeft)
-	case b.DaysLeft >= 0:
-		b.Message = fmt.Sprintf("Each backup needs about %s. Room for about %d days of backups.", Human(need), b.DaysLeft)
 	default:
-		b.Message = fmt.Sprintf("Each backup needs about %s.", Human(need))
+		b.Message = fmt.Sprintf("Only the newest verified backup is kept. The next one needs about %s while it is checked.", Human(need))
 	}
 	return b
 }
@@ -145,6 +136,9 @@ func Summarise(r *Report, running bool, now time.Time) {
 	failed := r.LastRun.State == "failed"
 	if failed || r.Stale {
 		levels = append(levels, LevelCritical)
+	}
+	for _, a := range r.Health.Alerts {
+		levels = append(levels, a.Level)
 	}
 	r.Level = Worst(levels...)
 	r.Headline = headline(r, failed)
@@ -168,6 +162,11 @@ func headline(r *Report, failed bool) string {
 	if r.Backup.Level == LevelCritical {
 		return "The next backup won't fit on the backup drive."
 	}
+	for _, a := range r.Health.Alerts {
+		if a.Level == LevelCritical {
+			return a.Message
+		}
+	}
 	if r.Stale {
 		return "No backup in over a day."
 	}
@@ -178,6 +177,11 @@ func headline(r *Report, failed bool) string {
 	}
 	if r.Backup.Level == LevelLow {
 		return "The backup drive is getting full."
+	}
+	for _, a := range r.Health.Alerts {
+		if a.Level == LevelLow {
+			return a.Message
+		}
 	}
 	return ""
 }
