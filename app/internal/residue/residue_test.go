@@ -186,13 +186,11 @@ func TestAbsentManagedEngineDoesNotProbeAnExternalDockerCLI(t *testing.T) {
 }
 
 func TestSystemTracesClassifySetupResidue(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("HOME", root)
+	t.Setenv("LOCALAPPDATA", root)
+	markManagedDisk(t)
+	agent := enginetest.New(t, nil)
 	t.Setenv("PATH", root)
 	inspectionError := errors.New("hosts file could not be read")
 	for _, tc := range []struct {
@@ -211,7 +209,7 @@ func TestSystemTracesClassifySetupResidue(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			report, err := scan(Options{
-				Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+				Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 				InstallDir: filepath.Join(root, "install"),
 			}, func(proc.Runner) ([]Trace, error) { return tc.traces, tc.err })
 			if report.Clean != tc.clean || !errors.Is(err, tc.err) || len(report.Traces) != len(tc.traces) {

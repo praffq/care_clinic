@@ -11,8 +11,21 @@ import (
 	"testing"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine"
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
+
+func TestNativeAgentFixtureDoesNotInspectHostInstallation(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	agent := enginetest.New(t, nil)
+	available, err := engineAvailableWith(proc.Runner{Agent: agent.Client}, false, func() (bool, error) {
+		t.Fatal("reachable agent fixture consulted the real host installation")
+		return false, os.ErrPermission
+	})
+	if !available || err != nil {
+		t.Fatalf("isolated agent unavailable: %v, %v", available, err)
+	}
+}
 
 func TestNativeMissingSocketRequiresProofOfEngineAbsence(t *testing.T) {
 	for _, state := range []string{"absent", "retained data", "inspection failed"} {
