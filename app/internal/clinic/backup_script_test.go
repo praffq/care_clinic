@@ -2,443 +2,742 @@ package clinic
 
 import (
 	"bytes"
-	"context"
-	"errors"
+	"compress/gzip"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-const backupScriptCommands = `#!/bin/sh
-set -eu
+// The shell scripts run for real against real openssl/jq; only PostgreSQL
+// programs, df, flock and the clock are faked.
+const fakeBackupTools = `#!/bin/sh
 name=${0##*/}
-printf '%s %s\n' "$BACKUP_TEST_ID" "$name" >> "$BACKUP_TEST_ROOT/trace"
-wait_for() {
-	count=0
-	while [ ! -f "$1" ]; do
-		count=$((count + 1))
-		[ "$count" -lt 500 ] || exit 98
-		"$BACKUP_TEST_SLEEP" 0.02
-	done
-}
+printf '%s %s\n' "$name" "$*" >> "$FAKE_ROOT/trace"
+fails() { case " $FAKE_FAIL " in *" $1 "*) return 0 ;; esac; return 1; }
 case "$name" in
-	flock)
-		[ "$BACKUP_TEST_FAIL" != lock ] || exit 1
-		if [ -n "$BACKUP_TEST_FLOCK" ]; then
-			exec "$BACKUP_TEST_FLOCK" "$@"
+flock)
+	fails lock && exit 1
+	if [ -n "${FAKE_REAL_FLOCK:-}" ]; then exec "$FAKE_REAL_FLOCK" "$@"; fi
+	exit 0 ;;
+date)
+	if [ "${1:-}" = "+%Y%m%d-%H%M%S" ]; then echo "$FAKE_TS"; exit 0; fi
+	exec /bin/date "$@" ;;
+df)
+	free=$FAKE_FREE_KB
+	case "$*" in *pgdata*) free=$FAKE_PGDATA_FREE_KB ;; */work*) free=${FAKE_WORK_FREE_KB:-99999999} ;; esac
+	printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nfake 99999999 1 %s 1%% /\n' "$free" ;;
+sleep)
+	if [ "$1" = "${CARE_BACKUP_TICK:-}" ]; then
+		if [ -n "${FAKE_SLEEP_WAIT:-}" ]; then
+			: > "$FAKE_ROOT/sleeping"
+			while [ ! -f "$FAKE_ROOT/wake" ]; do /bin/sleep 0.05; done
 		fi
-		;;
-	date)
-		printf '20260102-030405\n'
-		;;
-	pg_isready)
-		printf '%s\n' "$*" > "$BACKUP_TEST_ROOT/readiness-args"
-		count=0
-		if [ -f "$BACKUP_TEST_ROOT/readiness-count" ]; then
-			count=$(cat "$BACKUP_TEST_ROOT/readiness-count")
-		fi
-		count=$((count + 1))
-		printf '%s\n' "$count" > "$BACKUP_TEST_ROOT/readiness-count"
-		[ "$BACKUP_TEST_FAIL" != database-unavailable ] || exit 1
-		[ "$count" -gt "$BACKUP_TEST_DB_READY_AFTER" ] || exit 1
-		;;
-	pg_dump)
-		[ "$BACKUP_TEST_FAIL" != pg-dump ] || exit 1
-		while [ "$1" != -f ]; do shift; done
-		printf 'database\n' > "$2"
-		if [ "$BACKUP_TEST_ID" = "$BACKUP_TEST_HOLD" ]; then
-			: > "$BACKUP_TEST_ROOT/holding"
-			wait_for "$BACKUP_TEST_ROOT/release"
-		fi
-		;;
-	pg_restore)
-		;;
-	tar)
-		if [ "$1" = -czf ]; then
-			printf 'readable but possibly incomplete archive\n' > "$2"
-			[ "$BACKUP_TEST_FAIL" != tar ] || exit 1
-		fi
-		;;
-	openssl)
-		while [ "$#" -gt 0 ]; do
-			case "$1" in
-				-in) shift; input=$1 ;;
-				-out) shift; output=$1 ;;
-			esac
-			shift
-		done
-		cat "$input" > "$output"
-		;;
-	mv)
-		case "$BACKUP_TEST_FAIL:${2##*/}" in
-			db-mv:care-*|files-mv:files-*) exit 1 ;;
-		esac
-		exec "$BACKUP_TEST_MV" "$@"
-		;;
-	rm)
-		for arg in "$@"; do
-			case "$BACKUP_TEST_FAIL:${arg##*/}" in
-				db-rm:.care-*.dump.tmp|files-rm:.files-*.tar.gz.tmp) exit 1 ;;
-			esac
-		done
-		exec "$BACKUP_TEST_RM" "$@"
-		;;
-	find)
-		[ "$1" = "$BACKUP_TEST_ROOT/backups" ] || exit 95
-		kind=temp
-		partial=.care-stale.dump.tmp
-		for arg in "$@"; do
-			if [ "$arg" = -mtime ]; then
-				kind=retention
-				partial=care-old.dump.enc
-			fi
-		done
-		if [ "$BACKUP_TEST_FAIL" = "$kind-prune" ]; then
-			"$BACKUP_TEST_RM" -f "$BACKUP_TEST_ROOT/backups/$partial"
-			exit 1
-		fi
-		exec "$BACKUP_TEST_FIND" "$@"
-		;;
-	df)
-		if [ -n "$BACKUP_TEST_FREE_KB" ]; then
-			printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 99999999 0 %s 1%% /backups\n' "$BACKUP_TEST_FREE_KB"
-			exit 0
-		fi
-		exec "$BACKUP_TEST_DF" "$@"
-		;;
-	sleep)
-		[ "$1" != 5 ] || exit 0
-		[ "$1" = 86400 ] || exit 97
-		: > "$BACKUP_TEST_ROOT/sleeping"
-		if [ "$BACKUP_TEST_HOLD_SLEEP" = 1 ]; then
-			wait_for "$BACKUP_TEST_ROOT/wake"
-		fi
-		exit 99
-		;;
-	*) exit 96 ;;
+		kill -TERM "$PPID"
+		exit 0
+	fi
+	case "$1" in *[!0-9]*) exec /bin/sleep "$1" ;; esac
+	exec /bin/sleep 0.01 ;;
+pg_isready)
+	printf '%s\n' "$*" > "$FAKE_ROOT/readiness-args"
+	fails database && exit 1
+	echo ready >> "$FAKE_ROOT/ready"
+	[ "$(wc -l < "$FAKE_ROOT/ready")" -gt "${FAKE_READY_AFTER:-0}" ] || exit 1
+	exit 0 ;;
+pg_basebackup)
+	fails basebackup && exit 1
+	while [ "$1" != -D ]; do shift; done
+	mkdir -p "$2/pg_wal"
+	printf 'START WAL LOCATION: 0/%s (file %s)\nSTART TIMELINE: 1\n' "$FAKE_START_LSN" "$FAKE_START_WAL" > "$2/backup_label"
+	printf '{"WAL-Ranges":[{"Timeline":1,"Start-LSN":"0/%s","End-LSN":"0/%s"}]}\n' "$FAKE_START_LSN" "$FAKE_END_LSN" > "$2/backup_manifest"
+	echo data > "$2/PG_VERSION" ;;
+pg_verifybackup) fails verify && exit 1; exit 0 ;;
+pg_waldump) fails waldump && exit 1; exit 0 ;;
+pg_dump)
+	fails dump && exit 1
+	if [ -n "${FAKE_HOLD:-}" ]; then
+		: > "$FAKE_ROOT/holding"
+		while [ ! -f "$FAKE_ROOT/release" ]; do /bin/sleep 0.05; done
+	fi
+	while [ "$1" != -f ]; do shift; done
+	echo "dump of $FAKE_TS" > "$2" ;;
+pg_restore)
+	case "$*" in *--list*) fails list && exit 1; exit 0 ;; esac
+	fails trial && exit 1; exit 0 ;;
+gosu) shift; exec "$@" ;;
+chown) exit 0 ;;
+pg_ctl)
+	case "$*" in
+	*" start"*)
+		while [ "$1" != -l ]; do shift; done
+		printf '%s\n' "${FAKE_RECOVERY_LOG:-}" > "$2" ;;
+	esac
+	exit 0 ;;
+psql)
+	case "$*" in
+	*pg_is_in_recovery*) echo f; exit 0 ;;
+	*pg_last_xact_replay_timestamp*) echo "2026-01-02 03:10:00+00"; exit 0 ;;
+	*"-XtAc select 1") echo 1; exit 0 ;;
+	esac
+	while [ "$#" -gt 0 ] && [ "$1" != -c ]; do
+		[ "$1" = -d ] && { shift; db=$1; }
+		shift
+	done
+	q=$2
+	case "$q" in
+	*"sum(pg_database_size"*) echo "${FAKE_CLUSTER_BYTES:-1048576}" ;;
+	*"pg_database_size(current_database())"*) echo 1048576 ;;
+	*string_agg*) echo "select 1" ;;
+	*"t || '|' || n"*)
+		if [ "${db:-}" != care ]; then echo "public.patients|$FAKE_TRIAL_ROWS"; else echo "public.patients|10"; fi ;;
+	*wal_segment_size*) echo 16777216 ;;
+	*"pg_walfile_name('"*) echo "$FAKE_END_WAL" ;;
+	*pg_switch_wal*) echo 0/0 ;;
+	*) : ;;
+	esac ;;
 esac
 `
 
-type backupScriptFixture struct {
-	root  string
-	env   []string
-	flock string
+type scriptFixture struct {
+	root, scripts, backups, wal, state, bin, cert, key string
+	env                                                []string
 }
 
-func newBackupScriptFixture(t *testing.T) *backupScriptFixture {
+func newScriptFixture(t *testing.T) *scriptFixture {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("requires a POSIX shell")
+		t.Skip("backup scripts run inside Linux containers")
 	}
-	script, err := os.ReadFile("../../../deployments/scripts/backup.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := os.MkdirTemp(".", ".backup-script-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(root); err != nil {
-			t.Error(err)
+	for _, tool := range []string{"sh", "openssl", "jq", "sha256sum", "gzip", "tar"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
 		}
-	})
-	root, err = filepath.Abs(root)
+	}
+	root := t.TempDir()
+	scripts, err := filepath.Abs(filepath.Join("..", "..", "..", "deployments", "scripts"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{"bin", "backups", "minio-data", "state"} {
-		if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
+	f := &scriptFixture{root: root, scripts: scripts, backups: filepath.Join(root, "backups"),
+		state: filepath.Join(root, "state"), bin: filepath.Join(root, "bin"),
+		cert: filepath.Join(root, "keys", "backup-cert.pem"), key: filepath.Join(root, "recovery.pem")}
+	f.wal = filepath.Join(f.backups, "wal")
+	for _, d := range []string{f.wal, f.state, f.bin, filepath.Dir(f.cert), filepath.Join(root, "work"),
+		filepath.Join(root, "shm"), filepath.Join(root, "pgdata"), filepath.Join(root, "minio", "patient-bucket")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for old, replacement := range map[string]string{
-		"BACKUP_DIR=/backups":        `BACKUP_DIR="$BACKUP_TEST_ROOT/backups"`,
-		"MINIO_DIR=/minio-data":      `MINIO_DIR="$BACKUP_TEST_ROOT/minio-data"`,
-		"CERT=/keys/backup-cert.pem": `CERT="$BACKUP_TEST_ROOT/cert"`,
-		"STATE_DIR=/state":           `STATE_DIR="$BACKUP_TEST_ROOT/state"`,
+	if err := os.WriteFile(filepath.Join(root, "minio", "patient-bucket", "scan.pdf"), []byte("upload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", f.key,
+		"-out", f.cert, "-subj", "/CN=clinic", "-days", "30").CombinedOutput()
+	if err != nil {
+		t.Fatalf("certificate: %v\n%s", err, out)
+	}
+	for _, tool := range []string{"flock", "date", "df", "sleep", "pg_isready", "pg_basebackup", "pg_verifybackup",
+		"pg_waldump", "pg_dump", "pg_restore", "psql"} {
+		if err := os.WriteFile(filepath.Join(f.bin, tool), []byte(fakeBackupTools), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.env = append(os.Environ(),
+		"PATH="+f.bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_ROOT="+root, "FAKE_FAIL=", "FAKE_TS=20260102-030405",
+		"FAKE_FREE_KB=99999999", "FAKE_PGDATA_FREE_KB=99999999", "FAKE_TRIAL_ROWS=10",
+		"FAKE_START_LSN=4000028", "FAKE_END_LSN=4000120",
+		"FAKE_START_WAL="+seg(4), "FAKE_END_WAL="+seg(4),
+		"CARE_SCRIPTS="+scripts, "CARE_BACKUP_DIR="+f.backups, "CARE_WAL_DIR="+f.wal,
+		"CARE_BACKUP_CERT="+f.cert, "CARE_EPHEMERAL_DIR="+filepath.Join(root, "shm"),
+		"CARE_STATE_DIR="+f.state, "CARE_WORK_DIR="+filepath.Join(root, "work"),
+		"CARE_PGDATA_MOUNT="+filepath.Join(root, "pgdata"), "CARE_MINIO_DIR="+filepath.Join(root, "minio"),
+		"CARE_ARCHIVE_WAIT=1", "CARE_DB_WAIT_ATTEMPTS=2", "POSTGRES_PASSWORD=test", "POSTGRES_DB=care", "BACKUP_MIN_FREE_KB=0")
+	return f
+}
+
+func seg(n int) string { return fmt.Sprintf("00000001%08X%08X", n/256, n%256) }
+
+func (f *scriptFixture) run(t *testing.T, env []string, script string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("sh", append([]string{filepath.Join(f.scripts, script)}, args...)...)
+	cmd.Env = append(append([]string{}, f.env...), env...)
+	cmd.Dir = f.root
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// archive publishes a fake WAL segment through the real archive script.
+func (f *scriptFixture) archive(t *testing.T, name string) []byte {
+	t.Helper()
+	data := make([]byte, 4096)
+	_, _ = rand.Read(data)
+	src := filepath.Join(f.root, "pg_wal", name)
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.run(t, nil, "wal-archive.sh", src, name); err != nil {
+		t.Fatalf("archive %s: %v\n%s", name, err, out)
+	}
+	return data
+}
+
+func (f *scriptFixture) decrypt(t *testing.T, path string) []byte {
+	t.Helper()
+	out, err := exec.Command("openssl", "cms", "-decrypt", "-binary", "-inform", "DER", "-in", path, "-inkey", f.key).Output()
+	if err != nil {
+		t.Fatalf("decrypt %s with the clinic recovery key: %v", path, err)
+	}
+	return out
+}
+
+func gunzip(t *testing.T, b []byte) []byte {
+	t.Helper()
+	r, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func listDir(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Name() == ".backup.lock" {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestWALArchiveEncryptsVerifiesAndPublishesAtomically(t *testing.T) {
+	f := newScriptFixture(t)
+	data := f.archive(t, seg(1))
+	sums, err := os.ReadFile(filepath.Join(f.wal, seg(1)+".sha256"))
+	if err != nil || !strings.Contains(string(sums), "waldump=ok") {
+		t.Fatalf("checksum file: %q, %v", sums, err)
+	}
+	if got := gunzip(t, f.decrypt(t, filepath.Join(f.wal, seg(1)+".gz.enc"))); !bytes.Equal(got, data) {
+		t.Fatal("archived change file does not decrypt to the original")
+	}
+	if names := listDir(t, f.wal); len(names) != 2 {
+		t.Fatalf("temporary files left behind: %v", names)
+	}
+	if names := listDir(t, filepath.Join(f.root, "shm")); len(names) != 0 {
+		t.Fatalf("single-use verification key was not destroyed: %v", names)
+	}
+	// PostgreSQL retries after a crash: identical contents succeed again.
+	src := filepath.Join(f.root, "pg_wal", seg(1))
+	if out, err := f.run(t, nil, "wal-archive.sh", src, seg(1)); err != nil {
+		t.Fatalf("identical retry: %v\n%s", err, out)
+	}
+	// Different contents under a published name must never overwrite it.
+	if err := os.WriteFile(src, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.run(t, nil, "wal-archive.sh", src, seg(1)); err == nil {
+		t.Fatalf("conflicting archive accepted:\n%s", out)
+	}
+	if got := gunzip(t, f.decrypt(t, filepath.Join(f.wal, seg(1)+".gz.enc"))); !bytes.Equal(got, data) {
+		t.Fatal("conflicting archive replaced the original")
+	}
+}
+
+func TestWALArchiveRepairsCrashBetweenPublishSteps(t *testing.T) {
+	f := newScriptFixture(t)
+	src := filepath.Join(f.root, "pg_wal", seg(2))
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("segment two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The ciphertext was renamed into place but the process died before the
+	// checksum file followed it.
+	if err := os.WriteFile(filepath.Join(f.wal, seg(2)+".gz.enc"), []byte("torn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.run(t, nil, "wal-archive.sh", src, seg(2)); err != nil {
+		t.Fatalf("orphan blocked archiving: %v\n%s", err, out)
+	}
+	if got := gunzip(t, f.decrypt(t, filepath.Join(f.wal, seg(2)+".gz.enc"))); string(got) != "segment two" {
+		t.Fatalf("orphan was not replaced: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.wal, seg(2)+".sha256")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWALArchiveRefusesUnsafeInput(t *testing.T) {
+	f := newScriptFixture(t)
+	src := filepath.Join(f.root, "segment")
+	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, fail string }{
+		{"../../etc/passwd", ""}, {"00000001000000000000000Z", ""}, {seg(3), "waldump"},
 	} {
-		if strings.Count(string(script), old+"\n") != 1 {
-			t.Fatalf("cannot isolate backup script assignment %q", old)
-		}
-		script = bytes.Replace(script, []byte(old+"\n"), []byte(replacement+"\n"), 1)
-	}
-	for name, data := range map[string][]byte{"backup.sh": script, "cert": []byte("fixture")} {
-		if err := os.WriteFile(filepath.Join(root, name), data, 0o600); err != nil {
-			t.Fatal(err)
+		if out, err := f.run(t, []string{"FAKE_FAIL=" + tc.fail}, "wal-archive.sh", src, tc.name); err == nil {
+			t.Fatalf("%s accepted:\n%s", tc.name, out)
 		}
 	}
-	for _, name := range []string{"flock", "date", "pg_isready", "pg_dump", "pg_restore", "tar", "openssl", "mv", "rm", "find", "sleep", "df"} {
-		if err := os.WriteFile(filepath.Join(root, "bin", name), []byte(backupScriptCommands), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mv, err := exec.LookPath("mv")
-	if err != nil {
+	if err := os.Remove(f.cert); err != nil {
 		t.Fatal(err)
 	}
-	rm, err := exec.LookPath("rm")
-	if err != nil {
-		t.Fatal(err)
+	if out, err := f.run(t, nil, "wal-archive.sh", src, seg(3)); err == nil {
+		t.Fatalf("archived without the clinic certificate:\n%s", out)
 	}
-	find, err := exec.LookPath("find")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	df, err := exec.LookPath("df")
-	if err != nil {
-		t.Fatal(err)
-	}
-	flock, _ := exec.LookPath("flock")
-	return &backupScriptFixture{
-		root:  root,
-		flock: flock,
-		env: append(os.Environ(),
-			"PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
-			"POSTGRES_PASSWORD=fixture",
-			"DB_BACKUP_RETENTION_PERIOD=1",
-			"BACKUP_TEST_ROOT="+root,
-			"BACKUP_TEST_MV="+mv,
-			"BACKUP_TEST_RM="+rm,
-			"BACKUP_TEST_FIND="+find,
-			"BACKUP_TEST_SLEEP="+sleep,
-			"BACKUP_TEST_DF="+df,
-			"BACKUP_TEST_FREE_KB=",
-			"BACKUP_TEST_FLOCK="+flock,
-			"BACKUP_TEST_FAIL=",
-			"BACKUP_TEST_DB_READY_AFTER=0",
-			"BACKUP_TEST_HOLD=",
-			"BACKUP_TEST_HOLD_SLEEP=0",
-		),
+	if names := listDir(t, f.wal); len(names) != 0 {
+		t.Fatalf("refused archives left files: %v", names)
 	}
 }
 
-type backupScriptRun struct {
-	done   chan struct{}
-	output bytes.Buffer
-	err    error
+func TestWALRestoreDecryptsOnlyIntactFiles(t *testing.T) {
+	f := newScriptFixture(t)
+	data := f.archive(t, seg(5))
+	env := []string{"CARE_RECOVERY_KEY=" + f.key}
+	dest := filepath.Join(f.root, "restored")
+	if out, err := f.run(t, env, "wal-restore.sh", seg(5), dest); err != nil {
+		t.Fatalf("restore: %v\n%s", err, out)
+	}
+	if got, _ := os.ReadFile(dest); !bytes.Equal(got, data) {
+		t.Fatal("restored change file differs")
+	}
+	if _, err := f.run(t, env, "wal-restore.sh", seg(6), filepath.Join(f.root, "missing")); err == nil {
+		t.Fatal("missing change file reported as restored")
+	}
+	enc := filepath.Join(f.wal, seg(5)+".gz.enc")
+	b, _ := os.ReadFile(enc)
+	b[len(b)-1] ^= 1
+	if err := os.WriteFile(enc, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	damaged := filepath.Join(f.root, "damaged")
+	if _, err := f.run(t, env, "wal-restore.sh", seg(5), damaged); err == nil {
+		t.Fatal("damaged change file restored")
+	}
+	if _, err := os.Stat(damaged); !os.IsNotExist(err) {
+		t.Fatal("damaged change file was written for PostgreSQL")
+	}
 }
 
-func (f *backupScriptFixture) start(t *testing.T, id string, args []string, env ...string) *backupScriptRun {
+type manifestFile struct {
+	Path        string `json:"path"`
+	SHA256      string `json:"sha256"`
+	PlainSHA256 string `json:"plain_sha256"`
+}
+
+type scriptManifest struct {
+	Set   string         `json:"set"`
+	Files []manifestFile `json:"files"`
+	Base  struct {
+		StartWAL string `json:"start_wal"`
+	} `json:"base"`
+	Checks map[string]string `json:"checks"`
+	Trial  struct {
+		State   string `json:"state"`
+		Message string `json:"message"`
+	} `json:"trial_restore"`
+}
+
+func (f *scriptFixture) manifest(t *testing.T) scriptManifest {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{filepath.Join(f.root, "backup.sh")}, args...)...)
-	cmd.Env = append(append(append([]string{}, f.env...), "BACKUP_TEST_ID="+id), env...)
-	cmd.WaitDelay = time.Second
-	run := &backupScriptRun{done: make(chan struct{})}
-	cmd.Stdout = &run.output
-	cmd.Stderr = &run.output
-	if err := cmd.Start(); err != nil {
-		cancel()
+	b, err := os.ReadFile(filepath.Join(f.backups, "manifest.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		run.err = cmd.Wait()
-		close(run.done)
-	}()
-	t.Cleanup(func() {
-		f.write(t, "release")
-		f.write(t, "wake")
-		cancel()
-		<-run.done
+	var m scriptManifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// previousSet runs one good cycle at segment 2 so later cycles have a set to
+// keep or replace, and archives segments 1-6 plus a timeline history file.
+func (f *scriptFixture) previousSet(t *testing.T) {
+	t.Helper()
+	for n := 1; n <= 6; n++ {
+		f.archive(t, seg(n))
+	}
+	f.archive(t, "00000002.history")
+	env := []string{"FAKE_TS=20260101-030405", "FAKE_START_WAL=" + seg(2), "FAKE_END_WAL=" + seg(2), "FAKE_START_LSN=2000028"}
+	if out, err := f.run(t, env, "backup.sh", "now"); err != nil {
+		t.Fatalf("first cycle: %v\n%s", err, out)
+	}
+}
+
+func TestBackupCycleReplacesPreviousOnlyAfterVerification(t *testing.T) {
+	f := newScriptFixture(t)
+	f.previousSet(t)
+	if m := f.manifest(t); m.Set != "20260101-030405" || m.Trial.State != "passed" {
+		t.Fatalf("first manifest: %+v", m)
+	}
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err != nil {
+		t.Fatalf("cycle: %v\n%s", err, out)
+	}
+	m := f.manifest(t)
+	if m.Set != "20260102-030405" || m.Base.StartWAL != seg(4) || len(m.Files) != 3 {
+		t.Fatalf("manifest: %+v", m)
+	}
+	for _, check := range []string{"checksums", "decrypt_test", "pg_restore_list", "pg_verifybackup", "pg_waldump", "wal_chain"} {
+		if m.Checks[check] != "ok" {
+			t.Fatalf("check %s not recorded: %+v", check, m.Checks)
+		}
+	}
+	for _, file := range m.Files {
+		plain := f.decrypt(t, filepath.Join(f.backups, file.Path))
+		if file.PlainSHA256 == "" || len(plain) == 0 {
+			t.Fatalf("%s is not decryptable with the recovery key", file.Path)
+		}
+	}
+	want := []string{"base-20260102-030405", "care-20260102-030405.dump.enc", "files-20260102-030405.tar.gz.enc", "manifest.json", "wal"}
+	if got := listDir(t, f.backups); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("backup folder = %v, want only the newest set %v", got, want)
+	}
+	var wal []string
+	for _, name := range listDir(t, f.wal) {
+		if strings.HasSuffix(name, ".sha256") {
+			wal = append(wal, strings.TrimSuffix(name, ".sha256"))
+		}
+	}
+	if strings.Join(wal, ",") != strings.Join([]string{seg(4), seg(5), seg(6), "00000002.history"}, ",") {
+		t.Fatalf("change files kept = %v; only those from the new copy's start must remain", wal)
+	}
+	if status, _ := os.ReadFile(filepath.Join(f.state, "backup-status")); !strings.Contains(string(status), "state=ok") {
+		t.Fatalf("status: %s", status)
+	}
+	if strings.Index(out, "manifest: recorded") > strings.Index(out, "removed previous backup") {
+		t.Fatalf("previous set removed before the new one was recorded:\n%s", out)
+	}
+}
+
+func TestBackupCycleFailureKeepsPreviousSetAndAllChangeFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		pre  func(*scriptFixture)
+	}{
+		{"database unavailable", []string{"FAKE_FAIL=database"}, nil},
+		{"base backup", []string{"FAKE_FAIL=basebackup"}, nil},
+		{"pg_verifybackup", []string{"FAKE_FAIL=verify"}, nil},
+		{"pg_waldump", []string{"FAKE_FAIL=waldump"}, nil},
+		{"pg_dump", []string{"FAKE_FAIL=dump"}, nil},
+		{"pg_restore list", []string{"FAKE_FAIL=list"}, nil},
+		{"change file never archived", []string{"FAKE_END_WAL=" + seg(9)}, nil},
+		{"trial restore rows", []string{"FAKE_TRIAL_ROWS=9"}, func(f *scriptFixture) { _ = os.Remove(filepath.Join(f.state, "trial-at")) }},
+		{"backup folder full", []string{"FAKE_FREE_KB=10"}, nil},
+		{"gap in change files", nil, func(f *scriptFixture) { _ = os.Remove(filepath.Join(f.wal, seg(5)+".sha256")) }},
+		{"damaged change file", nil, func(f *scriptFixture) {
+			_ = os.WriteFile(filepath.Join(f.wal, seg(5)+".gz.enc"), []byte("damaged"), 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.previousSet(t)
+			if tc.pre != nil {
+				tc.pre(f)
+			}
+			before := listDir(t, f.backups)
+			walBefore := listDir(t, f.wal)
+			manifest, _ := os.ReadFile(filepath.Join(f.backups, "manifest.json"))
+			out, err := f.run(t, tc.env, "backup.sh", "now")
+			if err == nil {
+				t.Fatalf("failure reported as success:\n%s", out)
+			}
+			if got := listDir(t, f.backups); strings.Join(got, ",") != strings.Join(before, ",") {
+				t.Fatalf("backup folder changed after failure: %v -> %v\n%s", before, got, out)
+			}
+			if got := listDir(t, f.wal); strings.Join(got, ",") != strings.Join(walBefore, ",") {
+				t.Fatalf("change files changed after failure: %v -> %v", walBefore, got)
+			}
+			if now, _ := os.ReadFile(filepath.Join(f.backups, "manifest.json")); !bytes.Equal(now, manifest) {
+				t.Fatal("manifest changed after failure")
+			}
+			status, _ := os.ReadFile(filepath.Join(f.state, "backup-status"))
+			if !strings.Contains(string(status), "state=failed") || !strings.Contains(string(status), "previous backup was kept") {
+				t.Fatalf("failure not alerted: %s", status)
+			}
+		})
+	}
+}
+
+func TestTrialRestoreIsSkippedWithNoticeWhenSpaceIsShort(t *testing.T) {
+	f := newScriptFixture(t)
+	for n := 4; n <= 4; n++ {
+		f.archive(t, seg(n))
+	}
+	out, err := f.run(t, []string{"FAKE_PGDATA_FREE_KB=1000"}, "backup.sh", "now")
+	if err != nil {
+		t.Fatalf("cycle: %v\n%s", err, out)
+	}
+	m := f.manifest(t)
+	if m.Trial.State != "skipped" || !strings.Contains(m.Trial.Message, "not enough free space") {
+		t.Fatalf("trial = %+v", m.Trial)
+	}
+	if strings.Contains(readTrace(t, f), "create database") {
+		t.Fatal("trial database created without enough space")
+	}
+}
+
+func TestTrialRestoreRunsWeeklyAndDropsThrowawayDatabase(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if out, err := f.run(t, nil, "backup.sh", "now"); err != nil {
+		t.Fatalf("cycle: %v\n%s", err, out)
+	}
+	trace := readTrace(t, f)
+	if !strings.Contains(trace, "create database \"care_trial_") || !strings.Contains(trace, "drop database if exists \"care_trial_") {
+		t.Fatalf("trial restore did not create and drop a throwaway database:\n%s", trace)
+	}
+	if f.manifest(t).Trial.State != "passed" {
+		t.Fatal("trial result not recorded")
+	}
+	_ = os.Remove(filepath.Join(f.root, "trace"))
+	if out, err := f.run(t, []string{"FAKE_TS=20260103-030405"}, "backup.sh", "now"); err != nil {
+		t.Fatalf("second cycle: %v\n%s", err, out)
+	}
+	if strings.Contains(readTrace(t, f), "create database") {
+		t.Fatal("trial restore repeated within a week")
+	}
+	if f.manifest(t).Trial.State != "passed" {
+		t.Fatal("previous trial result dropped")
+	}
+}
+
+func readTrace(t *testing.T, f *scriptFixture) string {
+	b, _ := os.ReadFile(filepath.Join(f.root, "trace"))
+	return string(b)
+}
+
+func TestPreUpdateBackupKeepsOnlyNewestSafetyCopy(t *testing.T) {
+	f := newScriptFixture(t)
+	f.previousSet(t)
+	for _, ts := range []string{"20260102-010101", "20260102-020202"} {
+		if out, err := f.run(t, nil, "backup.sh", "once", "pre-update-"+ts); err != nil {
+			t.Fatalf("pre-update: %v\n%s", err, out)
+		}
+	}
+	got := strings.Join(listDir(t, f.backups), ",")
+	for _, want := range []string{"care-pre-update-20260102-020202.dump.enc", "files-pre-update-20260102-020202.tar.gz.enc", "care-20260101-030405.dump.enc"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+	if strings.Contains(got, "010101") {
+		t.Fatalf("older safety copy kept: %s", got)
+	}
+	if out, err := f.run(t, nil, "backup.sh", "once", "../evil"); err == nil {
+		t.Fatalf("unsafe one-shot name accepted:\n%s", out)
+	}
+}
+
+func TestBackupReserveRefusesBeforeWriting(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	reserve := backupReserveKB("windows")
+	out, err := f.run(t, []string{"BACKUP_MIN_FREE_KB=" + reserve, "FAKE_FREE_KB=" + reserve}, "backup.sh", "now")
+	if err == nil || strings.Contains(readTrace(t, f), "pg_basebackup") {
+		t.Fatalf("backup started below the reserve:\n%s", out)
+	}
+	status, _ := os.ReadFile(filepath.Join(f.state, "backup-status"))
+	if !strings.Contains(string(status), "reason=disk_full") {
+		t.Fatalf("status: %s", status)
+	}
+}
+
+func (f *scriptFixture) status(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.state, "backup-status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// snapshot records every path and its contents under the backup folder so a
+// failed run can be proven to have changed nothing.
+func (f *scriptFixture) snapshot(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(f.backups, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(f.backups, p)
+		if rel == ".backup.lock" {
+			return nil
+		}
+		switch {
+		case d.Type()&os.ModeSymlink != 0:
+			target, _ := os.Readlink(p)
+			out[rel] = "link:" + target
+		case d.IsDir():
+			out[rel] = "dir"
+		default:
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			out[rel] = string(b)
+		}
+		return nil
 	})
-	return run
-}
-
-func (r *backupScriptRun) wait(t *testing.T, code int) string {
-	t.Helper()
-	// CommandContext and WaitDelay bound this wait, including inherited output pipes.
-	<-r.done
-	got := 0
-	if r.err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(r.err, &exitErr) {
-			t.Fatalf("backup script failed: %v\n%s", r.err, &r.output)
-		}
-		got = exitErr.ExitCode()
-	}
-	if got != code {
-		t.Fatalf("backup script exit = %d, want %d\n%s", got, code, &r.output)
-	}
-	return r.output.String()
-}
-
-func (f *backupScriptFixture) write(t *testing.T, name string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.root, name), []byte("fixture"), 0o600); err != nil {
-		t.Error(err)
-	}
-}
-
-func (f *backupScriptFixture) trace(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(f.root, "trace"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(data)
+	return out
 }
 
-func (f *backupScriptFixture) waitFor(t *testing.T, name, content string) {
+func sameSnapshot(t *testing.T, before, after map[string]string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(filepath.Join(f.root, name))
-		if err == nil && strings.Contains(string(data), content) {
-			return
+	for k, v := range before {
+		if after[k] != v {
+			t.Fatalf("%s changed or was removed", k)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("backup script never reached %s %q", name, content)
+	for k := range after {
+		if _, ok := before[k]; !ok {
+			t.Fatalf("%s was left behind", k)
+		}
+	}
 }
 
-func (f *backupScriptFixture) checkFile(t *testing.T, name string, want bool) {
+// daemon runs the scheduler for exactly one tick; the fake sleep ends it.
+func (f *scriptFixture) daemon(t *testing.T, env ...string) string {
 	t.Helper()
-	_, err := os.Stat(filepath.Join(f.root, "backups", name))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if (err == nil) != want {
-		t.Fatalf("backup file %s exists = %v, want %v", name, err == nil, want)
-	}
+	out, _ := f.run(t, append([]string{"CARE_BACKUP_TICK=7", "CARE_BACKUP_INTERVAL=0", "CARE_BACKUP_RETRY=0"}, env...), "backup.sh")
+	return out
 }
 
 func TestBackupScriptScheduledFailures(t *testing.T) {
 	for _, tc := range []struct {
-		name, failure, message string
-		database, files        bool
-		temporary              string
+		name, fail, message string
 	}{
-		{"database dump", "pg-dump", "pg_dump failed", false, false, ""},
-		{"database publication", "db-mv", "publishing the dump failed", false, false, ""},
-		{"database plaintext cleanup", "db-rm", "removing temporary backup files failed", false, false, ".care-20260102-030405.dump.tmp"},
-		{"archive creation", "tar", "archiving the files failed", true, false, ""},
-		{"files publication", "files-mv", "publishing the files archive failed", true, false, ""},
-		{"files plaintext cleanup", "files-rm", "removing temporary backup files failed", true, false, ".files-20260102-030405.tar.gz.tmp"},
-		{"lock acquisition", "lock", "acquiring the backup lock failed", false, false, ""},
-		{"complete set", "", "SUCCESS", true, true, ""},
+		{"complete set", "", "SUCCESS"},
+		{"database dump", "dump", "pg_dump failed"},
+		{"dump verification", "list", "pg_restore --list"},
+		{"full copy verification", "verify", "pg_verifybackup rejected the full copy"},
+		{"lock acquisition", "lock", "acquiring the backup lock failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			f.write(t, "backups/care-old.dump.enc")
-			output := f.start(t, "daily", nil, "BACKUP_TEST_FAIL="+tc.failure).wait(t, 99)
-			if !strings.Contains(output, tc.message) {
-				t.Fatalf("missing %q in output:\n%s", tc.message, output)
+			f := newScriptFixture(t)
+			f.previousSet(t)
+			_ = os.Remove(filepath.Join(f.root, "trace"))
+			before := f.snapshot(t)
+			out := f.daemon(t, "FAKE_FAIL="+tc.fail)
+			if !strings.Contains(out, tc.message) {
+				t.Fatalf("missing %q:\n%s", tc.message, out)
 			}
-			complete := tc.failure == ""
-			if strings.Contains(f.trace(t), "daily find\n") != complete {
-				t.Fatalf("retention did not match backup success:\n%s", f.trace(t))
+			if _, err := os.Stat(filepath.Join(f.state, "wal-status")); err != nil {
+				t.Fatalf("scheduler did not record change-file status: %v", err)
 			}
-			if !complete && (!strings.Contains(output, "backup cycle failed") || strings.Contains(output, ": SUCCESS")) {
-				t.Fatalf("incomplete backup reported success:\n%s", output)
+			if tc.fail == "" {
+				if m := f.manifest(t); m.Set != "20260102-030405" || !strings.Contains(f.status(t), "state=ok\n") {
+					t.Fatalf("scheduled success not recorded: %+v\n%s", m, f.status(t))
+				}
+				return
 			}
-			if !complete && tc.failure != "lock" && !strings.Contains(output, "retention skipped") {
-				t.Fatalf("incomplete backup did not report skipped retention:\n%s", output)
+			if strings.Contains(out, ": SUCCESS") || !strings.Contains(out, "backup cycle failed") {
+				t.Fatalf("incomplete backup reported success:\n%s", out)
 			}
-			f.checkFile(t, "care-20260102-030405.dump.enc", tc.database)
-			f.checkFile(t, "files-20260102-030405.tar.gz.enc", tc.files)
-			f.checkFile(t, "care-old.dump.enc", true)
-			wantTemporaries := 0
-			if tc.temporary != "" {
-				wantTemporaries = 1
-				f.checkFile(t, tc.temporary, true)
+			sameSnapshot(t, before, f.snapshot(t))
+			if tc.fail == "lock" {
+				if strings.Contains(readTrace(t, f), "pg_basebackup ") {
+					t.Fatal("backup ran without the lock")
+				}
+				return
 			}
-			leftovers, err := filepath.Glob(filepath.Join(f.root, "backups", ".*.tmp*"))
-			if err != nil || len(leftovers) != wantTemporaries {
-				t.Fatalf("unexpected temporary backup files: %v, %v", leftovers, err)
+			if s := f.status(t); !strings.Contains(s, "state=failed\nreason=error\n") || !strings.Contains(s, "previous backup was kept") {
+				t.Fatalf("status: %s", s)
+			}
+			if _, err := os.Stat(filepath.Join(f.state, "backup-failed-at")); err != nil {
+				t.Fatal("failed attempt not stamped for retry back-off")
 			}
 		})
 	}
 }
 
 func TestBackupScriptWaitsForDatabaseBeforeDumping(t *testing.T) {
-	for _, mode := range []string{"daily", "manual"} {
-		t.Run(mode, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			f.write(t, "backups/care-old.dump.enc")
-			var args []string
-			code := 99
-			if mode == "manual" {
-				args, code = []string{"once", "manual-20260102-030405"}, 0
+	for _, mode := range [][]string{{"now"}, {"once", "pre-update-20260102-030405"}} {
+		t.Run(mode[0], func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			out, err := f.run(t, []string{"FAKE_READY_AFTER=3", "CARE_DB_WAIT_ATTEMPTS=10",
+				"POSTGRES_HOST=clinic-db", "POSTGRES_PORT=5544", "POSTGRES_USER=care-owner", "POSTGRES_DB=care-test"}, "backup.sh", mode...)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, out)
 			}
-			output := f.start(t, mode, args, "BACKUP_TEST_DB_READY_AFTER=3",
-				"POSTGRES_HOST=clinic-db", "POSTGRES_PORT=5544", "POSTGRES_USER=care-owner", "POSTGRES_DB=care-test").wait(t, code)
-			trace := f.trace(t)
-			if strings.Count(trace, mode+" pg_isready\n") != 4 ||
-				strings.Index(trace, mode+" pg_dump\n") < strings.LastIndex(trace, mode+" pg_isready\n") {
-				t.Fatalf("dump did not wait for database readiness:\n%s", trace)
+			trace := readTrace(t, f)
+			if strings.Count(trace, "pg_isready ") != 4 || strings.Index(trace, "pg_dump ") < strings.LastIndex(trace, "pg_isready ") {
+				t.Fatalf("did not wait for database readiness:\n%s", trace)
 			}
-			if !strings.Contains(output, "waiting for PostgreSQL") || !strings.Contains(output, "database: ready") ||
-				!strings.Contains(output, ": SUCCESS") || strings.Contains(output, "FAILED") {
-				t.Fatalf("startup wait was reported as a failed backup:\n%s", output)
+			if !strings.Contains(out, "waiting for PostgreSQL") || !strings.Contains(out, ": SUCCESS") || strings.Contains(out, "FAILED") {
+				t.Fatalf("startup wait reported as a failure:\n%s", out)
 			}
-			probe, err := os.ReadFile(filepath.Join(f.root, "readiness-args"))
-			if err != nil || string(probe) != "-h clinic-db -p 5544 -U care-owner -d care-test -t 5\n" {
-				t.Fatalf("readiness probe did not use the backup database settings: %q, %v", probe, err)
+			probe, _ := os.ReadFile(filepath.Join(f.root, "readiness-args"))
+			if string(probe) != "-h clinic-db -p 5544 -U care-owner -d care-test -t 5\n" {
+				t.Fatalf("readiness probe did not use the backup database settings: %q", probe)
 			}
-			status, err := os.ReadFile(filepath.Join(f.root, "state", "backup-status"))
-			if err != nil || !strings.Contains(string(status), "state=ok\n") {
-				t.Fatalf("completed backup did not clear the failure state: %s, %v", status, err)
-			}
-			f.checkFile(t, "care-old.dump.enc", true)
 		})
 	}
 }
 
 func TestBackupScriptDatabaseWaitIsBoundedAndPreservesSavedBackups(t *testing.T) {
-	for _, mode := range []string{"daily", "manual"} {
-		t.Run(mode, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			f.write(t, "backups/care-old.dump.enc")
-			f.write(t, "backups/files-old.tar.gz.enc")
-			previous := []byte("state=ok\nreason=\nat=1767225600\n")
-			statusPath := filepath.Join(f.root, "state", "backup-status")
-			if err := os.WriteFile(statusPath, previous, 0o600); err != nil {
+	for _, mode := range [][]string{{"now"}, {"once", "pre-update-20260102-030405"}} {
+		t.Run(mode[0], func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.previousSet(t)
+			statusBefore := f.status(t)
+			if err := os.Remove(filepath.Join(f.root, "trace")); err != nil {
 				t.Fatal(err)
 			}
-			var args []string
-			code := 99
-			if mode == "manual" {
-				args, code = []string{"once", "manual-20260102-030405"}, 1
+			before := f.snapshot(t)
+			out, err := f.run(t, []string{"FAKE_FAIL=database", "CARE_DB_WAIT_ATTEMPTS=4"}, "backup.sh", mode...)
+			if err == nil || !strings.Contains(out, "PostgreSQL did not become ready") || strings.Contains(out, ": SUCCESS") {
+				t.Fatalf("missing database readiness failure: %v\n%s", err, out)
 			}
-			output := f.start(t, mode, args, "BACKUP_TEST_FAIL=database-unavailable").wait(t, code)
-			trace := f.trace(t)
-			if count := strings.Count(trace, mode+" pg_isready\n"); count != 30 {
-				t.Fatalf("readiness probes = %d, want 30", count)
+			trace := readTrace(t, f)
+			if n := strings.Count(trace, "pg_isready "); n != 4 {
+				t.Fatalf("readiness probes = %d, want 4", n)
 			}
-			for _, command := range []string{"pg_dump", "tar", "openssl", "mv", "find"} {
-				if strings.Contains(trace, mode+" "+command+"\n") {
-					t.Fatalf("unavailable database reached %s:\n%s", command, trace)
+			for _, cmd := range []string{"pg_basebackup", "pg_dump", "pg_restore", "psql"} {
+				if strings.Contains(trace, cmd+" ") {
+					t.Fatalf("unavailable database reached %s:\n%s", cmd, trace)
 				}
 			}
-			if !strings.Contains(output, "PostgreSQL did not become ready") || strings.Contains(output, ": SUCCESS") {
-				t.Fatalf("missing database readiness failure:\n%s", output)
-			}
-			status, err := os.ReadFile(statusPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if mode == "manual" {
-				if !bytes.Equal(status, previous) {
-					t.Fatalf("failed manual attempt changed the scheduled status: %s", status)
+			sameSnapshot(t, before, f.snapshot(t))
+			status := f.status(t)
+			if mode[0] == "once" {
+				if status != statusBefore {
+					t.Fatalf("failed safety backup changed the scheduled status: %s", status)
 				}
-			} else if !strings.Contains(string(status), "state=failed\nreason=database_unavailable\n") {
+			} else if !strings.Contains(status, "state=failed\nreason=database_unavailable\n") || !strings.Contains(status, "previous backup was kept") {
 				t.Fatalf("scheduled failure lost its database-specific reason: %s", status)
-			}
-			for _, name := range []string{"care-old.dump.enc", "files-old.tar.gz.enc"} {
-				data, err := os.ReadFile(filepath.Join(f.root, "backups", name))
-				if err != nil || string(data) != "fixture" {
-					t.Fatalf("existing backup %s changed: %q, %v", name, data, err)
-				}
 			}
 		})
 	}
@@ -446,154 +745,149 @@ func TestBackupScriptDatabaseWaitIsBoundedAndPreservesSavedBackups(t *testing.T)
 
 func TestBackupScriptManualIncludesFiles(t *testing.T) {
 	for _, tc := range []struct {
-		failure         string
-		database, files bool
+		name string
+		env  []string
+		ok   bool
 	}{
-		{"", true, true},
-		{"db-mv", false, false},
-		{"db-rm", false, false},
-		{"tar", true, false},
-		{"files-mv", true, false},
-		{"files-rm", true, false},
-		{"lock", false, false},
+		{"complete", nil, true},
+		{"dump fails", []string{"FAKE_FAIL=dump"}, false},
+		{"dump unreadable", []string{"FAKE_FAIL=list"}, false},
+		{"files folder missing", []string{"CARE_MINIO_DIR=/nonexistent-care-files"}, false},
 	} {
-		t.Run("failure="+tc.failure, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			code := 0
-			if tc.failure != "" {
-				code = 1
+		t.Run(tc.name, func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.previousSet(t)
+			statusBefore := f.status(t)
+			before := f.snapshot(t)
+			out, err := f.run(t, tc.env, "backup.sh", "once", "pre-update-20260102-030405")
+			if (err == nil) != tc.ok || tc.ok != strings.Contains(out, "safety backup pre-update-20260102-030405: SUCCESS") {
+				t.Fatalf("ok=%v: %v\n%s", tc.ok, err, out)
 			}
-			output := f.start(t, "manual", []string{"once", "manual-20260102-030405"}, "BACKUP_TEST_FAIL="+tc.failure).wait(t, code)
-			trace := f.trace(t)
-			if strings.Contains(trace, "manual find\n") || strings.Contains(trace, "manual sleep\n") {
-				t.Fatalf("manual backup pruned or looped:\n%s", trace)
+			if strings.Contains(out, "removed previous backup") {
+				t.Fatalf("safety backup pruned the verified set:\n%s", out)
 			}
-			if (tc.failure == "") != strings.Contains(output, "manual backup manual-20260102-030405: SUCCESS") {
-				t.Fatalf("manual backup success report wrong for failure %q:\n%s", tc.failure, output)
+			after := f.snapshot(t)
+			for _, name := range []string{"care-pre-update-20260102-030405.dump.enc", "files-pre-update-20260102-030405.tar.gz.enc"} {
+				if _, ok := after[name]; ok != tc.ok {
+					t.Fatalf("%s present=%v, want %v", name, ok, tc.ok)
+				}
+				delete(after, name)
 			}
-			f.checkFile(t, "care-manual-20260102-030405.dump.enc", tc.database)
-			f.checkFile(t, "files-manual-20260102-030405.tar.gz.enc", tc.files)
-			_, err := os.Stat(filepath.Join(f.root, "state", "backup-status"))
-			if tc.failure != "" && !os.IsNotExist(err) {
-				t.Fatalf("a failed manual backup touched the daily status: %v", err)
+			sameSnapshot(t, before, after)
+			if f.status(t) != statusBefore {
+				t.Fatal("a safety backup changed the verified backup status")
 			}
 		})
 	}
 }
 
 func TestBackupScriptPruneFailures(t *testing.T) {
-	for _, tc := range []struct {
-		failure, message string
-		findCalls        int
-	}{
-		{"temp-prune", "removing abandoned temporary backup files failed", 1},
-		{"retention-prune", "pruning old backups failed", 2},
-	} {
-		t.Run(tc.failure, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			for _, name := range []string{".care-stale.dump.tmp", ".files-stale.tar.gz.tmp", "care-old.dump.enc", "files-old.tar.gz.enc"} {
-				f.write(t, "backups/"+name)
-				old := time.Now().Add(-96 * time.Hour)
-				if err := os.Chtimes(filepath.Join(f.root, "backups", name), old, old); err != nil {
-					t.Fatal(err)
-				}
-			}
-			output := f.start(t, "daily", nil, "BACKUP_TEST_FAIL="+tc.failure).wait(t, 99)
-			if !strings.Contains(output, tc.message) || !strings.Contains(output, "published, but cleanup FAILED") {
-				t.Fatalf("cleanup failure was not reported:\n%s", output)
-			}
-			for _, claim := range []string{": SUCCESS", "[backup] done", "retention skipped", "every existing backup retained"} {
-				if strings.Contains(output, claim) {
-					t.Fatalf("partial cleanup made a false claim %q:\n%s", claim, output)
-				}
-			}
-			if got := strings.Count(f.trace(t), "daily find\n"); got != tc.findCalls {
-				t.Fatalf("find calls = %d, want %d", got, tc.findCalls)
-			}
-			f.checkFile(t, ".care-stale.dump.tmp", false)
-			f.checkFile(t, ".files-stale.tar.gz.tmp", tc.failure == "temp-prune")
-			f.checkFile(t, "care-old.dump.enc", tc.failure == "temp-prune")
-			f.checkFile(t, "files-old.tar.gz.enc", true)
-			f.checkFile(t, "care-20260102-030405.dump.enc", true)
-			f.checkFile(t, "files-20260102-030405.tar.gz.enc", true)
-		})
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f := newScriptFixture(t)
+	f.previousSet(t)
+	if err := os.Chmod(f.wal, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(f.wal, 0o700) })
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "published, but cleanup FAILED") || strings.Contains(out, ": SUCCESS") {
+		t.Fatalf("cleanup failure not reported: %v\n%s", err, out)
+	}
+	if m := f.manifest(t); m.Set != "20260102-030405" {
+		t.Fatalf("verified new set not kept: %+v", m)
+	}
+	for _, name := range []string{"care-20260102-030405.dump.enc", "files-20260102-030405.tar.gz.enc", "base-20260102-030405"} {
+		if _, err := os.Stat(filepath.Join(f.backups, name)); err != nil {
+			t.Fatalf("verified new set lost %s", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.wal, seg(2)+".sha256")); err != nil {
+		t.Fatal("change file vanished despite failed removal")
+	}
+	s := f.status(t)
+	if !strings.Contains(s, "state=failed\n") || !strings.Contains(s, "removing the previous one failed; the new verified backup was kept") {
+		t.Fatalf("status: %s", s)
+	}
+	for _, claim := range []string{"previous backup was kept", "every change file were kept"} {
+		if strings.Contains(s+out, claim) {
+			t.Fatalf("partial cleanup made a false claim %q", claim)
+		}
 	}
 }
 
 func TestBackupScriptPrunesOnlyTopLevelRegularFiles(t *testing.T) {
-	for _, retention := range []string{"0", "1"} {
-		t.Run("retention="+retention, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			old := time.Now().Add(-96 * time.Hour)
-			for _, name := range []string{"unrelated", ".care-directory.dump.tmp", "care-directory.dump.enc"} {
-				path := filepath.Join(f.root, "backups", name)
-				if err := os.Mkdir(path, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chtimes(path, old, old); err != nil {
-					t.Fatal(err)
-				}
-			}
-			files := map[string]bool{
-				".care-stale.dump.tmp":               false,
-				".files-stale.tar.gz.tmp":            false,
-				"care-old.dump.enc":                  retention == "0",
-				"files-old.tar.gz.enc":               retention == "0",
-				"notes.txt":                          true,
-				"unrelated/.care-nested.dump.tmp":    true,
-				"unrelated/.files-nested.tar.gz.tmp": true,
-				"unrelated/care-nested.dump.enc":     true,
-				"unrelated/files-nested.tar.gz.enc":  true,
-			}
-			for name := range files {
-				f.write(t, "backups/"+name)
-				if err := os.Chtimes(filepath.Join(f.root, "backups", name), old, old); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := os.Symlink("notes.txt", filepath.Join(f.root, "backups", ".files-link.tar.gz.tmp")); err != nil {
-				t.Fatal(err)
-			}
-			output := f.start(t, "daily", nil, "DB_BACKUP_RETENTION_PERIOD="+retention).wait(t, 99)
-			if !strings.Contains(output, ": SUCCESS") {
-				t.Fatalf("complete backup and cleanup failed:\n%s", output)
-			}
-			for name, want := range files {
-				f.checkFile(t, name, want)
-			}
-			for _, name := range []string{".care-directory.dump.tmp", "care-directory.dump.enc", ".files-link.tar.gz.tmp", ".backup.lock"} {
-				f.checkFile(t, name, true)
-			}
-		})
+	f := newScriptFixture(t)
+	f.previousSet(t)
+	keep := map[string]string{
+		"notes.txt": "file",
+		"unrelated/care-20250101-000000.dump.enc": "file",
+		"unrelated/base-20250101-000000/x":        "file",
+		"care-20250101-010101.dump.enc/x":         "file",
+		"base-20250101-010101":                    "file",
+		"wal/README":                              "file",
+	}
+	for name := range keep {
+		p := filepath.Join(f.backups, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := []string{"files-20250101-010101.tar.gz.enc", "base-20250101-020202", "wal/" + seg(1) + "x.sha256"}
+	for _, l := range links {
+		if err := os.Symlink(filepath.Join(f.backups, "notes.txt"), filepath.Join(f.backups, l)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := f.run(t, nil, "backup.sh", "now"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for name := range keep {
+		if b, err := os.ReadFile(filepath.Join(f.backups, name)); err != nil || string(b) != "fixture" {
+			t.Fatalf("pruning touched unrelated %s", name)
+		}
+	}
+	for _, l := range links {
+		if _, err := os.Lstat(filepath.Join(f.backups, l)); err != nil {
+			t.Fatalf("pruning followed or removed symlink %s", l)
+		}
+	}
+	for _, gone := range []string{"care-20260101-030405.dump.enc", "files-20260101-030405.tar.gz.enc", "base-20260101-030405"} {
+		if _, err := os.Lstat(filepath.Join(f.backups, gone)); !os.IsNotExist(err) {
+			t.Fatalf("previous set member %s kept after the new set was verified", gone)
+		}
 	}
 }
 
 func TestBackupScriptRejectsExistingBackupPaths(t *testing.T) {
 	for _, tc := range []struct {
 		name, final, kind string
-		manual            bool
+		args              []string
 	}{
-		{"manual replay", "care-manual-20260102-030405.dump.enc", "published", true},
-		{"scheduled replay", "care-20260102-030405.dump.enc", "published", false},
-		{"scheduled files collision", "files-20260102-030405.tar.gz.enc", "file", false},
-		{"manual files collision", "files-manual-20260102-030405.tar.gz.enc", "file", true},
-		{"directory collision", "care-manual-20260102-030405.dump.enc", "directory", true},
-		{"dangling symlink collision", "care-manual-20260102-030405.dump.enc", "symlink", true},
+		{"scheduled dump", "care-20260102-030405.dump.enc", "file", []string{"now"}},
+		{"scheduled files", "files-20260102-030405.tar.gz.enc", "file", []string{"now"}},
+		{"scheduled full copy", "base-20260102-030405", "directory", []string{"now"}},
+		{"dangling symlink", "care-20260102-030405.dump.enc", "symlink", []string{"now"}},
+		{"safety replay", "care-pre-update-20260102-030405.dump.enc", "published", []string{"once", "pre-update-20260102-030405"}},
+		{"safety files", "files-pre-update-20260102-030405.tar.gz.enc", "file", []string{"once", "pre-update-20260102-030405"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			var args []string
-			firstCode, retryCode := 99, 99
-			if tc.manual {
-				args = []string{"once", "manual-20260102-030405"}
-				firstCode, retryCode = 0, 1
-			}
-			path := filepath.Join(f.root, "backups", tc.final)
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			path := filepath.Join(f.backups, tc.final)
 			switch tc.kind {
 			case "published":
-				f.start(t, "first", args).wait(t, firstCode)
+				if out, err := f.run(t, nil, "backup.sh", tc.args...); err != nil {
+					t.Fatalf("first: %v\n%s", err, out)
+				}
 			case "file":
-				f.write(t, "backups/"+tc.final)
+				if err := os.WriteFile(path, []byte("keep me"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "directory":
 				if err := os.Mkdir(path, 0o700); err != nil {
 					t.Fatal(err)
@@ -603,105 +897,31 @@ func TestBackupScriptRejectsExistingBackupPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			before, err := os.Lstat(path)
-			if err != nil {
-				t.Fatal(err)
+			_ = os.Remove(filepath.Join(f.root, "trace"))
+			before := f.snapshot(t)
+			out, err := f.run(t, nil, "backup.sh", tc.args...)
+			if err == nil || !strings.Contains(out, "refusing to overwrite existing backup") || strings.Contains(out, ": SUCCESS") {
+				t.Fatalf("existing backup path was not rejected: %v\n%s", err, out)
 			}
-			var original []byte
-			if before.Mode().IsRegular() {
-				original, err = os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
+			for _, cmd := range []string{"pg_basebackup", "pg_dump"} {
+				if strings.Contains(readTrace(t, f), cmd+" ") {
+					t.Fatalf("collision reached %s", cmd)
 				}
 			}
-			output := f.start(t, "retry", args).wait(t, retryCode)
-			if !strings.Contains(output, "refusing to overwrite existing backup") || strings.Contains(output, ": SUCCESS") {
-				t.Fatalf("existing backup path was not rejected:\n%s", output)
-			}
-			for _, command := range []string{"pg_dump", "tar", "mv", "find"} {
-				if strings.Contains(f.trace(t), "retry "+command+"\n") {
-					t.Fatalf("collision reached %s:\n%s", command, f.trace(t))
-				}
-			}
-			after, err := os.Lstat(path)
-			if err != nil || after.Mode() != before.Mode() {
-				t.Fatalf("existing backup path changed: %v", err)
-			}
-			if original != nil {
-				data, err := os.ReadFile(path)
-				if err != nil || !bytes.Equal(data, original) {
-					t.Fatalf("previous backup contents changed: %v", err)
-				}
-			}
-			if strings.HasPrefix(tc.final, "files-") {
-				f.checkFile(t, "care-20260102-030405.dump.enc", false)
-			}
+			sameSnapshot(t, before, f.snapshot(t))
 		})
 	}
-}
-
-func TestBackupScriptWritersSerialize(t *testing.T) {
-	for _, firstID := range []string{"manual", "daily"} {
-		t.Run(firstID+" first", func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			if f.flock == "" {
-				t.Skip("native flock is unavailable")
-			}
-			args := map[string][]string{"manual": {"once", "manual-20260102-030405"}, "daily": nil}
-			secondID := "daily"
-			if firstID == "daily" {
-				secondID = "manual"
-			}
-			runs := make(map[string]*backupScriptRun)
-			runs[firstID] = f.start(t, firstID, args[firstID], "BACKUP_TEST_HOLD="+firstID, "BACKUP_TEST_HOLD_SLEEP=1")
-			f.waitFor(t, "holding", "")
-			runs[secondID] = f.start(t, secondID, args[secondID], "BACKUP_TEST_HOLD_SLEEP=1")
-			f.waitFor(t, "trace", secondID+" flock\n")
-			time.Sleep(150 * time.Millisecond)
-			trace := f.trace(t)
-			if strings.Contains(trace, secondID+" pg_dump\n") || strings.Contains(trace, secondID+" find\n") {
-				t.Fatalf("another writer entered the active backup:\n%s", trace)
-			}
-			stamp := "20260102-030405"
-			if firstID == "manual" {
-				stamp = "manual-" + stamp
-			}
-			f.checkFile(t, ".care-"+stamp+".dump.tmp", true)
-			f.write(t, "release")
-			runs["manual"].wait(t, 0)
-			f.waitFor(t, "sleeping", "")
-			f.start(t, "late-manual", []string{"once", "manual-late-20260102-030405"}).wait(t, 0)
-			select {
-			case <-runs["daily"].done:
-				t.Fatal("scheduler exited instead of releasing its lock before sleep")
-			default:
-			}
-			f.checkFile(t, "care-manual-late-20260102-030405.dump.enc", true)
-			f.checkFile(t, "care-20260102-030405.dump.enc", true)
-			f.checkFile(t, "files-20260102-030405.tar.gz.enc", true)
-			f.write(t, "wake")
-			runs["daily"].wait(t, 99)
-		})
-	}
-}
-
-func (f *backupScriptFixture) status(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(f.root, "state", "backup-status"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
 }
 
 func TestBackupScriptRefusesWhenBackupFolderIsFull(t *testing.T) {
-	f := newBackupScriptFixture(t)
-	output := f.start(t, "daily", nil, "BACKUP_TEST_FREE_KB=1024").wait(t, 99)
-	if !strings.Contains(output, "not enough space in the backup folder") || strings.Contains(output, ": SUCCESS") {
-		t.Fatalf("full folder was not refused:\n%s", output)
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	out, err := f.run(t, []string{"FAKE_FREE_KB=1024"}, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "not enough space in the backup folder") || strings.Contains(out, ": SUCCESS") {
+		t.Fatalf("full folder was not refused:\n%s", out)
 	}
-	if strings.Contains(f.trace(t), "daily pg_dump\n") {
-		t.Fatalf("backup started writing on a full folder:\n%s", f.trace(t))
+	if strings.Contains(readTrace(t, f), "pg_basebackup ") {
+		t.Fatal("backup started writing on a full folder")
 	}
 	status := f.status(t)
 	for _, want := range []string{"state=failed\n", "reason=disk_full\n", "free_kb=1024\n", "need_kb=1048576\n"} {
@@ -709,78 +929,292 @@ func TestBackupScriptRefusesWhenBackupFolderIsFull(t *testing.T) {
 			t.Fatalf("status missing %q:\n%s", want, status)
 		}
 	}
-	f.checkFile(t, "care-20260102-030405.dump.enc", false)
+}
+
+func TestBackupScriptRefusesWhenWorkAreaIsFull(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	out, err := f.run(t, []string{"FAKE_WORK_FREE_KB=10"}, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "not enough room on the clinic's data disk") || strings.Contains(readTrace(t, f), "pg_basebackup ") {
+		t.Fatalf("full work area was not refused before copying:\n%s", out)
+	}
+	if !strings.Contains(f.status(t), "reason=disk_full\n") {
+		t.Fatal(f.status(t))
+	}
 }
 
 func TestBackupScriptSizesNeedFromLatestSet(t *testing.T) {
-	const need = (1024*1024+2*2*1024*1024)*5/4 + 262144
+	f := newScriptFixture(t)
+	du, err := exec.Command("du", "-sk", filepath.Join(f.root, "minio")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := strconv.Atoi(strings.Fields(string(du))[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const clusterKB = 4 << 20
+	need := (2*clusterKB+files)*5/4 + 262144
 	for _, tc := range []struct {
 		free int
 		ok   bool
 	}{{need - 1, false}, {need, true}} {
 		t.Run(strconv.Itoa(tc.free), func(t *testing.T) {
-			f := newBackupScriptFixture(t)
-			for name, size := range map[string]int64{
-				"care-20260101-020000.dump.enc":    1 << 30,
-				"files-20260101-020000.tar.gz.enc": 2 << 30,
-			} {
-				fh, err := os.Create(filepath.Join(f.root, "backups", name))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := fh.Truncate(size); err != nil {
-					t.Fatal(err)
-				}
-				if err := fh.Close(); err != nil {
-					t.Fatal(err)
-				}
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			out, err := f.run(t, []string{"FAKE_CLUSTER_BYTES=" + strconv.Itoa(clusterKB*1024), "FAKE_FREE_KB=" + strconv.Itoa(tc.free)}, "backup.sh", "now")
+			if (err == nil) != tc.ok || strings.Contains(out, ": SUCCESS") != tc.ok {
+				t.Fatalf("free=%d need=%d: %v\n%s", tc.free, need, err, out)
 			}
-			output := f.start(t, "daily", nil, "BACKUP_TEST_FREE_KB="+strconv.Itoa(tc.free)).wait(t, 99)
-			if strings.Contains(output, "SUCCESS") != tc.ok {
-				t.Fatalf("free=%d KB, need=%d KB:\n%s", tc.free, need, output)
-			}
-			want := "state=ok\n"
-			if !tc.ok {
-				want = "need_kb=" + strconv.Itoa(need) + "\n"
-			}
-			if !strings.Contains(f.status(t), want) {
-				t.Fatalf("status missing %q:\n%s", want, f.status(t))
+			if !tc.ok && !strings.Contains(f.status(t), "need_kb="+strconv.Itoa(need)+"\n") {
+				t.Fatalf("status: %s", f.status(t))
 			}
 		})
 	}
 }
 
 func TestBackupScriptRecordsOrdinaryFailure(t *testing.T) {
-	f := newBackupScriptFixture(t)
-	f.start(t, "daily", nil, "BACKUP_TEST_FAIL=tar", "BACKUP_TEST_FREE_KB=99999999").wait(t, 99)
-	status := f.status(t)
-	if !strings.Contains(status, "state=failed\n") || !strings.Contains(status, "reason=error\n") {
-		t.Fatalf("ordinary failure recorded as:\n%s", status)
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if _, err := f.run(t, []string{"FAKE_FAIL=verify"}, "backup.sh", "now"); err == nil {
+		t.Fatal("failure reported as success")
+	}
+	if s := f.status(t); !strings.Contains(s, "state=failed\n") || !strings.Contains(s, "reason=error\n") {
+		t.Fatalf("ordinary failure recorded as:\n%s", s)
 	}
 }
 
 func TestBackupScriptManualRefusesWhenFull(t *testing.T) {
-	f := newBackupScriptFixture(t)
-	output := f.start(t, "manual", []string{"once", "manual-20260102-030405"}, "BACKUP_TEST_FREE_KB=10").wait(t, 1)
-	if !strings.Contains(output, "not enough space in the backup folder") {
-		t.Fatalf("manual backup on a full folder:\n%s", output)
+	f := newScriptFixture(t)
+	out, err := f.run(t, []string{"FAKE_FREE_KB=10"}, "backup.sh", "once", "pre-update-20260102-030405")
+	if err == nil || !strings.Contains(out, "not enough space in the backup folder") {
+		t.Fatalf("safety backup on a full folder: %v\n%s", err, out)
 	}
-	if strings.Contains(f.trace(t), "manual pg_dump\n") {
-		t.Fatalf("manual backup started writing on a full folder:\n%s", f.trace(t))
+	if strings.Contains(readTrace(t, f), "pg_dump ") {
+		t.Fatal("safety backup started writing on a full folder")
 	}
-	if _, err := os.Stat(filepath.Join(f.root, "state", "backup-status")); !os.IsNotExist(err) {
-		t.Fatalf("manual backup touched the daily status: %v", err)
+	if _, err := os.Stat(filepath.Join(f.state, "backup-status")); !os.IsNotExist(err) {
+		t.Fatalf("safety backup touched the verified backup status: %v", err)
+	}
+}
+
+func TestBackupScriptLeavesNoPlaintextBehind(t *testing.T) {
+	for _, fail := range []string{"", "list", "verify"} {
+		t.Run("fail="+fail, func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			_, _ = f.run(t, []string{"FAKE_FAIL=" + fail}, "backup.sh", "now")
+			if names := listDir(t, filepath.Join(f.root, "work")); len(names) != 0 {
+				t.Fatalf("plaintext work files left: %v", names)
+			}
+			if names := listDir(t, filepath.Join(f.root, "shm")); len(names) != 0 {
+				t.Fatalf("verification keys left: %v", names)
+			}
+			for p := range f.snapshot(t) {
+				if p != "." && p != "wal" && !strings.HasSuffix(p, ".enc") && !strings.HasSuffix(p, ".sha256") &&
+					p != "manifest.json" && !strings.HasPrefix(p, "base-") {
+					t.Fatalf("unencrypted file in the backup folder: %s", p)
+				}
+			}
+		})
 	}
 }
 
 func TestBackupScriptManualSuccessClearsFailedStatus(t *testing.T) {
-	f := newBackupScriptFixture(t)
-	failed := "state=failed\nreason=error\nat=1\nneed_kb=0\nfree_kb=0\nmessage=the database step failed\n"
-	if err := os.WriteFile(filepath.Join(f.root, "state", "backup-status"), []byte(failed), 0o600); err != nil {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if _, err := f.run(t, []string{"FAKE_FAIL=dump"}, "backup.sh", "now"); err == nil {
+		t.Fatal("failure reported as success")
+	}
+	if !strings.Contains(f.status(t), "state=failed") {
+		t.Fatal(f.status(t))
+	}
+	if out, err := f.run(t, nil, "backup.sh", "now"); err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	if !strings.Contains(f.status(t), "state=ok\n") {
+		t.Fatalf("a successful backup left the failed status:\n%s", f.status(t))
+	}
+}
+
+func TestBackupScriptReportsStatusWriteFailures(t *testing.T) {
+	for _, blocked := range []string{".backup-status.tmp", ".backup-ok-at.tmp"} {
+		t.Run(blocked, func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			// A directory where the temp file belongs makes the write fail.
+			if err := os.MkdirAll(filepath.Join(f.state, blocked, "x"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run(t, nil, "backup.sh", "now")
+			if err == nil {
+				t.Fatalf("an unsaved status was reported as success:\n%s", out)
+			}
+			if !strings.Contains(out, "ERROR: could not save") {
+				t.Fatalf("status write failure was not logged:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestBackupScriptReportsMissingStateFolder(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if err := os.RemoveAll(f.state); err != nil {
 		t.Fatal(err)
 	}
-	f.start(t, "manual", []string{"once", "manual-20260102-030405"}, "BACKUP_TEST_FREE_KB=99999999").wait(t, 0)
-	if status := f.status(t); !strings.Contains(status, "state=ok\n") {
-		t.Fatalf("a successful manual backup left the failed status:\n%s", status)
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "backup status folder") {
+		t.Fatalf("a missing status folder was not reported: %v\n%s", err, out)
 	}
+}
+
+func TestBackupCycleRefusesLaterTimelineChangeFiles(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	f.archive(t, "000000020000000000000005")
+	out, err := f.run(t, nil, "backup.sh", "now")
+	if err == nil || !strings.Contains(out, "later database timeline") {
+		t.Fatalf("a branched change-file chain was accepted: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(f.backups, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("a set was published over a branched chain: %v", err)
+	}
+}
+
+// pitr-stage.sh must not hand a database to the staged swap unless
+// PostgreSQL reports that replay stopped at the requested moment.
+func TestPITRStageRequiresReachedTarget(t *testing.T) {
+	f := newScriptFixture(t)
+	f.archive(t, seg(4))
+	if out, err := f.run(t, nil, "backup.sh", "now"); err != nil {
+		t.Fatalf("cycle: %v\n%s", err, out)
+	}
+	for _, tool := range []string{"gosu", "chown", "pg_ctl"} {
+		if err := os.WriteFile(filepath.Join(f.bin, tool), []byte(fakeBackupTools), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, target, log string
+		ok                bool
+	}{
+		{"reached", "2026-01-02 03:10:00+00", "LOG:  recovery stopping before commit of transaction 812, time 2026-01-02 03:10:04+00", true},
+		{"ran out of change files", "2026-01-02 03:10:00+00", "LOG:  redo done at 0/5000060", false},
+		{"latest", "latest", "LOG:  redo done at 0/5000060", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stage := filepath.Join(f.root, "stage-"+strings.ReplaceAll(tc.name, " ", "-"))
+			if err := os.MkdirAll(stage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run(t, []string{"CARE_RESTORE_DIR=" + stage, "CARE_RESTORE_KEY=" + f.key,
+				"FAKE_RECOVERY_LOG=" + tc.log}, "pitr-stage.sh", tc.target)
+			_, dumpErr := os.Stat(filepath.Join(stage, "database.dump"))
+			if tc.ok && (err != nil || dumpErr != nil) {
+				t.Fatalf("staging failed: %v %v\n%s", err, dumpErr, out)
+			}
+			if !tc.ok && (err == nil || dumpErr == nil || !strings.Contains(out, "replay ended before reaching")) {
+				t.Fatalf("an unreached target was staged for the swap: %v %v\n%s", err, dumpErr, out)
+			}
+			if _, err := os.Stat(filepath.Join(stage, "recovery-key.pem")); !os.IsNotExist(err) {
+				t.Fatalf("the recovery key was left in the stage: %v", err)
+			}
+		})
+	}
+}
+
+func TestBackupScriptWritersSerialize(t *testing.T) {
+	flock, err := exec.LookPath("flock")
+	if err != nil {
+		t.Skip("native flock is unavailable")
+	}
+	for _, first := range [][]string{{"now"}, {"once", "pre-update-20260102-040404"}} {
+		t.Run(first[0]+" first", func(t *testing.T) {
+			f := newScriptFixture(t)
+			f.archive(t, seg(4))
+			second := []string{"once", "pre-update-20260102-050505"}
+			if first[0] == "once" {
+				second = []string{"now"}
+			}
+			start := func(args []string, env ...string) (*exec.Cmd, *bytes.Buffer) {
+				cmd := exec.Command("sh", append([]string{filepath.Join(f.scripts, "backup.sh")}, args...)...)
+				cmd.Env = append(append(append([]string{}, f.env...), "FAKE_REAL_FLOCK="+flock), env...)
+				var out bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &out, &out
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				return cmd, &out
+			}
+			waitFile := func(name string) {
+				for i := 0; ; i++ {
+					if _, err := os.Stat(filepath.Join(f.root, name)); err == nil {
+						return
+					}
+					if i > 400 {
+						t.Fatalf("%s never appeared", name)
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+			}
+			a, aOut := start(first, "FAKE_HOLD=1")
+			waitFile("holding")
+			b, bOut := start(second)
+			time.Sleep(300 * time.Millisecond)
+			if strings.Count(readTrace(t, f), "pg_dump ") != 1 {
+				t.Fatal("a second writer ran while the first held the backup lock")
+			}
+			if err := os.WriteFile(filepath.Join(f.root, "release"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Wait(); err != nil {
+				t.Fatalf("first: %v\n%s", err, aOut)
+			}
+			if err := b.Wait(); err != nil {
+				t.Fatalf("second: %v\n%s", err, bOut)
+			}
+		})
+	}
+	t.Run("scheduler releases the lock while sleeping", func(t *testing.T) {
+		f := newScriptFixture(t)
+		f.archive(t, seg(4))
+		d := exec.Command("sh", filepath.Join(f.scripts, "backup.sh"))
+		d.Env = append(append([]string{}, f.env...), "FAKE_REAL_FLOCK="+flock, "FAKE_SLEEP_WAIT=1",
+			"CARE_BACKUP_TICK=7", "CARE_BACKUP_INTERVAL=0", "CARE_BACKUP_RETRY=0")
+		var dOut bytes.Buffer
+		d.Stdout, d.Stderr = &dOut, &dOut
+		if err := d.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.WriteFile(filepath.Join(f.root, "wake"), nil, 0o600)
+			done := make(chan error, 1)
+			go func() { done <- d.Wait() }()
+			select {
+			case <-time.After(5 * time.Second):
+				_ = d.Process.Kill()
+				<-done
+			case <-done:
+			}
+		}()
+		for i := 0; ; i++ {
+			if _, err := os.Stat(filepath.Join(f.root, "sleeping")); err == nil {
+				break
+			}
+			if i > 800 {
+				t.Fatalf("scheduler never slept:\n%s", dOut.String())
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		if out, err := f.run(t, []string{"FAKE_REAL_FLOCK=" + flock}, "backup.sh", "once", "pre-update-20260102-060606"); err != nil {
+			t.Fatalf("lock held across scheduler sleep: %v\n%s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(f.backups, "care-20260102-030405.dump.enc")); err != nil {
+			t.Fatalf("scheduled set missing:\n%s", dOut.String())
+		}
+		if err := os.WriteFile(filepath.Join(f.root, "wake"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

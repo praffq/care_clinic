@@ -33,6 +33,7 @@ export type ToolPlan = {
 
 export type DownloadInfo = { name: string; size: number };
 export type EngineState = {
+  native?: boolean;
   supported: boolean;
   expected_version: string;
   installed_version: string;
@@ -164,30 +165,18 @@ export type PluginCatalogEntry = {
 /** Which of the two .env files an editor is pointed at. */
 export type Section = "backend" | "frontend";
 
-/** The CARE release line currently running or available to upgrade to. */
-export type LineInfo = {
-  id: string;
-  title: string;
-  supported_until?: string;
-  expired: boolean;
-};
-
 export type ChannelStatus = {
-  line: LineInfo;
+  version: string;
   backend: string;
   frontend: string;
   pending_backend: string;
   pending_frontend: string;
-  pending_line?: string;
-  newer_lines: LineInfo[];
-  recommended?: string;
 };
 
-export type CareUpdate = { backend: string; frontend: string; newer_line?: string };
+export type CareUpdate = { backend: string; frontend: string };
 
 export type CareCheck = { running: boolean; found: boolean; error?: string };
 
-export type BackupPolicy = { interval_seconds: number; retention_days: number };
 export type QuitRequest = { id: number; title: string; message: string };
 export type ConfirmationRequest = { id: number; title: string; message: string };
 
@@ -218,7 +207,6 @@ export type BackupSpace = {
   total: number;
   need: number;
   set_bytes: number;
-  days_left: number;
   shares_docker_drive: boolean;
   level: StorageLevel;
   message: string;
@@ -242,6 +230,44 @@ export type StorageReport = {
   last_run: BackupRun;
   newest_backup_at: number;
   stale: boolean;
+  health: BackupHealth;
+};
+
+export type BackupAlert = { code: string; level: StorageLevel; message: string };
+
+export type WALStatus = {
+  state: "" | "ok" | "failing" | "stale" | "off" | "unknown";
+  checked_at: number;
+  saved_through: number;
+  last_archived_at: number;
+  last_failed_at: number;
+  gap: string;
+  message: string;
+};
+
+export type BackupCopyStatus = {
+  state: "" | "off" | "waiting" | "copying" | "ok" | "disconnected" | "failed";
+  dir: string;
+  checked_at: number;
+  last_copied_at: number;
+  set: string;
+  wal_through: string;
+  message: string;
+};
+
+export type BackupHealth = {
+  checked_at: number;
+  last_backup_at: number;
+  earliest_restore_at: number;
+  set: string;
+  verified: boolean;
+  checks: Record<string, string> | null;
+  saved_through: number;
+  wal: WALStatus;
+  trial: { state: "" | "passed" | "failed" | "skipped"; at: number; message: string };
+  copy: BackupCopyStatus;
+  last_run: BackupRun;
+  alerts: BackupAlert[] | null;
 };
 
 export type AppUpdatePhase = "downloading" | "verifying" | "installing" | "restarting" | "installer";
@@ -249,7 +275,6 @@ export type AppUpdatePhase = "downloading" | "verifying" | "installing" | "resta
 export type AppUpdateProgress = { phase: AppUpdatePhase; done: number; total: number };
 
 export type AppUpdate = {
-  blocked?: string;
   current: string;
   version: string;
   available: boolean;

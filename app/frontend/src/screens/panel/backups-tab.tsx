@@ -1,11 +1,11 @@
-import { Archive, Check, Clock3, Database, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
+import { Archive, Check, Clock3, Database, FolderOpen, HardDrive, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { bridge, onCareEvent } from "@/lib/bridge";
 import { diskSize, errorText } from "@/lib/format";
 import { useCare } from "@/state/care-store";
-import type { BackupPolicy } from "@/types";
+import type { BackupCopyStatus, BackupHealth } from "@/types";
 
 import {
   backupGroups, BackupNotice, backupProblem, backupSpaceSummary, backupWhen,
@@ -28,9 +28,10 @@ export function BackupsTab() {
   const [folderLoading, setFolderLoading] = useState(true);
   const [folderProblem, setFolderProblem] = useState<BackupProblem | null>(null);
   const [folderChanged, setFolderChanged] = useState(false);
-  const [policy, setPolicy] = useState<BackupPolicy | null>(null);
-  const [policyProblem, setPolicyProblem] = useState(false);
-  const [working, setWorking] = useState<"folder" | "refresh" | "backup" | null>(null);
+  const [health, setHealth] = useState<BackupHealth | null>(null);
+  const [healthProblem, setHealthProblem] = useState(false);
+  const [copyProblem, setCopyProblem] = useState<BackupProblem | null>(null);
+  const [working, setWorking] = useState<"folder" | "refresh" | "backup" | "copy" | null>(null);
   const [actionProblem, setActionProblem] = useState<BackupProblem | null>(null);
   const [backupComplete, setBackupComplete] = useState(false);
   const [now, setNow] = useState(() => new Date());
@@ -43,19 +44,18 @@ export function BackupsTab() {
     now.getTime() - run.at * 1000 < 6 * 60 * 60 * 1000;
   blocked.current = busy || restorePending || automaticRunning || folderLoading || updateLock.active;
 
-  const readPolicy = useCallback(async () => {
-    setPolicy(null);
+  const readHealth = useCallback(async () => {
     try {
-      const settings = await bridge.GetBackupPolicy();
+      const next = await bridge.GetBackupHealth();
       if (mounted.current) {
-        setPolicy(settings);
-        setPolicyProblem(false);
+        setHealth(next);
+        setHealthProblem(false);
       }
     } catch (error) {
       if (mounted.current) {
-        log(`backup settings: ${errorText(error)}`);
-        setPolicy(null);
-        setPolicyProblem(true);
+        log(`backup health: ${errorText(error)}`);
+        setHealth(null);
+        setHealthProblem(true);
       }
     }
   }, [log]);
@@ -89,19 +89,29 @@ export function BackupsTab() {
       setBackupComplete(code === 0);
       setActionProblem(code === 0 ? null : backupProblem("", "backup"));
     });
+    const offCopy = onCareEvent("care-backup-copy", (copy: BackupCopyStatus) => {
+      if (!mounted.current || !copy) return;
+      setHealth((current) => current ? { ...current, copy } : current);
+      void readHealth();
+    });
     return () => {
       mounted.current = false;
       window.clearInterval(clock);
       off();
+      offCopy();
     };
-  }, []);
+  }, [readHealth]);
 
   useEffect(() => {
     if (tab !== "backups") return;
     setFolderLoading(true);
     void readFolder();
-    void readPolicy();
-  }, [tab, readFolder, readPolicy]);
+    void readHealth();
+  }, [tab, readFolder, readHealth]);
+
+  useEffect(() => {
+    if (storage?.health) setHealth(storage.health);
+  }, [storage]);
 
   const refresh = async () => {
     if (operation.current || blocked.current || updateLock.isActive()) return;
@@ -109,7 +119,7 @@ export function BackupsTab() {
     setWorking("refresh");
     setActionProblem(null);
     try {
-      await Promise.all([readFolder(), readPolicy(), reloadBackups(), recheckStorage()]);
+      await Promise.all([readFolder(), readHealth(), reloadBackups(), recheckStorage()]);
       if (mounted.current) setNow(new Date());
     } catch (error) {
       if (mounted.current) setActionProblem(backupProblem(error, "storage"));
@@ -162,6 +172,46 @@ export function BackupsTab() {
     }
   };
 
+  const chooseCopy = async () => {
+    if (operation.current || blocked.current || updateLock.isActive()) return;
+    operation.current = true;
+    setWorking("copy");
+    setCopyProblem(null);
+    try {
+      const chosen = await bridge.ChooseFolder("Choose an external drive, second disk or network folder for a backup copy");
+      if (!chosen || !mounted.current) return;
+      await bridge.SetBackupCopyDir(chosen);
+      await readHealth();
+    } catch (error) {
+      if (mounted.current) {
+        log(`backup copy: ${errorText(error)}`);
+        setCopyProblem({ title: "The backup copy folder wasn't changed", detail: errorText(error) });
+      }
+    } finally {
+      operation.current = false;
+      if (mounted.current) setWorking(null);
+    }
+  };
+
+  const stopCopy = async () => {
+    if (operation.current || blocked.current || updateLock.isActive()) return;
+    operation.current = true;
+    setWorking("copy");
+    setCopyProblem(null);
+    try {
+      await bridge.ClearBackupCopyDir();
+      await readHealth();
+    } catch (error) {
+      if (mounted.current) {
+        log(`backup copy: ${errorText(error)}`);
+        setCopyProblem({ title: "The backup copy couldn't be turned off", detail: errorText(error) });
+      }
+    } finally {
+      operation.current = false;
+      if (mounted.current) setWorking(null);
+    }
+  };
+
   const backUpNow = async () => {
     if (operation.current || blocked.current || updateLock.isActive()) return;
     operation.current = true;
@@ -190,6 +240,10 @@ export function BackupsTab() {
   const lastRun = run?.at ? backupWhen(new Date(run.at * 1000), now) : "";
   const badge = tone === "critical" ? "Low space" : tone === "low" ? "Low space"
     : tone === "ok" ? "Healthy" : folderLoading ? "Checking" : "Not checked";
+  const when = (seconds: number) => seconds > 0 ? backupWhen(new Date(seconds * 1000), now) : "";
+  const copy = health?.copy;
+  const copyOn = !!copy && copy.state !== "" && copy.state !== "off";
+  const alerts = health?.alerts ?? [];
   const localActionProblem = operationError?.action === "backup-now" ? null : actionProblem;
 
   return (
@@ -247,13 +301,8 @@ export function BackupsTab() {
           {backingUp || automaticRunning ? "Backing up…" : "Back up now"}
         </Button>
         <div className="care-backups-schedule">
-          <span>{policy?.interval_seconds === 86400 ? "Automatic every 24 hours"
-            : policy ? `Automatic every ${policy.interval_seconds / 3600} hours`
-              : "Automatic backups"}</span>
-          <span className="care-backups-retention">{policy
-            ? policy.retention_days === 0 ? "Kept forever"
-              : `Kept for ${policy.retention_days} ${policy.retention_days === 1 ? "day" : "days"}`
-            : policyProblem ? "Retention couldn't be checked" : "Checking retention…"}</span>
+          <span>Full copy every night · changes saved every few minutes</span>
+          <span className="care-backups-keep">Only the newest verified backup is kept</span>
         </div>
         {!backupsError ? <span className="care-backups-count">{backups.length} {backups.length === 1 ? "backup" : "backups"}</span> : null}
         <Button variant="ghost" size="sm" disabled={disabled} onClick={() => void refresh()}>
@@ -262,11 +311,56 @@ export function BackupsTab() {
         </Button>
       </div>
 
-      {policyProblem ? (
-        <BackupNotice title="The backup settings couldn't be read">
-          Refresh to check how long backups are kept, or check Clinic settings in Advanced.
+      <section className="care-backups-card care-backups-health" aria-label="Backup health">
+        <div className="care-backups-card-row">
+          <span className={`care-backups-icon care-backups-icon--${health?.verified ? "ok" : health ? "low" : "unknown"}`}>
+            {health?.verified ? <ShieldCheck aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}
+          </span>
+          <div className="care-backups-grow">
+            <div className="care-backups-eyebrow">Latest backup</div>
+            <p className="care-backups-health-when">{health?.last_backup_at ? when(health.last_backup_at)
+              : health ? "No verified backup yet" : healthProblem ? "Backup status couldn't be checked" : "Checking backup status…"}</p>
+            <dl className="care-backups-health-facts">
+              <div><dt>Checks</dt><dd>{health?.verified ? "✓ Verified" : health?.last_backup_at ? "Not verified" : "—"}</dd></div>
+              <div><dt>Changes saved through</dt><dd>{health?.saved_through ? when(health.saved_through) : "—"}</dd></div>
+              <div><dt>Weekly trial restore</dt><dd>{health?.trial?.state === "passed" ? `Passed ${when(health.trial.at)}`
+                : health?.trial?.state === "failed" ? "Failed" : health?.trial?.state === "skipped" ? "Skipped" : "Not run yet"}</dd></div>
+            </dl>
+          </div>
+          {health?.verified ? <span className="care-backups-badge care-backups-badge--ok"><Check aria-hidden="true" />Verified</span> : null}
+        </div>
+      </section>
+
+      {healthProblem ? (
+        <BackupNotice title="Backup status couldn't be read">
+          Refresh to check again. Automatic backups continue while CARE is running.
         </BackupNotice>
       ) : null}
+
+      {alerts.map((alert) => (
+        <BackupNotice key={alert.code} title={alert.message}
+          tone={alert.level === "critical" ? undefined : "warning"} log={false}>
+          {alertHelp(alert.code)}
+        </BackupNotice>
+      ))}
+
+      <section className="care-backups-card care-backups-copy" aria-label="Backup copy">
+        <div className="care-backups-card-row">
+          <span className="care-backups-icon"><HardDrive aria-hidden="true" /></span>
+          <div className="care-backups-grow">
+            <div className="care-backups-eyebrow">Extra copy (optional)</div>
+            <p className="care-backups-copy-path" title={copy?.dir}>{copyOn ? copy?.dir : "Not set up"}</p>
+            <p className="care-backups-copy-state">{copyOn ? copyStateText(copy!, when) :
+              "Keep a second copy on an external drive, second disk or network folder. Backups stay on this computer either way."}</p>
+          </div>
+          <Button disabled={disabled} onClick={() => void chooseCopy()}>
+            {working === "copy" ? "Saving…" : copyOn ? "Change" : "Choose drive"}
+          </Button>
+          {copyOn ? <Button variant="ghost" disabled={disabled} onClick={() => void stopCopy()}>Stop copying</Button> : null}
+        </div>
+      </section>
+
+      {copyProblem ? <BackupNotice title={copyProblem.title}>{copyProblem.detail}</BackupNotice> : null}
 
       {restorePending ? (
         <BackupNotice title="An earlier restore needs attention"
@@ -351,8 +445,28 @@ export function BackupsTab() {
       )}
 
       <ExportBackupRecovery disabled={disabled} />
-      <RestoreBackupFile disabled={!!working || automaticRunning || folderLoading} />
+      <RestoreBackupFile disabled={!!working || automaticRunning || folderLoading} health={health} />
     </div>
     </>
   );
+}
+
+function copyStateText(copy: BackupCopyStatus, when: (seconds: number) => string): string {
+  const last = copy.last_copied_at ? `Last copied ${when(copy.last_copied_at)}.` : "Not copied yet.";
+  switch (copy.state) {
+    case "ok": return `Up to date. ${last}`;
+    case "copying": return `Copying… ${last}`;
+    case "waiting": return "Waiting for the first verified backup.";
+    case "disconnected": return `Disconnected. ${last} It catches up when the drive is connected again.`;
+    case "failed": return `Copy failed: ${copy.message || "unknown error"}. ${last}`;
+    default: return last;
+  }
+}
+
+function alertHelp(code: string): string {
+  if (code.startsWith("copy_")) return "Your backups on this computer are not affected. Connect the drive or choose another folder.";
+  if (code.startsWith("wal_")) return "Keep CARE running. If this continues, back up now and check the backup folder.";
+  if (code === "backup_failed") return "The previous verified backup was kept. Try Back up now after fixing the cause.";
+  if (code.startsWith("trial_")) return "The nightly backup is still verified. The trial restore runs again next week.";
+  return "Try Back up now, then Refresh.";
 }

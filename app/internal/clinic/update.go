@@ -3,49 +3,31 @@ package clinic
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
-	"github.com/ohcnetwork/care_desktop/app/internal/lines"
+	"github.com/ohcnetwork/care_desktop/app/internal/health"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
 
-type LineInfo struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	SupportedUntil string `json:"supported_until,omitempty"`
-	Expired        bool   `json:"expired"`
-}
-
 type ChannelStatus struct {
-	Line            LineInfo   `json:"line"`
-	Backend         string     `json:"backend"`
-	Frontend        string     `json:"frontend"`
-	PendingBackend  string     `json:"pending_backend"`
-	PendingFrontend string     `json:"pending_frontend"`
-	PendingLine     string     `json:"pending_line,omitempty"`
-	NewerLines      []LineInfo `json:"newer_lines"`
-	Recommended     string     `json:"recommended,omitempty"`
+	Version         string `json:"version"`
+	Backend         string `json:"backend"`
+	Frontend        string `json:"frontend"`
+	PendingBackend  string `json:"pending_backend"`
+	PendingFrontend string `json:"pending_frontend"`
 }
 
-func lineInfo(l lines.Line, now time.Time) LineInfo {
-	title := l.Title
-	if title == "" {
-		title = l.ID
-	}
-	return LineInfo{ID: l.ID, Title: title, SupportedUntil: l.SupportedUntil, Expired: l.Expired(now)}
-}
-
-// ChannelStatus reports the clinic's release line and versions using the
-// last downloaded list of lines, so it never waits on the network.
+// ChannelStatus reports the installed CARE images without network access.
 func (e *Clinic) ChannelStatus() ChannelStatus {
 	lock := compose.ReadLock(e.InstallDir)
-	id := e.Builder().LineID()
 	out := ChannelStatus{
-		Line:        LineInfo{ID: id, Title: id},
-		Backend:     lock.Backend.Current.Commit,
-		Frontend:    lock.Frontend.Current.Commit,
-		PendingLine: lock.NextLine,
-		NewerLines:  []LineInfo{},
+		Version:  e.Pins.CAREVersion,
+		Backend:  lock.Backend.Current.Commit,
+		Frontend: lock.Frontend.Current.Commit,
 	}
 	if lock.Backend.Next != nil {
 		out.PendingBackend = lock.Backend.Next.Commit
@@ -53,67 +35,23 @@ func (e *Clinic) ChannelStatus() ChannelStatus {
 	if lock.Frontend.Next != nil {
 		out.PendingFrontend = lock.Frontend.Next.Commit
 	}
-	m, err := lines.Cached(e.InstallDir)
-	if err != nil {
-		return out
-	}
-	now := time.Now()
-	if l, ok := m.Line(id); ok {
-		out.Line = lineInfo(l, now)
-	}
-	for _, l := range m.Newer(id) {
-		if l.SupportsApp(e.Pins.AppVersion) == nil {
-			out.NewerLines = append(out.NewerLines, lineInfo(l, now))
-		}
-	}
-	if m.IsNewer(id, m.Recommended) {
-		out.Recommended = m.Recommended
-	}
 	return out
-}
-
-// LineAllowsApp reports why an app version cannot run this clinic's release
-// line, using the cached list of lines.
-func (e *Clinic) LineAllowsApp(version string) error {
-	m, err := lines.Cached(e.InstallDir)
-	if err != nil {
-		return nil
-	}
-	l, ok := m.Line(e.Builder().LineID())
-	if !ok {
-		return nil
-	}
-	return l.SupportsApp(version)
 }
 
 func (e *Clinic) CheckForUpdate() (compose.Update, error) {
 	return e.Builder().PrepareUpdate()
 }
 
-// UpgradeLine moves the clinic to a newer CARE release line: it downloads
-// both images, takes a safety backup and migrates the database. Going back
-// to an older line is only possible by restoring a backup.
-func (e *Clinic) UpgradeLine(id string) error {
-	if !e.Backups().BackupEncryptionOn() {
-		return errors.New("this install cannot write encrypted backups, so it cannot change release line - " +
-			"recover the backup encryption certificate first")
-	}
-	b := e.Builder()
-	if b.Waiting().Any() {
-		if err := b.DiscardPending(); err != nil {
-			return err
-		}
-	}
-	e.logln("Downloading CARE release line " + id + "...")
-	if _, err := b.StageLine(id); err != nil {
-		return err
-	}
-	return e.ApplyUpdate()
+func (e *Clinic) CheckForUpdateManifest(m *careversions.Manifest) (compose.Update, error) {
+	return e.Builder().PrepareUpdateManifest(m)
 }
 
 func (e *Clinic) DeclineUpdate() error { return e.Builder().DeclineUpdate() }
 
-func (e *Clinic) ApplyUpdate() error {
+func (e *Clinic) ApplyUpdateWithJournal(j *updates.Journal, checkpoint updates.Checkpoint) error {
+	if j == nil || checkpoint == nil {
+		return errors.New("CARE updates require a coordinator journal and durable checkpoint")
+	}
 	if err := e.Backups().RecoverRestore(); err != nil {
 		return err
 	}
@@ -122,13 +60,44 @@ func (e *Clinic) ApplyUpdate() error {
 	if !waiting.Any() {
 		return errors.New("there is no prepared update to apply")
 	}
+	// The staff may have changed overrides or plugins since the background
+	// download. Reapply the latest inputs to the staged release before approval
+	// is executed, without activating either image early.
+	pending := b.Pending()
 	if waiting.Backend != "" {
-		if err := e.backupBeforeUpdate(); err != nil {
+		if err := pending.EnsureBackendImage(); err != nil {
+			return err
+		}
+	}
+	if waiting.Frontend != "" {
+		if err := pending.EnsureFrontendImage(); err != nil {
+			return err
+		}
+	}
+	var backupID string
+	if waiting.Backend != "" {
+		var err error
+		backupID, err = e.backupBeforeUpdate()
+		if err != nil {
+			return err
+		}
+		j.Rollback.BackupID = backupID
+		if err := checkpoint(); err != nil {
 			return err
 		}
 		if err := e.stopWorkers(); err != nil {
 			return err
 		}
+	}
+	j.Rollback.ImagesKept = nil
+	if waiting.Backend != "" {
+		j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.BackendImage+"-previous")
+	}
+	if waiting.Frontend != "" {
+		j.Rollback.ImagesKept = append(j.Rollback.ImagesKept, e.Pins.FrontendImage+"-previous")
+	}
+	if err := checkpoint(); err != nil {
+		return err
 	}
 	applied, err := b.ApplyPending()
 	if err != nil {
@@ -137,54 +106,109 @@ func (e *Clinic) ApplyUpdate() error {
 	if !applied.Any() {
 		return errors.New("the prepared update is no longer available - it will be built again on the next check")
 	}
+	rollback := func(cause error, dbMigrated bool) error {
+		j.State, j.Rollback.DBMigrated = updates.RollingBack, dbMigrated
+		if err := checkpoint(); err != nil {
+			return errors.Join(cause, err)
+		}
+		if err := e.RollbackUpdate(backupID, dbMigrated); err != nil {
+			return fmt.Errorf("%w; CARE rollback also failed: %v", cause, err)
+		}
+		j.State, j.Rollback.DBMigrated = updates.Running, false
+		if err := checkpoint(); err != nil {
+			return errors.Join(cause, err)
+		}
+		return cause
+	}
 	if applied.Backend != "" {
 		if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300", "backend"); err != nil {
-			return fmt.Errorf("the updated backend did not start; workers and the scheduler remain stopped: %w", err)
+			return rollback(fmt.Errorf("the updated backend did not start: %w", err), false)
 		}
 		e.logln("Applying database migrations...")
-		if err := e.migrate(); err != nil {
+		j.Rollback.DBMigrated = true
+		if err := checkpoint(); err != nil {
 			return err
 		}
+		if err := e.migrate(); err != nil {
+			return rollback(fmt.Errorf("database migration failed: %w", err), true)
+		}
+		e.syncFrontendPluginsOrWarn()
 	}
 	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300"); err != nil {
-		return err
+		return rollback(err, applied.Backend != "")
 	}
-	b.PruneDangling()
+	if err := health.Wait(e.Log, 3*time.Minute); err != nil {
+		return rollback(fmt.Errorf("updated CARE did not become healthy: %w", err), applied.Backend != "")
+	}
 	e.logln("CARE is up to date.")
 	return nil
 }
 
-func (e *Clinic) applyStagedUpdate() error {
-	b := e.Builder()
-	waiting := b.Waiting()
-	if !waiting.Any() {
+func (e *Clinic) RollbackUpdate(backupID string, dbMigrated bool) error {
+	lock := compose.ReadLock(e.InstallDir)
+	if lock.Backend.Previous == nil && lock.Frontend.Previous == nil && !dbMigrated {
 		return nil
 	}
-	if !e.Backups().BackupEncryptionOn() {
-		e.logln("A CARE update is ready, but this install cannot write encrypted backups, " +
-			"so it was not applied. Recover the backup encryption certificate before applying updates.")
-		return nil
+	var failures []error
+	if err := e.Builder().RollbackApplied(); err != nil {
+		failures = append(failures, err)
 	}
-	if waiting.Backend != "" {
-		if err := e.backupBeforeUpdate(); err != nil {
-			e.logln("The CARE update was not applied: " + err.Error())
-			return nil
+	if dbMigrated {
+		if backupID == "" {
+			failures = append(failures, errors.New("database migration changed data but the safety backup ID is missing"))
+		} else if e.BackupRecoveryPath == "" {
+			failures = append(failures, errors.New("database data rollback needs the clinic's verified backup recovery file"))
+		} else {
+			backups, err := e.Backups().ListBackups()
+			if err != nil {
+				failures = append(failures, err)
+			} else {
+				found := false
+				for _, b := range backups {
+					if b.DBDump != backupID {
+						continue
+					}
+					found = true
+					if err := e.Backups().Restore(b.DBDump, b.FilesArchive, e.BackupRecoveryPath); err != nil {
+						failures = append(failures, fmt.Errorf("restore pre-update data backup %s: %w", backupID, err))
+					}
+					break
+				}
+				if !found {
+					failures = append(failures, fmt.Errorf("pre-update data backup %s is unavailable", backupID))
+				}
+			}
 		}
 	}
-	_, err := b.ApplyPending()
-	return err
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "300"); err != nil {
+		return err
+	}
+	return health.Wait(e.Log, 3*time.Minute)
 }
 
-func (e *Clinic) backupBeforeUpdate() error {
+func (e *Clinic) backupBeforeUpdate() (string, error) {
 	if !e.Backups().BackupEncryptionOn() {
-		return errors.New("this install cannot write encrypted backups, so the update was not applied - " +
+		return "", errors.New("this install cannot write encrypted backups, so the update was not applied - " +
 			"recover the backup encryption certificate first")
 	}
 	ts := time.Now().Format("20060102-150405")
 	e.logln("Taking a safety backup before the update changes the database...")
-	if err := e.run(nil, "docker", "compose", "run", "--rm", "-T", "backup", "once", "pre-update-"+ts); err != nil {
-		return fmt.Errorf("couldn't take a safety backup, so the update was not applied: %w", err)
+	if err := e.run(nil, "compose", "run", "--rm", "-T", "backup", "once", "pre-update-"+ts); err != nil {
+		return "", fmt.Errorf("couldn't take a safety backup, so the update was not applied: %w", err)
 	}
-	e.logln("Safety backup written: care-pre-update-" + ts + ".dump.enc")
-	return nil
+	if err := e.ExportBackups(e.Runner().Context()); err != nil {
+		return "", fmt.Errorf("the update safety backup couldn't be copied to %s, so the update was not applied: %w", e.backupDir(), err)
+	}
+	name := "care-pre-update-" + ts + ".dump.enc"
+	if info, err := os.Stat(filepath.Join(e.backupDir(), name)); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		if err != nil {
+			return "", fmt.Errorf("the update safety backup was not created at %s: %w", filepath.Join(e.backupDir(), name), err)
+		}
+		return "", fmt.Errorf("the update safety backup is not a nonempty regular file: %s", filepath.Join(e.backupDir(), name))
+	}
+	e.logln("Safety backup written: " + filepath.Join(e.backupDir(), name))
+	return name, nil
 }

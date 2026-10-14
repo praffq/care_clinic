@@ -1,5 +1,5 @@
 import type {
-  AppState, AppUpdate, AppUpdateProgress, Backup, BackupPolicy, BackupSpace, ChannelStatus, ClientPreflight,
+  AppState, AppUpdate, AppUpdateProgress, Backup, BackupCopyStatus, BackupHealth, BackupSpace, ChannelStatus, ClientPreflight,
   ClientReachability, ConfirmationRequest, DiskStatus, DockerStatus, EngineState, NetworkStatus, ResidueReport,
   CarePlugin, Health, ImportedBackup, PluginCatalogEntry, QuitRequest, RestartPlan, Section, SetupIssue, SetupRecoveryStatus, StorageReport, ToolPlan, WindowsVMStatus,
 } from "../../src/types";
@@ -28,7 +28,6 @@ type Fixtures = {
   clinicStatus: string;
   backups: Backup[];
   backupDir: string;
-  backupPolicy: BackupPolicy;
   storage: StorageReport;
   channel: ChannelStatus;
   autostart: boolean;
@@ -113,8 +112,18 @@ export function installTestHost() {
     `AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-${generation.toString(16).padStart(4, "0")}-${(index + 1).toString(16).padStart(4, "0")}`.toUpperCase());
   const backupSpace: BackupSpace = {
     dir: backupDir, free: 418 * 2 ** 30, total: 500 * 2 ** 30,
-    need: 6 * 2 ** 30, set_bytes: exampleBackup.size_bytes, days_left: 190,
+    need: 6 * 2 ** 30, set_bytes: exampleBackup.size_bytes,
     shares_docker_drive: false, level: "ok", message: "",
+  };
+  const backupHealth: BackupHealth = {
+    checked_at: now, last_backup_at: now - 3_600, earliest_restore_at: now - 4_000, set: "20261003-020004",
+    verified: true, checks: { checksums: "ok", decrypt_test: "ok", pg_restore_list: "ok", pg_verifybackup: "ok", pg_waldump: "ok", wal_chain: "ok" },
+    saved_through: now - 120,
+    wal: { state: "ok", checked_at: now - 60, saved_through: now - 120, last_archived_at: now - 120, last_failed_at: 0, gap: "", message: "" },
+    trial: { state: "passed", at: now - 3 * 86_400, message: "" },
+    copy: { state: "off", dir: "", checked_at: now, last_copied_at: 0, set: "", wal_through: "", message: "" },
+    last_run: { state: "ok", reason: "", at: now - 3_600, need_bytes: 0, free_bytes: 0, message: "" },
+    alerts: [],
   };
   const fixtures: Fixtures = {
     disk: { ok: true, message: "212 GB free", how: "", free: 212 * 2 ** 30, need: 30 * 2 ** 30 },
@@ -134,7 +143,6 @@ export function installTestHost() {
     clinicStatus: "backend\nfrontend\ndb\nbackup",
     backups: [exampleBackup, { ...exampleBackup, db_dump: "care-20261002-020004.dump.enc", files_archive: "files-20261002-020004.tar.gz.enc", label: "20261002-020004 - database + files - encrypted" }],
     backupDir,
-    backupPolicy: { interval_seconds: 86_400, retention_days: 0 },
     storage: {
       checked_at: now, level: "ok", headline: "",
       drives: [
@@ -142,9 +150,9 @@ export function installTestHost() {
         { id: "vm", label: "CARE engine disk", path: "", free: 63 * 2 ** 30, total: 100 * 2 ** 30, level: "ok", message: "", cleanable: true },
       ],
       backup: backupSpace, last_run: { state: "ok", reason: "", at: now - 3_600, need_bytes: 0, free_bytes: 0, message: "" },
-      newest_backup_at: now - 3_600, stale: false,
+      newest_backup_at: now - 3_600, stale: false, health: backupHealth,
     },
-    channel: { line: { id: "2026.1", title: "CARE 2026.1", expired: false }, newer_lines: [], backend: "preview-backend-current", frontend: "preview-frontend-current", pending_backend: "", pending_frontend: "" },
+    channel: { version: "3.1.0", backend: "preview-backend-current", frontend: "preview-frontend-current", pending_backend: "", pending_frontend: "" },
     autostart: true,
     importedBackup: { path: `${backupDir}/${exampleBackup.db_dump}`, dir: backupDir, db_dump: exampleBackup.db_dump, files_archive: exampleBackup.files_archive, label: exampleBackup.label, encrypted: true },
     recoveryFile: "/test-fixtures/recovery/CARE-backup-recovery.pem",
@@ -152,8 +160,8 @@ export function installTestHost() {
     finishJobs: true,
     quitAccepted: false,
     env: {
-      backend: "DB_BACKUP_RETENTION_PERIOD=0\nTIME_ZONE=Asia/Kolkata\nCORAZA_MODE=Off\nDEFAULT_FROM_EMAIL=clinic@example.invalid\nENABLE_OTP_LOGIN=False\nALLOW_PUBLIC_READ=False\n",
-      frontend: "REACT_CARE_API_URL=https://care.local\nREACT_CARE_ENABLE_DASHBOARD=true\n",
+      backend: "TIME_ZONE=Asia/Kolkata\nCORAZA_MODE=Off\nDEFAULT_FROM_EMAIL=clinic@example.invalid\nENABLE_OTP_LOGIN=False\nALLOW_PUBLIC_READ=False\n",
+      frontend: "REACT_CARE_ENABLE_DASHBOARD=true\n",
     },
     plugins: [{ ...catalog[0].plugin, catalog: true }],
     catalog,
@@ -220,6 +228,10 @@ export function installTestHost() {
   }
   if (scenario === "panel-requirements") { fixtures.docker.ok = false; }
   if (scenario === "panel-engine-outdated" || scenario === "panel-engine-update-failed") fixtures.engine = { ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true, logs: "" };
+  if (scenario === "panel-engine-rolled-back") fixtures.engine = {
+    ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true,
+    update_failed: true, update_error: "CARE engine: Docker did not start", logs: "",
+  };
   if (scenario === "panel-engine-rolled-back") fixtures.engine = { ...fixtures.engine, installed_version: "0.1.0", running_version: "0.1.0", update_needed: true, update_failed: true, update_error: "CARE engine: Docker did not start", logs: "" };
   if (scenario === "panel-update") fixtures.channel.pending_backend = "preview-backend-next";
   const available = ["available", "downloading", "installing", "verifying", "restarting", "installer", "failed", "download-failed", "unavailable"].includes(scenario);
@@ -236,7 +248,6 @@ export function installTestHost() {
   const emit = (event: string, ...data: unknown[]) => {
     listeners.get(event)?.forEach((handler) => handler(...data));
   };
-  let stagedLine: ChannelStatus["line"] | null = null;
   let stagedPlugins: CarePlugin[] | null = null;
   const finishJob = (action: string, error?: string) => {
     if (action === "apply-plugins") {
@@ -248,20 +259,13 @@ export function installTestHost() {
       const title = action === "restore" ? "Restore didn't finish" : action === "backup-now" ? "Backup didn't finish" : "CARE couldn't finish that";
       if (action !== "setup") emit("care-error", title, error);
     } else {
-      if (["start", "restart", "update", "upgrade-line", "restore", "engine-update"].includes(action)) {
+      if (["start", "restart", "update", "restore", "engine-update"].includes(action)) {
         fixtures.health = { active: true, code: 200, detail: "" };
         fixtures.clinicStatus = "backend\nfrontend\ndb\nbackup";
       }
       if (action === "stop") { fixtures.health.active = false; fixtures.clinicStatus = ""; }
       if (action === "restore") state.restore_pending = false;
-      if (action === "upgrade-line" && stagedLine) {
-        fixtures.channel.line = stagedLine;
-        fixtures.channel.newer_lines = fixtures.channel.newer_lines.filter((line) => line.id !== stagedLine!.id);
-        fixtures.channel.pending_line = "";
-        fixtures.channel.recommended = "";
-        stagedLine = null;
-      }
-      if (action === "update" || action === "upgrade-line") {
+      if (action === "update") {
         fixtures.channel.backend = fixtures.channel.pending_backend || fixtures.channel.backend;
         fixtures.channel.frontend = fixtures.channel.pending_frontend || fixtures.channel.frontend;
         fixtures.channel.pending_backend = "";
@@ -377,7 +381,7 @@ export function installTestHost() {
       requireServer();
       return {
         dir: `${dir || "/test-fixtures/Desktop"}/care-db-backups`, free: 418 * 2 ** 30, total: 500 * 2 ** 30, need: 6 * 2 ** 30,
-        set_bytes: 0, days_left: -1, shares_docker_drive: false, level: "ok", message: "",
+        set_bytes: 0, shares_docker_drive: false, level: "ok", message: "",
       };
     },
     DockerStatus: async () => ({ ...fixtures.docker }),
@@ -428,7 +432,27 @@ export function installTestHost() {
     ClinicStatus: async () => fixtures.clinicStatus,
     ListBackups: async () => fixtures.backups.map((backup) => ({ ...backup })),
     GetBackupDir: async () => fixtures.backupDir,
-    GetBackupPolicy: async () => ({ ...fixtures.backupPolicy }),
+    GetBackupHealth: async () => { requireServer(); return structuredClone(fixtures.storage.health); },
+    SetBackupCopyDir: async (dir: string) => {
+      requireServer();
+      if (fixtures.folderProblem) throw new Error(fixtures.folderProblem);
+      const copy: BackupCopyStatus = { ...fixtures.storage.health.copy, state: "ok", dir, checked_at: now,
+        last_copied_at: Math.floor(Date.now() / 1000), set: fixtures.storage.health.set, message: "" };
+      fixtures.storage.health.copy = copy;
+      emit("care-backup-copy", structuredClone(copy));
+      return `${dir}/CARE-backups`;
+    },
+    ClearBackupCopyDir: async () => {
+      requireServer();
+      fixtures.storage.health.copy = { state: "off", dir: "", checked_at: now, last_copied_at: 0, set: "", wal_through: "", message: "" };
+    },
+    RestorePointInTime: async (target: string, recoveryFile: string, password: string) => {
+      requireServer();
+      if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");
+      if (recoveryFile !== fixtures.recoveryFile) throw new Error("the recovery file does not match this backup");
+      if (target !== "latest" && Number.isNaN(Date.parse(target))) throw new Error("choose a valid restore time");
+      acceptJob("restore");
+    },
     SetBackupDir: async (dir: string) => {
       requireServer();
       if (fixtures.folderProblem) throw new Error(fixtures.folderProblem);
@@ -445,23 +469,12 @@ export function installTestHost() {
     SetAutostart: async (value: boolean) => { fixtures.autostart = value; },
     WasAutostartLaunched: async () => false,
     CareUpdateStatus: async () => structuredClone(fixtures.channel),
-    UpgradeCareLine: async (id: string) => {
-      requireServer();
-      if (state.restore_pending) throw new Error("a restore is unfinished");
-      const line = fixtures.channel.newer_lines.find((line) => line.id === id);
-      if (!line) throw new Error("unknown CARE release line");
-      stagedLine = { ...line };
-      fixtures.channel.pending_line = id;
-      fixtures.channel.pending_backend = "preview-backend-upgraded";
-      fixtures.channel.pending_frontend = "preview-frontend-upgraded";
-      acceptJob("upgrade-line");
-    },
     CheckCareUpdate: async () => {
       emit("care-check", { running: true, found: false });
       window.setTimeout(() => {
-        const update = { backend: fixtures.channel.pending_backend, frontend: fixtures.channel.pending_frontend, newer_line: fixtures.channel.newer_lines[0]?.id };
-        emit("care-check", { running: false, found: !!(update.backend || update.frontend || update.newer_line) });
-        if (update.backend || update.frontend || update.newer_line) emit("care-update", update);
+        const update = { backend: fixtures.channel.pending_backend, frontend: fixtures.channel.pending_frontend };
+        emit("care-check", { running: false, found: !!(update.backend || update.frontend) });
+        if (update.backend || update.frontend) emit("care-update", update);
       }, 150);
     },
     DismissCareUpdate: async () => { logs.push("Test only: the update was deferred until next start."); },
@@ -472,6 +485,8 @@ export function installTestHost() {
       if (action === "engine-update") {
         if (scenario === "panel-engine-update-failed" && !fixtures.engineRetry) {
           fixtures.engineRetry = true;
+          fixtures.engine.update_failed = true;
+          fixtures.engine.update_error = "could not download the CARE engine: network is unreachable";
           window.setTimeout(() => finishJob(action, "could not download care-engine-0.1.1-linux-arm64.tar.gz: network is unreachable"), 350);
           return;
         }
@@ -509,6 +524,12 @@ export function installTestHost() {
       if (fixtures.importedBackup.encrypted && (!recoveryFile || recoveryFile !== fixtures.recoveryFile)) throw new Error("the recovery file does not match this backup");
       acceptJob("restore");
     },
+    ReadEnvDefaults: async (section: string, password: string) => {
+      if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");
+      if (section === "backend") return "DJANGO_SETTINGS_MODULE=config.settings.production\n";
+      if (section === "frontend") return "REACT_MFE_REGISTERED_COMPONENTS=UserDashboard\nREACT_DEFAULT_ENCOUNTER_TYPE=\n";
+      throw new Error("unknown env file");
+    },
     ReadEnv: async (section: string, password: string) => {
       if (password !== fixtures.adminPassword) throw new Error("the CARE Clinic admin password does not match this installation");
       if (section !== "backend" && section !== "frontend") throw new Error("unknown env file");
@@ -520,10 +541,6 @@ export function installTestHost() {
       if (state.restore_pending) throw new Error("a restore is unfinished; start CARE to recover it before making other changes");
       if (section !== "backend" && section !== "frontend") throw new Error("unknown env file");
       fixtures.env[section] = content;
-      if (section === "backend") {
-        const retention = /^DB_BACKUP_RETENTION_PERIOD=["']?(\d+)["']?\s*$/m.exec(content);
-        if (retention) fixtures.backupPolicy.retention_days = Number(retention[1]);
-      }
     },
     ReadPlugins: async () => structuredClone(fixtures.plugins),
     PluginCatalog: async () => structuredClone(fixtures.catalog),
@@ -677,7 +694,10 @@ export function installTestHost() {
     },
     OpenURL: async () => { logs.push("Test only: release notes requested."); },
     OpenLogFolder: async () => { logs.push("Test only: log file requested."); },
-    ExportDiagnostics: async () => { logs.push("Test only: diagnostics export requested."); },
+    ExportDiagnostics: async (passwordWarningAccepted: boolean) => {
+      if (!passwordWarningAccepted) throw new Error("clinic-password warning was not accepted");
+      logs.push("Test only: diagnostics export requested.");
+    },
     SetQuitDialogReady: async (ready: boolean) => {
       if (!ready) quitRequest = null;
       return quitRequest ? { ...quitRequest } : null;

@@ -21,6 +21,7 @@ func TestEngineStateDetectsOutdatedEngine(t *testing.T) {
 		{"tools missing", "0.1.1", false, vm.HostStatus{}, true},
 		{"not installed", "", true, vm.HostStatus{}, false},
 	}
+
 	for _, tc := range cases {
 		st := engineState(tc.installed, "0.1.1", tc.toolsOK, tc.status, nil)
 		if st.UpdateNeeded != tc.want {
@@ -28,6 +29,22 @@ func TestEngineStateDetectsOutdatedEngine(t *testing.T) {
 		}
 		if st.Running != (tc.status.PID != 0) || st.Logs != tc.status.Logs {
 			t.Errorf("%s: unexpected state %+v", tc.name, st)
+		}
+	}
+}
+
+func TestNativeEngineStateSurfacesVersionChangeWithoutInstallingOnStartup(t *testing.T) {
+	for _, tc := range []struct {
+		installed string
+		want      bool
+	}{
+		{"", false},
+		{"0.1.2", true},
+		{"0.1.3", false},
+	} {
+		state := nativeEngineState(tc.installed, "0.1.3", true)
+		if state.UpdateNeeded != tc.want || !state.Native || state.Supported {
+			t.Fatalf("native status=%+v; update needed=%v", state, tc.want)
 		}
 	}
 }

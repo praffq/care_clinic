@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/hosts"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/netfix"
@@ -40,32 +40,65 @@ func Scan(o Options) (Report, error) {
 	return scan(o, systemTraces)
 }
 
-// engineAvailable separates "this computer has no Docker" from "Docker is
-// installed but not answering". A client, or a computer where setup never got
-// as far as installing an engine, has no Docker-side traces to find; that is an
-// empty result, not an inspection failure.
+// A missing agent socket is not proof that retained native engine data is absent.
 func engineAvailable(run proc.Runner) (bool, error) {
-	absent, err := vm.ManagedEngineAbsent()
-	if err != nil {
-		return false, fmt.Errorf("could not inspect the CARE engine files: %w", err)
-	}
-	if absent {
-		return false, nil
-	}
-	if _, err := run.Capture("docker", "--version"); err != nil {
-		if missingCommand(err) {
-			if vm.Supported() {
-				return false, fmt.Errorf("CARE engine files remain but its Docker CLI is missing; recover the engine to inspect retained clinic volumes: %w", err)
-			}
+	return engineAvailableWith(run, vm.Supported(), nativeEngineAbsent)
+}
+
+func engineAvailableWith(run proc.Runner, managed bool, nativeAbsent func() (bool, error)) (bool, error) {
+	if managed {
+		absent, err := vm.ManagedEngineAbsent()
+		if err != nil {
+			return false, fmt.Errorf("could not inspect the CARE engine files: %w", err)
+		}
+		if absent {
 			return false, nil
 		}
-		return false, fmt.Errorf("could not inspect this computer's clinic containers; start Docker and try again: %w", err)
+	}
+	if _, err := run.AgentCapture("version", "--format", "{{.Server.Version}}"); err != nil {
+		if missingAgent(err) {
+			if managed {
+				return false, fmt.Errorf("CARE engine files remain but its agent is not answering; recover the engine to inspect retained clinic volumes: %w", err)
+			}
+			absent, inspectErr := nativeAbsent()
+			if inspectErr != nil {
+				return false, fmt.Errorf("could not inspect the native CARE engine files: %w", inspectErr)
+			}
+			if absent {
+				return false, nil
+			}
+			return false, fmt.Errorf("native engine files remain but its agent is not answering; start the CARE agent to inspect retained clinic volumes: %w", err)
+		}
+		if managed {
+			return false, fmt.Errorf("CARE engine files remain but its agent is not answering; recover the engine to inspect retained clinic volumes: %w", err)
+		}
+		return false, fmt.Errorf("could not inspect this computer's clinic containers; start the CARE agent and try again: %w", err)
 	}
 	return true, nil
 }
 
-func missingCommand(err error) bool {
-	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist)
+// missingAgent identifies a missing socket, not an absent engine installation.
+func missingAgent(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func nativeEngineAbsent() (bool, error) {
+	return nativePathsAbsent([]string{
+		"/var/lib/care", "/var/lib/docker", "/run/docker.sock", "/run/care-engine-agent/control.sock",
+		"/usr/local/bin/care-engine-agent", "/usr/local/share/care-clinic/agent.version",
+		"/etc/systemd/system/care-engine-agent.service", "/etc/docker",
+	})
+}
+
+func nativePathsAbsent(paths []string) (bool, error) {
+	for _, p := range paths {
+		if _, err := os.Lstat(p); err == nil {
+			return false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect %s: %w", p, err)
+		}
+	}
+	return true, nil
 }
 
 func scan(o Options, inspectSystem func(proc.Runner) ([]Trace, error)) (Report, error) {
@@ -75,11 +108,11 @@ func scan(o Options, inspectSystem func(proc.Runner) ([]Trace, error)) (Report, 
 		traces = append(traces, Trace{ID: id, Label: label, Detail: detail})
 	}
 
-	engine, err := engineAvailable(o.Runner)
+	available, err := engineAvailable(o.Runner)
 	if err != nil {
 		failed = append(failed, err)
 	}
-	if engine {
+	if available {
 		docker, dockerErr := dockerTraces(o)
 		traces = append(traces, docker...)
 		if dockerErr != nil {
@@ -133,9 +166,9 @@ func dockerTraces(o Options) ([]Trace, error) {
 		{"volumes", "Old clinic data", "data volume", "data volumes", []string{"volume", "ls", "-q", "--filter", label}},
 		{"networks", "Clinic network", "network", "networks", []string{"network", "ls", "-q", "--filter", label}},
 	} {
-		ids, err := o.Runner.Lines("docker", resource.args...)
+		ids, err := o.Runner.AgentLines(engine.Operation(resource.args[0]), resource.args[1:]...)
 		if err != nil {
-			failed = append(failed, fmt.Errorf("could not inspect %s; start Docker and try again: %w", resource.label, err))
+			failed = append(failed, fmt.Errorf("could not inspect %s; start the CARE agent and try again: %w", resource.label, err))
 		} else if len(ids) > 0 {
 			add(resource.id, resource.label, plural(len(ids), resource.one, resource.many)+" from an earlier install")
 		}
@@ -188,11 +221,11 @@ func InstallDirFrom(run proc.Runner, project, configured string) (string, error)
 	if err != nil || found {
 		return configured, err
 	}
-	engine, err := engineAvailable(run)
-	if err != nil || !engine {
+	available, err := engineAvailable(run)
+	if err != nil || !available {
 		return configured, err
 	}
-	dirs, err := run.Lines("docker", "ps", "-a",
+	dirs, err := run.AgentLines("ps", "-a",
 		"--filter", "label=com.docker.compose.project="+project,
 		"--format", workingDirFormat)
 	if err != nil {
@@ -230,7 +263,7 @@ func hasComposeFile(dir string) (bool, error) {
 
 func presentImages(run proc.Runner, tags []string) ([]string, error) {
 	have := map[string]bool{}
-	lines, err := run.Lines("docker", "images", "--format", "{{.Repository}}:{{.Tag}}")
+	lines, err := run.AgentLines("images", "--format", "{{.Repository}}:{{.Tag}}")
 	if err != nil {
 		return nil, fmt.Errorf("could not inspect Docker images: %w", err)
 	}

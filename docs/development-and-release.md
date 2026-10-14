@@ -4,7 +4,7 @@
 
 This guide explains how desktop source becomes an application and how that
 application prepares the clinic from published images. CARE image publication
-is a separate CI build system; see [images and release lines](images-and-lines.md).
+is a separate CI build system; see [CARE images](images.md).
 
 ## The different builds
 
@@ -14,7 +14,7 @@ is a separate CI build system; see [images and release lines](images-and-lines.m
 | Desktop executable | `app/*.go`, `app/internal/`, Go dependencies, both embedded trees | Wails application under `app/build/bin/` | Developer or release build. |
 | Installer/package | Wails application, platform metadata, optional signing configuration | macOS `.dmg` or Windows NSIS setup executable | Release workflow. |
 | Clinic infrastructure images | Optional prebuilt digests, or deployment Dockerfiles and base-image/module pins | Locally tagged backup and Caddy/Coraza images | Clinic setup or when their inputs change; local compilation only when prebuilt pins are blank. |
-| CARE backend/frontend images | Published runtime/builder digests from `lines.json`, clinic settings/plugins | Images tagged for this clinic installation | Download/relabel at setup or update; local builder-image customization only for plugins or changed compiled frontend settings. |
+| CARE backend/frontend images | Published runtime/builder digests from signed update metadata, clinic settings/plugins | Images tagged for this clinic installation | Download/relabel at setup or update; local builder-image customization only for plugins or changed compiled frontend settings. |
 
 Changing Go code, such as the settings read lock, requires rebuilding and relaunching the desktop executable. It does not require reinstalling the clinic or rebuilding every Docker image.
 
@@ -34,7 +34,7 @@ The direct Go dependencies have narrow jobs:
 | Module | Why the backend uses it |
 | --- | --- |
 | `github.com/wailsapp/wails/v2` | Native application runtime, webview binding, events and dialogs at the application boundary. |
-| `github.com/compose-spec/compose-go/v2` | Dotenv parsing. Stack control still goes through the Docker Compose executable, not a programmatic Compose service API. |
+| `github.com/compose-spec/compose-go/v2` | Dotenv parsing and Compose integration tests. Runtime stack operations go through the CARE agent. |
 | `github.com/hashicorp/mdns` | DNS-SD record construction; CARE owns the interface-bound responder transport. |
 | `github.com/miekg/dns` | DNS packet encoding/decoding for the responder and direct hostname probes. |
 | `golang.org/x/net` | Interface-bound IPv4/IPv6 multicast sockets. |
@@ -257,33 +257,46 @@ UI suite because all screens share them.
 
 ## Release identity and pins
 
-[`deployments/.env`](../deployments/.env) is the common release manifest consumed by Compose, Go, and packaging. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
+[`versions.toml`](../versions.toml) is the only human-edited release file.
+Packaging stages its pins together with non-release defaults from
+[`deployments/.env`](../deployments/.env) into the app's generated install
+environment; [`release.Load()`](../app/internal/release/pins.go) parses that
+environment using dotenv.
 
 | Group | Required keys |
 | --- | --- |
 | Desktop identity | `CARE_CLINIC_VERSION`. |
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
-| CARE release lines | `CARE_LINES_URL` (HTTPS manifest URL); `CARE_DEFAULT_LINE` selects new installs. |
-| Prerequisite downloads | `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, `DOCKER_LINUX_*`, and `COMPOSE_LINUX_*` version, URL, and checksum pins. |
+| CARE software | `CARE_VERSION` and `CARE_UPDATES_URL`, staged from `versions.toml`; only CARE 3.1 ships. |
+| Prerequisite downloads | `CARE_VM_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, and native Linux `DOCKER_LINUX_*` pins. Native agents use signed engine-manifest assets. |
 
-`CARE_CLINIC_VERSION` is `X.Y.Z` or `X.Y.Z-dev`. Engine and tool versions
-(`CARE_VM_VERSION`, `DOCKER_CLI_VERSION`, `QEMU_WINDOWS_VERSION`,
-`DOCKER_LINUX_VERSION`, and `COMPOSE_LINUX_VERSION`) are `X.Y.Z`; each
-`*_SHA256` is 64 lowercase hex characters. The CARE engine and host-side tools
-are documented in the [CARE engine guide](vm.md); Linux Docker provisioning is
-covered in [native integrations](native-integrations.md#docker-prerequisites).
+Desktop, engine and CARE versions are strict `X.Y.Z` pins (desktop development
+builds may use `X.Y.Z-dev`). Agent assets share the engine version and release.
+Engine `0.1.3` introduces the jobs protocol; desktop requirements exclude older
+engine bundles. CI ships both VM bundles and `care-engine-agent-linux-{arch}`
+binaries in that immutable release, recording actual hashes and sizes in the
+engine assets consumed by the unchanged manifest-signing flow.
+Native installation and updates require those verified signed assets; there
+are no static agent hashes. All-zero VM bootstrap checksums in `versions.toml`
+are explicit publication blockers, never trusted download hashes. Replace them
+only with the actual immutable bundle hashes after CI publication. Until then,
+VM bootstrap/download/activation remains blocked rather than using old assets.
+Each `*_SHA256` is 64 lowercase hex characters. The CARE engine and native
+agent assets are documented in the [CARE engine guide](vm.md); native Linux
+Docker provisioning is covered in
+[native integrations](native-integrations.md#docker-prerequisites). Host Docker
+CLI and Compose downloads are not pinned or installed.
 Windows QEMU and its temporary extraction tools download directly from upstream;
 `QEMU_WINDOWS_SHA256` identifies the distributor installer, not a repackaged ZIP.
 Both `SEVENZIP_*_URL` and `SEVENZIP_*_SHA256` pairs are required. No upstream
 installer is run and no third-party binary is hosted by the CARE release.
 
-`CARE_LINES_URL` points to the schema-1 release-line manifest. New clinics use
-`CARE_DEFAULT_LINE`, or the manifest's recommended line. Existing clinics keep
-current and staged digest-pinned images in `line.json`; background checks download
-fixes for that line, while moving to a newer line is explicit. Optional
+`CARE_UPDATES_URL` points to signed update metadata. Clinics keep
+current and staged digest-pinned CARE 3.1 images in `care-images.json`;
+background checks verify signatures before downloading updates. Optional
 `CADDY_WAF_PREBUILT` and `BACKUP_PREBUILT` must be digest-pinned when set; blank
-values retain local builds. See [images and release lines](images-and-lines.md).
+values retain local builds. See [CARE images](images.md).
 
 At runtime, `GetState().version` comes from these embedded pins, not a separate
 linker-injected version variable.
@@ -296,7 +309,7 @@ into `main`, or the commit selected for a manual run):
 | `CARE_CLINIC_VERSION` | Numeric `X.Y.Z`, without `-dev`. |
 | `app/wails.json` -> `info.productVersion` | Derived as `X.Y.Z` before building. |
 | Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
-| CARE release lines | An HTTPS `CARE_LINES_URL` and `CARE_DEFAULT_LINE`; CARE image digests are published separately in `lines.json`. |
+| CARE software | CARE 3.1 runtime/builder digests in signed `updates.json`. |
 
 The tracked release workflow is currently blocked before packaging: it still
 requires removed image-revision values and obsolete desktop dependency pins,
@@ -319,8 +332,8 @@ For the same reason no test may elevate. Privileged work goes through [`sys/elev
 
 ### Reproducibility boundaries
 
-A desktop release chooses the manifest URL and default line, not a fixed CARE
-source commit. `line.json` records the actual published images and their commits;
+A desktop release ships the update URL and CARE 3.1 version.
+`care-images.json` records the actual published images and their commits;
 CARE images are pinned by registry digest. Local image freshness labels also
 include plugin or compiled-setting inputs, as described in
 [clinic lifecycle](clinic-lifecycle.md).
@@ -422,7 +435,7 @@ Tests sit beside their packages. They use Go's standard test runner and existing
 
 | Area | Representative coverage |
 | --- | --- |
-| App/settings | Shared authenticated reads, write exclusion, lifecycle guards, and retention persistence. |
+| App/settings | Shared authenticated reads, write exclusion, lifecycle guards, and override persistence. |
 | Clinic | Domain rewriting, worker-stop/migration ordering, native-access outcomes, cleanup ownership, and backup script behavior. |
 | Backup | Encryption/key handling, staged restore control flow, archive validation, and interruption recovery. |
 | Compose | Build freshness, image inputs, deployment routing, and storage bootstrap contracts. |

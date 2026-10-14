@@ -27,6 +27,11 @@ type qemuVM struct {
 	tls    *tls.Config
 }
 
+func certDir() string        { return filepath.Join(StateDir(), "certs") }
+func exe(name string) string { return name + ".exe" }
+
+const hostTCPControl = 47377
+
 // HypervisorReady reports whether the Windows Hypervisor Platform (WHPX) is
 // turned on and usable.
 func HypervisorReady() error {
@@ -99,7 +104,6 @@ func qemuArgs(m Manifest, c Config, creds string) []string {
 		"user,id=net0",
 		"hostfwd=tcp:0.0.0.0:80-:80",
 		"hostfwd=tcp:0.0.0.0:443-:443",
-		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(qemuTCPDocker) + "-:" + strconv.Itoa(guestTCPDocker),
 		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(hostTCPControl) + "-:" + strconv.Itoa(guestTCPControl),
 	}, ",")
 	return []string{
@@ -174,8 +178,6 @@ func (v *qemuVM) dial(ctx context.Context, port uint32) (net.Conn, error) {
 	switch port {
 	case vsockControl:
 		hp = hostTCPControl
-	case vsockDocker:
-		hp = qemuTCPDocker
 	default:
 		return nil, fmt.Errorf("guest port %d is not forwarded", port)
 	}
@@ -196,6 +198,5 @@ func makeSparse(p string) {
 // Guest TCP ports for the Windows endpoint (QEMU hostfwd targets); shared
 // with vm/agent/main.go.
 const (
-	guestTCPDocker  = 2376
 	guestTCPControl = 2377
 )

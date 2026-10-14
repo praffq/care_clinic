@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/lines"
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 )
 
 // LockFile records which published CARE release each service runs.
-const LockFile = "line.json"
+const LockFile = "care-images.json"
 
 // legacyLockFile was written by app versions that built CARE from source.
 const legacyLockFile = "channel.lock"
@@ -21,19 +21,19 @@ const (
 	Frontend = "frontend"
 )
 
-// Release is one published CARE image, copied from the lines manifest so the
+// Release is one published CARE image, copied from verified metadata so the
 // clinic keeps working offline.
-type Release = lines.Image
+type Release = careversions.Image
 
 type Channel struct {
 	Current  Release  `json:"current"`
+	Previous *Release `json:"previous,omitempty"`
 	Next     *Release `json:"next,omitempty"`
 	Declined string   `json:"declined,omitempty"`
 }
 
 type Lock struct {
-	Line     string  `json:"line,omitempty"`
-	NextLine string  `json:"next_line,omitempty"`
+	Version  string  `json:"version"`
 	Backend  Channel `json:"backend"`
 	Frontend Channel `json:"frontend"`
 }

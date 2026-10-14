@@ -165,27 +165,27 @@ func restoreMount(kind, source, target string, readOnly bool) string {
 }
 
 func (s *Store) restoreHelperArgs(j *restoreJournal, step, network string, extra ...string) []string {
-	args := []string{"run", "--rm", "--name", j.Project + "-restore-" + j.ID + "-" + step,
+	args := []string{"--rm", "--name", j.Project + "-restore-" + j.ID + "-" + step,
 		"--label", RestoreLabel + "=" + j.ID,
 		"--label", "com.docker.compose.project=" + j.Project, "--network", network}
 	return append(args, extra...)
 }
 
 func (s *Store) stopRestoreHelpers(j *restoreJournal) error {
-	args := []string{"ps", "--all", "--quiet",
+	args := []string{"--all", "--quiet",
 		"--filter", "label=com.docker.compose.project=" + j.Project,
 		"--filter", "label=" + RestoreLabel + "=" + j.ID}
-	ids, err := s.run.Lines("docker", args...)
+	ids, err := s.run.AgentLines("ps", args...)
 	if err != nil {
 		return fmt.Errorf("cannot inspect interrupted restore helpers: %w", err)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := s.run.Run("docker", append([]string{"rm", "--force"}, ids...)...); err != nil {
+	if err := s.run.AgentRun("rm", append([]string{"--force"}, ids...)...); err != nil {
 		return fmt.Errorf("cannot stop interrupted restore helpers: %w", err)
 	}
-	ids, err = s.run.Lines("docker", args...)
+	ids, err = s.run.AgentLines("ps", args...)
 	if err != nil {
 		return err
 	}
@@ -200,14 +200,14 @@ func (s *Store) stopRestoreWriters() error {
 	if err := s.dc(append([]string{"stop"}, services...)...); err != nil {
 		return fmt.Errorf("cannot stop CARE writers; no cutover was attempted: %w", err)
 	}
-	ids, err := s.run.Lines("docker", append([]string{"compose", "ps", "--all", "--quiet"}, services...)...)
+	ids, err := s.run.AgentLines("compose", append([]string{"ps", "--all", "--quiet"}, services...)...)
 	if err != nil {
 		return fmt.Errorf("cannot check whether CARE writers stopped: %w", err)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	states, err := s.run.Lines("docker", append([]string{"inspect", "--format", "{{.State.Status}}"}, ids...)...)
+	states, err := s.run.AgentLines("inspect", append([]string{"--format", "{{.State.Status}}"}, ids...)...)
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func (s *Store) stopRestoreWriters() error {
 }
 
 func (s *Store) restoreVolumeExists(name string, labels map[string]string) (bool, error) {
-	names, err := s.run.Lines("docker", "volume", "ls", "--format", "{{.Name}}", "--filter", "name="+name)
+	names, err := s.run.AgentLines("volume", "ls", "--format", "{{.Name}}", "--filter", "name="+name)
 	if err != nil {
 		return false, err
 	}
@@ -236,7 +236,7 @@ func (s *Store) restoreVolumeExists(name string, labels map[string]string) (bool
 	if !found {
 		return false, nil
 	}
-	out, err := s.run.Capture("docker", "volume", "inspect", "--format", "{{json .Labels}}", name)
+	out, err := s.run.AgentCapture("volume", "inspect", "--format", "{{json .Labels}}", name)
 	if err != nil {
 		return false, err
 	}
@@ -253,7 +253,7 @@ func (s *Store) restoreVolumeExists(name string, labels map[string]string) (bool
 }
 
 func (s *Store) createRestoreVolume(j *restoreJournal, name string) error {
-	if err := s.run.Run("docker", "volume", "create",
+	if err := s.run.AgentRun("volume", "create",
 		"--label", RestoreLabel+"="+j.ID,
 		"--label", "com.docker.compose.project="+j.Project, name); err != nil {
 		return err
@@ -277,7 +277,7 @@ func (s *Store) requireRestoreVolume(j *restoreJournal, name string) error {
 func (s *Store) requireLiveFiles(create bool) error {
 	name := s.Project + "_minio-data"
 	if create {
-		if err := s.run.Run("docker", "volume", "create",
+		if err := s.run.AgentRun("volume", "create",
 			"--label", "com.docker.compose.project="+s.Project,
 			"--label", "com.docker.compose.volume=minio-data", name); err != nil {
 			return err
@@ -405,7 +405,7 @@ func (s *Store) FinishRestore() error {
 			return s.restoreFailure(j, err)
 		}
 		if exists {
-			if err := s.run.Run("docker", "volume", "rm", name); err != nil {
+			if err := s.run.AgentRun("volume", "rm", name); err != nil {
 				return s.restoreFailure(j, err)
 			}
 		}

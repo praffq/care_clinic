@@ -63,7 +63,6 @@ const ACTION_LABELS: Record<string, string> = {
   "apply-plugins": "Applying plugins",
   "backup-now": "Backing up",
   update: "Updating CARE",
-  "upgrade-line": "Upgrading CARE",
   "free-space": "Freeing space",
   "engine-update": "Updating CARE engine",
 };
@@ -116,7 +115,6 @@ type CareStore = {
   trouble: boolean;
   careUpdate: CareUpdate | null;
   applyCareUpdate: () => Promise<void>;
-  upgradeCareLine: (id: string) => Promise<void>;
   dismissCareUpdate: () => Promise<void>;
   installAppUpdate: () => Promise<void>;
   acknowledgeAppUpdate: () => boolean;
@@ -141,6 +139,7 @@ type CareStore = {
   setAutostart: (on: boolean) => Promise<void>;
   restore: (backup: Backup, recoveryFile: string, adminPassword: string) => Promise<void>;
   restoreFile: (path: string, recoveryFile: string, adminPassword: string) => Promise<void>;
+  restorePointInTime: (target: string, recoveryFile: string, adminPassword: string) => Promise<void>;
   uninstall: (
     removeImages: boolean,
     removeBackups: boolean,
@@ -375,7 +374,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
   }, [log]);
 
   const runAction = useCallback(
-    async (action: string, adminPassword = "", lineId?: string) => {
+    async (action: string, adminPassword = "") => {
       if (busyRef.current) {
         setOperationError(describeOperationError(action, "something else is still running"));
         return false;
@@ -410,8 +409,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       setOperationError(null);
       log(`\n$ care ${action}`);
       try {
-        if (action === "upgrade-line" && lineId) await bridge.UpgradeCareLine(lineId);
-        else await bridge.ClinicAction(action, adminPassword);
+        await bridge.ClinicAction(action, adminPassword);
         return true;
       } catch (e) {
         log(`error: ${errorText(e)}`);
@@ -427,10 +425,6 @@ export function CareProvider({ children }: { children: ReactNode }) {
 
   const applyCareUpdate = useCallback(async () => {
     await runAction("update");
-  }, [runAction]);
-
-  const upgradeCareLine = useCallback(async (id: string) => {
-    await runAction("upgrade-line", "", id);
   }, [runAction]);
 
   const installAppUpdate = useCallback(async () => {
@@ -537,8 +531,8 @@ export function CareProvider({ children }: { children: ReactNode }) {
     [log, setBusy],
   );
 
-  const restoreFile = useCallback(
-    async (path: string, recoveryFile: string, adminPassword: string) => {
+  const startRestore = useCallback(
+    async (description: string, call: () => Promise<void>) => {
       if (busyRef.current) throw new Error("something else is still running");
       if (restorePendingRef.current) {
         throw new Error("a restore is unfinished; start CARE to recover it before making other changes");
@@ -548,9 +542,9 @@ export function CareProvider({ children }: { children: ReactNode }) {
       activeActionRef.current = "restore";
       lastErrorRef.current = "";
       setOperationError(null);
-      log("\n$ care restore imported backup");
+      log(`\n$ care restore ${description}`);
       try {
-        await bridge.RestoreFromFile(path, recoveryFile, adminPassword);
+        await call();
       } catch (e) {
         log(`error: ${errorText(e)}`);
         setBusy(false);
@@ -560,6 +554,19 @@ export function CareProvider({ children }: { children: ReactNode }) {
       }
     },
     [log, setBusy],
+  );
+
+  const restoreFile = useCallback(
+    (path: string, recoveryFile: string, adminPassword: string) =>
+      startRestore("imported backup", () => bridge.RestoreFromFile(path, recoveryFile, adminPassword)),
+    [startRestore],
+  );
+
+  const restorePointInTime = useCallback(
+    (target: string, recoveryFile: string, adminPassword: string) =>
+      startRestore(target === "latest" ? "to the latest saved change" : "to a point in time",
+        () => bridge.RestorePointInTime(target, recoveryFile, adminPassword)),
+    [startRestore],
   );
 
   const uninstall = useCallback(
@@ -627,19 +634,17 @@ export function CareProvider({ children }: { children: ReactNode }) {
       log(`storage: ${errorText(e)}`);
       setStorageError("Storage couldn't be checked. Try again.");
     });
-    // An app update leaves the previous CARE engine running. Replace it before
-    // the first status refresh, so the clinic isn't reported as running on an
-    // engine this version of CARE Clinic doesn't support.
-    let engineUpdating = false;
+    // An incompatible engine must be updated only after staff explicitly choose
+    // Update in the panel. Never apply it as a side effect of opening the app.
+    let engineUpdateRequired = false;
     if (!restorePending && !pluginPending) {
       try {
         const engine = await bridge.EngineStatus();
-        // A failed update was rolled back; it is retried only from the panel.
-        if (engine.supported && engine.update_failed) {
-          log(`\nThe CARE engine ${engine.expected_version} update failed earlier and the previous engine was kept: ${engine.update_error}`);
-        } else if (engine.supported && engine.update_needed && !busyRef.current) {
-          log(`\nCARE engine ${engine.expected_version} is required — updating it now...`);
-          engineUpdating = await runAction("engine-update");
+        if ((engine.supported || engine.native) && engine.update_needed) {
+          engineUpdateRequired = true;
+          log(engine.update_failed
+            ? `\nThe CARE engine ${engine.expected_version} update failed earlier and the previous engine was kept: ${engine.update_error}`
+            : `\nThe CARE engine ${engine.expected_version} is required. Choose Update CARE engine in the panel to apply it.`);
         }
       } catch (e) {
         log(`engine status: ${errorText(e)}`);
@@ -648,7 +653,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
     await reloadBackups();
     await refresh();
     await syncAutostart();
-    if (engineUpdating) return;
+    if (engineUpdateRequired) return;
     try {
       const health = await bridge.ClinicHealth();
       if ((!health.active || restorePending || pluginPending) && !busyRef.current) {
@@ -923,7 +928,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
         if (code !== 0) {
           setOperationError(describeOperationError(label ?? "operation", lastErrorRef.current));
           if (label === "stop") stoppedOnPurposeRef.current = stopIntentBeforeRef.current;
-        } else if (label === "update" || label === "upgrade-line") {
+        } else if (label === "update") {
           setCareUpdate(null);
         }
         activeActionRef.current = "";
@@ -1060,7 +1065,6 @@ export function CareProvider({ children }: { children: ReactNode }) {
       trouble,
       careUpdate,
       applyCareUpdate,
-      upgradeCareLine,
       dismissCareUpdate,
       installAppUpdate,
       acknowledgeAppUpdate,
@@ -1084,16 +1088,17 @@ export function CareProvider({ children }: { children: ReactNode }) {
       setAutostart,
       restore,
       restoreFile,
+      restorePointInTime,
       uninstall,
       log,
     }),
     [
       ready, flow, mdnsName, clientURL, selectRole, clearRole, openStep, stepsDone, setStepDone,
       run, setupReset, startInstall, resumeInstall, retryInstall, restartSetup, openPanel,
-      tab, busy, busyLabel, operationError, clearOperationError, system, systemDetail, trouble, careUpdate, applyCareUpdate, upgradeCareLine, dismissCareUpdate,
+      tab, busy, busyLabel, operationError, clearOperationError, system, systemDetail, trouble, careUpdate, applyCareUpdate, dismissCareUpdate,
       installAppUpdate, acknowledgeAppUpdate, restorePending, pluginRecoveryPending, version, platform, backups, backupsError, autostart, autostartReady, autostartSaving, autostartError, storage, storageError, recheckStorage,
       refresh, reloadBackups, syncAutostart,
-      runAction, setAutostart, restore, restoreFile, uninstall, log,
+      runAction, setAutostart, restore, restoreFile, restorePointInTime, uninstall, log,
     ],
   );
 

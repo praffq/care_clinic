@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -31,13 +32,25 @@ func settingsApp(t *testing.T) *App {
 		t.Fatal(err)
 	}
 	for name, data := range map[string]string{
-		"docker-compose.yml": "name: care-clinic\n",
-		"backend.env":        "DB_BACKUP_RETENTION_PERIOD=14\nADDITIONAL_PLUGS=[]\n",
-		"frontend.env":       "REACT_CARE_API_URL=https://care.local\n",
+		"docker-compose.yml":     "name: care-clinic\n",
+		"backend.env":            "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n",
+		"frontend.env":           "REACT_CARE_API_URL=https://care.local\n",
+		"backend.overrides.env":  "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n",
+		"frontend.overrides.env": "REACT_APP_TITLE=Clinic\n",
 	} {
 		if err := os.WriteFile(filepath.Join(a.installDir(), name), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	defaults, err := os.ReadFile("../deployments/env-defaults.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.installDir(), "env-defaults.yml"), defaults, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := envconfig.EnsureSecrets(a.installDir()); err != nil {
+		t.Fatal(err)
 	}
 	return a
 }
@@ -53,7 +66,7 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if text != "DB_BACKUP_RETENTION_PERIOD=14\nADDITIONAL_PLUGS=[]\n" {
+			if text != "JWT_REFRESH_TOKEN_LIFETIME=14\nADDITIONAL_PLUGS=[]\n" {
 				return fmt.Errorf("backend settings were not loaded from their file")
 			}
 			return nil
@@ -63,9 +76,10 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if text != "REACT_CARE_API_URL=https://care.local\n" {
+			if text != "REACT_APP_TITLE=Clinic\n" {
 				return fmt.Errorf("frontend settings were not loaded from their file")
 			}
+
 			return nil
 		},
 		func() error {
@@ -88,7 +102,7 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			t.Errorf("concurrent settings read failed: %v", err)
 		}
 	}
-	if err := a.WriteEnv("backend", "DB_BACKUP_RETENTION_PERIOD=0\n", settingsPassword); err == nil {
+	if err := a.WriteEnv("backend", "JWT_REFRESH_TOKEN_LIFETIME=0\n", settingsPassword); err == nil {
 		t.Fatal("a write bypassed the active readers")
 	}
 }
@@ -143,16 +157,16 @@ func TestSettingsReadsKeepAuthorizationAndLifecycleGuards(t *testing.T) {
 	}
 }
 
-func TestRetentionReadUsesSavedValue(t *testing.T) {
+func TestOverrideReadUsesSavedValue(t *testing.T) {
 	a := settingsApp(t)
-	for _, days := range []string{"14", "37", "0"} {
-		want := "DB_BACKUP_RETENTION_PERIOD=" + days + "\nADDITIONAL_PLUGS=[]\n"
+	for _, days := range []string{"14", "37", "5"} {
+		want := "JWT_REFRESH_TOKEN_LIFETIME=" + days + "\nADDITIONAL_PLUGS=[]\n"
 		if err := a.WriteEnv("backend", want, settingsPassword); err != nil {
 			t.Fatal(err)
 		}
 		got, err := a.ReadEnv("backend", settingsPassword)
 		if err != nil || got != want {
-			t.Fatalf("saved retention was not loaded: %q, %v", got, err)
+			t.Fatalf("saved override was not loaded: %q, %v", got, err)
 		}
 	}
 }
@@ -178,8 +192,79 @@ func TestWriteEnvCannotChangePluginsOutsidePluginTransaction(t *testing.T) {
 		t.Fatal("rejected plugin edit changed backend.env")
 	}
 
-	otherChange := strings.Replace(string(before), "DB_BACKUP_RETENTION_PERIOD=14", "DB_BACKUP_RETENTION_PERIOD=30", 1)
+	otherChange := strings.Replace(string(before), "JWT_REFRESH_TOKEN_LIFETIME=14", "JWT_REFRESH_TOKEN_LIFETIME=30", 1)
 	if err := a.WriteEnv("backend", otherChange, settingsPassword); err != nil {
 		t.Fatalf("an unrelated backend setting could not be changed with plugins preserved: %v", err)
+	}
+}
+
+func TestEnvEditorNeverExposesGeneratedSecrets(t *testing.T) {
+	a := settingsApp(t)
+	if err := envconfig.Generate(a.installDir(), "care.local"); err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := envconfig.Read(filepath.Join(a.installDir(), "secrets.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"backend", "frontend"} {
+		for _, read := range []func(string, string) (string, error){a.ReadEnv, a.ReadEnvDefaults} {
+			text, err := read(name, settingsPassword)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for key, value := range secrets {
+				if strings.Contains(text, key) || strings.Contains(text, value) {
+					t.Fatal("editor exposed generated credentials")
+				}
+			}
+			if strings.Contains(text, "DATABASE_URL") || strings.Contains(text, "REACT_CARE_API_URL") {
+				t.Fatal("editor exposed derived configuration")
+			}
+		}
+	}
+	for _, key := range []string{"DJANGO_SECRET_KEY", "DATABASE_URL", "POSTGRES_PASSWORD", "BUCKET_SECRET"} {
+		if err := a.WriteEnv("backend", key+"=bad\n", settingsPassword); err == nil {
+			t.Fatalf("editor could override %s", key)
+		}
+	}
+	if _, err := a.ReadEnv("secrets", settingsPassword); err == nil {
+		t.Fatal("editor could request secrets.env")
+	}
+}
+
+func TestEnvEditorPersistsEqualDefaultEmptyAndReset(t *testing.T) {
+	a := settingsApp(t)
+	for _, tc := range []struct{ content, want string }{
+		{"REACT_MFE_REGISTERED_COMPONENTS=UserDashboard\n", "UserDashboard"},
+		{"REACT_MFE_REGISTERED_COMPONENTS=\n", ""},
+		{`REACT_MFE_REGISTERED_COMPONENTS="O'Connor $$HOME \"quoted\""` + "\n", `O'Connor $HOME "quoted"`},
+		{"", "UserDashboard"},
+	} {
+		if err := a.WriteEnv("frontend", tc.content, settingsPassword); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := a.ReadEnv("frontend", settingsPassword); err != nil || got != tc.content {
+			t.Fatalf("override not preserved exactly: %q %v", got, err)
+		}
+		effective, err := envconfig.Read(filepath.Join(a.installDir(), "frontend.env"))
+		if err != nil || effective["REACT_MFE_REGISTERED_COMPONENTS"] != tc.want {
+			t.Fatalf("effective value differs from override/default: %v", err)
+		}
+	}
+}
+
+func TestFailedGenerationRestoresPreviousOverrides(t *testing.T) {
+	a := settingsApp(t)
+	before, err := a.ReadEnv("backend", settingsPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteEnv("backend", before+"POSTGRES_HOST=\n", settingsPassword); err == nil || !strings.Contains(err.Error(), "previous overrides were restored") {
+		t.Fatalf("invalid derived database setting was saved: %v", err)
+	}
+	after, err := a.ReadEnv("backend", settingsPassword)
+	if err != nil || after != before {
+		t.Fatalf("failed generation changed persistent overrides: %v", err)
 	}
 }

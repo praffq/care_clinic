@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
 )
@@ -42,68 +40,6 @@ func runDir() string {
 func BinDir() string        { return filepath.Join(StateDir(), "bin") }
 func engineDir() string     { return filepath.Join(StateDir(), "engine") }
 func dataDisk() string      { return filepath.Join(StateDir(), "data.img") }
-func dockerConfig() string  { return filepath.Join(StateDir(), "docker-config") }
-func certDir() string       { return filepath.Join(StateDir(), "certs") }
-func dockerSocket() string  { return filepath.Join(runDir(), "docker.sock") }
 func controlSocket() string { return filepath.Join(runDir(), "control.sock") }
 func ConsoleLog() string    { return filepath.Join(applog.DefaultLogDir(), "engine-console.log") }
 func HostLog() string       { return filepath.Join(applog.DefaultLogDir(), "engine-host.log") }
-
-func exe(name string) string {
-	if runtime.GOOS == "windows" {
-		return name + ".exe"
-	}
-	return name
-}
-
-// DockerHost is the DOCKER_HOST value that reaches the engine.
-func DockerHost() string {
-	if runtime.GOOS == "windows" {
-		return "tcp://127.0.0.1:" + strconv.Itoa(hostTCPDocker)
-	}
-	return "unix://" + dockerSocket()
-}
-
-// Env returns the variables that point docker and docker compose at the
-// engine. It is empty where the engine is not used.
-func Env() []string {
-	if !Supported() {
-		return nil
-	}
-	env := []string{
-		"DOCKER_HOST=" + DockerHost(),
-		"DOCKER_CONTEXT=default",
-		"DOCKER_CONFIG=" + dockerConfig(),
-	}
-	if runtime.GOOS == "windows" {
-		env = append(env,
-			"DOCKER_TLS_VERIFY=1",
-			"DOCKER_CERT_PATH="+certDir(),
-			"COMPOSE_CONVERT_WINDOWS_PATHS=1",
-		)
-	}
-	return env
-}
-
-// PathWithBin puts the engine's docker CLI ahead of anything else on PATH.
-func PathWithBin(path string) string {
-	if !Supported() {
-		return path
-	}
-	if path == "" {
-		return BinDir()
-	}
-	return BinDir() + string(os.PathListSeparator) + path
-}
-
-// ApplyEnv sets Env and the PATH prefix on this process so every child
-// process (docker, docker compose) inherits them.
-func ApplyEnv() {
-	for _, kv := range Env() {
-		k, v, _ := strings.Cut(kv, "=")
-		_ = os.Setenv(k, v)
-	}
-	if Supported() && !strings.Contains(os.Getenv("PATH"), BinDir()) {
-		_ = os.Setenv("PATH", PathWithBin(os.Getenv("PATH")))
-	}
-}

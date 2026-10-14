@@ -22,16 +22,12 @@ func engineFiles(version, kernel string) map[string]string {
 	return files
 }
 
-// toolFiles writes the docker, compose and (on Windows) QEMU downloads whose
-// contents are tagged with tag, so tests can tell versions apart.
+// toolFiles writes the engine and (on Windows) QEMU downloads whose contents
+// are tagged with tag, so tests can tell versions apart.
 func toolFiles(t *testing.T, engineArchive, tag string) EngineFiles {
 	t.Helper()
 	dir := t.TempDir()
-	f := EngineFiles{Engine: engineArchive, Docker: filepath.Join(dir, "docker.tgz"), Compose: filepath.Join(dir, "compose")}
-	writeTarGz(t, f.Docker, map[string]string{"docker/" + exe("docker"): "docker-" + tag})
-	if err := os.WriteFile(f.Compose, []byte("compose-"+tag), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	f := EngineFiles{Engine: engineArchive}
 	if runtime.GOOS == "windows" {
 		f.QEMU = filepath.Join(dir, "qemu.zip")
 		out, err := os.Create(f.QEMU)
@@ -90,12 +86,6 @@ func assertEngine(t *testing.T, version, tag string) {
 	if m, err := Installed(); err != nil || m.Version != version {
 		t.Fatalf("installed engine = %+v, %v; want %s", m, err, version)
 	}
-	if got := read(t, dockerCLI()); got != "docker-"+tag {
-		t.Fatalf("docker = %q, want %s", got, tag)
-	}
-	if got := read(t, composePlugin()); got != "compose-"+tag {
-		t.Fatalf("compose = %q, want %s", got, tag)
-	}
 	if runtime.GOOS == "windows" {
 		if got := read(t, qemuBinary()); got != "qemu-"+tag {
 			t.Fatalf("qemu = %q, want %s", got, tag)
@@ -133,6 +123,23 @@ func TestStageFailureLeavesInstalledEngineUntouched(t *testing.T) {
 	}
 	if _, err := os.Stat(updateDir()); !os.IsNotExist(err) {
 		t.Fatal("a failed stage left staged files")
+	}
+}
+
+func TestOpenStagedEngineUpdateRevalidatesPreparedFiles(t *testing.T) {
+	setupUpdateTest(t)
+	if _, err := StageEngineUpdate(toolFiles(t, engineArchive(t, "0.1.1"), "v2")); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := OpenStagedEngineUpdate()
+	if err != nil || staged == nil || staged.Manifest.Version != "0.1.1" || staged.From != "0.1.0" {
+		t.Fatalf("reopened staged engine = %+v, %v", staged, err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir(), "engine", "kernel"), []byte("tampered"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStagedEngineUpdate(); err == nil || !strings.Contains(err.Error(), "staged CARE engine file") {
+		t.Fatalf("tampered staged engine file was accepted: %v", err)
 	}
 }
 
@@ -210,20 +217,17 @@ func TestInterruptedActivationRollsBackEveryStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Losing the staged compose plugin stops activation after the docker CLI
-	// was replaced and compose was moved aside: the state an interruption leaves.
-	if err := os.Remove(filepath.Join(newDir(), "docker-compose")); err != nil {
+	// Losing the staged engine directory stops activation after its journal
+	// has been written, leaving an interrupted update to recover.
+	if err := os.RemoveAll(filepath.Join(newDir(), "engine")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Activate(); err == nil {
-		t.Fatal("activation succeeded without compose")
+		t.Fatal("activation succeeded without the engine bundle")
 	}
 	u, ok, _ := PendingEngineUpdate()
 	if !ok || !u.Interrupted() {
 		t.Fatalf("record after interrupted activation = %+v", u)
-	}
-	if _, err := os.Stat(composePlugin()); !os.IsNotExist(err) {
-		t.Fatal("expected compose to be moved aside mid-activation")
 	}
 	if _, err := StageEngineUpdate(toolFiles(t, engineArchive(t, "0.1.1"), "v3")); err == nil ||
 		!strings.Contains(err.Error(), "interrupted") {
@@ -235,11 +239,8 @@ func TestInterruptedActivationRollsBackEveryStep(t *testing.T) {
 	assertEngine(t, "0.1.0", "v1")
 }
 
-func TestToolsOnlyUpdateKeepsBundle(t *testing.T) {
+func TestSameVersionUpdateKeepsBundle(t *testing.T) {
 	setupUpdateTest(t)
-	if err := os.Remove(composePlugin()); err != nil {
-		t.Fatal(err)
-	}
 	s, err := StageEngineUpdate(toolFiles(t, engineArchive(t, "0.1.0"), "v2"))
 	if err != nil {
 		t.Fatal(err)
@@ -252,12 +253,6 @@ func TestToolsOnlyUpdateKeepsBundle(t *testing.T) {
 	}
 	if m, err := Installed(); err != nil || m.Version != "0.1.0" {
 		t.Fatalf("same-version rollback lost the bundle: %+v %v", m, err)
-	}
-	if _, err := os.Stat(composePlugin()); !os.IsNotExist(err) {
-		t.Fatal("rollback should restore the missing compose plugin as missing")
-	}
-	if got := read(t, dockerCLI()); got != "docker-v1" {
-		t.Fatalf("docker = %q", got)
 	}
 }
 
@@ -275,7 +270,7 @@ func TestFirstInstallRollbackRemovesPartialInstall(t *testing.T) {
 	if err := RollbackEngineUpdate("failed"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Installed(); err == nil || ToolsInstalled() {
+	if _, err := Installed(); err == nil {
 		t.Fatal("first-install rollback left an engine behind")
 	}
 }

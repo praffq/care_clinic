@@ -342,9 +342,19 @@ func (m *Manager) envVar(key string) (string, error) {
 }
 
 func (m *Manager) setEnvVar(key, val string) error {
-	path := m.backendEnvPath()
+	// Keep the plugin input in the persistent overrides as well as the generated
+	// runtime file. Regeneration and CARE updates must not drop installed plugins.
+	for _, path := range []string{filepath.Join(m.Dir, "backend.overrides.env"), m.backendEnvPath()} {
+		if err := m.setEnvVarAt(path, key, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) setEnvVarAt(path, key, val string) error {
 	b, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	lines := make([]string, 0)
@@ -372,5 +382,5 @@ func (m *Manager) setEnvVar(key, val string) error {
 	if _, err := dotenv.Parse(strings.NewReader(output)); err != nil {
 		return err
 	}
-	return atomicfile.Write(path, []byte(output), 0o600)
+	return atomicfile.WritePrivate(path, []byte(output))
 }

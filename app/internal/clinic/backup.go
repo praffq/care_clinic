@@ -3,15 +3,16 @@ package clinic
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strconv"
-	"strings"
+	"path"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/storage"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
 )
 
+// BackupNow runs a full verified backup cycle in the running sidecar: a new
+// full copy, database dump and files archive are written, verified and
+// recorded in manifest.json, and only then is the previous set removed.
 func (e *Clinic) BackupNow() error {
 	if !e.Backups().BackupEncryptionOn() {
 		return errors.New("backup encryption is not set up on this install, so a backup " +
@@ -21,26 +22,33 @@ func (e *Clinic) BackupNow() error {
 	if err := e.backupRoomFor(need); err != nil {
 		return err
 	}
-	ts := time.Now().Format("20060102-150405")
-	name := "care-manual-" + ts + ".dump.enc"
-	if err := e.dc("exec", "-T", "backup", "sh", "/backup.sh", "once", "manual-"+ts); err != nil {
+	if err := e.dc("exec", "-T", "backup", "sh", "/scripts/backup.sh", "now"); err != nil {
 		if roomErr := e.backupRoomFor(need); roomErr != nil {
 			return roomErr
 		}
-		return fmt.Errorf("could not write the backup - CARE must be running to take one (%w)", err)
+		return fmt.Errorf("the backup did not complete and the previous verified backup was kept - CARE must be running to take one (%w)", err)
 	}
-	e.logln("Backup written (database and uploaded files): " +
-		filepath.Join(e.backupDir(), name) + " and " +
-		filepath.Join(e.backupDir(), "files-manual-"+ts+".tar.gz.enc"))
+	if err := e.ExportBackups(e.Runner().Context()); err != nil {
+		return fmt.Errorf("the backup was written inside the CARE engine but couldn't be copied to %s: %w", e.backupDir(), err)
+	}
+	m, found, err := storage.ReadManifest(e.backupDir())
+	if err != nil || !found || !m.Verified() {
+		return errors.New("the backup finished but no verified backup record was found; the previous backup was kept")
+	}
+	e.logln("Verified backup " + m.Set + " written to " + e.backupDir())
 	return nil
 }
 
 func (e *Clinic) manualBackupNeed() uint64 {
-	daily, _, found, err := storage.LatestSets(e.backupDir())
+	set, found, err := storage.LatestSet(e.backupDir())
 	if err != nil {
 		return storage.BackupFloor
 	}
-	return storage.BackupNeed(daily, found)
+	return storage.BackupNeed(set, found)
+}
+
+func (e *Clinic) UpdateBackupNeed() uint64 {
+	return e.manualBackupNeed()
 }
 
 func (e *Clinic) backupRoomFor(need uint64) error {
@@ -53,34 +61,8 @@ func (e *Clinic) backupRoomFor(need uint64) error {
 		storage.Human(need), storage.Human(u.Free))
 }
 
-func (e *Clinic) BackupKeepsForever() bool {
-	v := strings.TrimSpace(e.backendEnv()["DB_BACKUP_RETENTION_PERIOD"])
-	n, err := strconv.Atoi(v)
-	return v == "" || (err == nil && n == 0)
-}
-
-type BackupPolicy struct {
-	IntervalSeconds int `json:"interval_seconds"`
-	RetentionDays   int `json:"retention_days"`
-}
-
-func (e *Clinic) BackupPolicy() (BackupPolicy, error) {
-	env, err := e.readBackendEnv()
-	if err != nil {
-		return BackupPolicy{}, fmt.Errorf("couldn't read backup settings: %w", err)
-	}
-	days := 0
-	if value := strings.TrimSpace(env["DB_BACKUP_RETENTION_PERIOD"]); value != "" {
-		days, err = strconv.Atoi(value)
-		if err != nil || days < 0 {
-			return BackupPolicy{}, errors.New("the backup retention setting must be a non-negative number of days")
-		}
-	}
-	return BackupPolicy{IntervalSeconds: int(24 * time.Hour / time.Second), RetentionDays: days}, nil
-}
-
 func (e *Clinic) DockerDiskFree() (free, total uint64, err error) {
-	out, err := e.Runner().CaptureIn(15*time.Second, nil, "docker", "compose", "exec", "-T", "backup", "df", "-Pk", "/")
+	out, err := e.Runner().AgentCaptureIn(15*time.Second, nil, "compose", "exec", "-T", "backup", "df", "-Pk", "/")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -88,11 +70,11 @@ func (e *Clinic) DockerDiskFree() (free, total uint64, err error) {
 }
 
 func (e *Clinic) DockerRootDir() (string, error) {
-	out, err := e.Runner().CaptureIn(5*time.Second, nil, "docker", "info", "--format", "{{.DockerRootDir}}")
+	out, err := e.Runner().AgentCaptureIn(5*time.Second, nil, "info", "--format", "{{.DockerRootDir}}")
 	if err != nil {
 		return "", err
 	}
-	if !filepath.IsAbs(out) {
+	if !path.IsAbs(out) {
 		return "", fmt.Errorf("docker reported an unusable data directory %q", out)
 	}
 	return out, nil

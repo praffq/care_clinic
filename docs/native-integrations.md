@@ -168,10 +168,10 @@ waiting indefinitely. `Run` reports the context error without exposing output.
 Go's default command cancellation targets the child process; this wrapper adds
 no process-group or descendant-tree cancellation guarantee.
 
-The Windows Docker hook returns preparation and completion errors to all runner
-paths. Failed pre-sync prevents Docker execution; failed result sync fails an
-otherwise successful command, and concurrent execution/sync errors are joined.
-These failures are not reduced to log-only warnings.
+Runtime Docker operations use `Runner.AgentRun` and `Runner.AgentCapture` over
+the platform's CARE agent transport. The desktop does not fall back to a host
+Docker executable; native process wrappers remain for platform utilities and
+explicit Linux provisioning only.
 
 ### GUI PATH repair
 
@@ -1395,41 +1395,60 @@ Sources: [check.go](../app/internal/prereq/check.go),
 [engine.go](../app/internal/prereq/engine.go), and
 [provision.go](../app/internal/prereq/provision.go).
 
-The prerequisite check distinguishes a usable Docker engine from an installed
-CLI. It checks `docker version --format "{{.Server.Os}}/{{.Server.Version}}"`
-and `docker compose version`; it does not validate every Compose file, registry
-or clinic service. On macOS and Windows, Docker runs in the app-managed
-[CARE engine](vm.md). Linux servers continue to use native Docker Engine.
+The prerequisite check uses the CARE agent's `version` operation to verify the
+Docker engine; the desktop does not run the host Docker CLI or require a host
+Compose plugin. It does not validate every Compose file, registry or clinic
+service. On macOS and Windows, Docker and Compose run inside the app-managed
+[CARE engine](vm.md). Linux servers continue to use native Docker Engine with
+the local CARE agent.
 
 | Platform | Docker engine and setup |
 | --- | --- |
 | macOS | The setup step installs or updates the CARE engine. No administrator-password prompt is needed to install it. |
 | Windows | The setup step installs or updates the CARE engine. Windows Hypervisor Platform is a separate prerequisite; its fix runs elevated `dism /online /enable-feature /featurename:HypervisorPlatform /all /norestart`. Exit code `3010` means a restart is needed. |
-| Linux | Docker Engine and the Compose plugin are installed as pinned static binaries. The supported architectures are x86_64 and aarch64; provisioning uses `systemd`, adds the `docker` group and current user, and may require logout/login before group membership applies. |
+| Linux | Docker Engine is provisioned as a pinned static binary when needed. The native CARE agent is downloaded from the immutable engine release, installed as a root-owned `systemd` service, and exposes a group-accessible Unix socket. Compose and Buildx plugins are installed from the system package manager. |
 
 The macOS and Windows setup step is labelled **Install CARE engine**,
 **Update CARE engine**, or **Start CARE engine**, depending on the state. The
-engine bundle, host CLI downloads, platform-specific endpoints and start/stop
-lifecycle are described in [CARE engine](vm.md); the detail is kept there rather
-than duplicated here.
+engine bundle, direct Windows QEMU downloads, platform-specific endpoints and
+start/stop lifecycle are described in [CARE engine](vm.md).
 
 ### Linux Docker provisioning
 
-Linux uses Docker Engine natively; no VM is installed. The provisioner downloads
-`docker-<DOCKER_LINUX_VERSION>.tgz` and the pinned Docker Compose binary for the
-machine's architecture, then verifies each SHA-256. In one elevated `pkexec`
-shell it installs `iptables` if needed, extracts and copies the binaries,
-writes `/etc/systemd/system/docker.service`, adds the `docker` group and current
-user, reloads systemd, and enables and starts Docker. The unit runs `dockerd`,
-which starts and manages its own containerd. If Docker is already answering and
-only Compose is missing, only the Compose plugin is installed. When Docker
-answers but this login cannot access `/var/run/docker.sock` because the new
-group membership has not taken effect yet, installation completes with logout
-and login guidance instead of waiting for a readiness timeout.
+Linux uses Docker Engine natively; no VM is installed. When Docker is absent,
+the provisioner downloads `docker-<DOCKER_LINUX_VERSION>.tgz` and verifies its
+SHA-256. In one elevated shell it installs `iptables` if needed, extracts and
+copies Docker, writes `/etc/systemd/system/docker.service`, adds the `docker`
+group and current user, reloads systemd, and enables and starts Docker. The unit
+runs `dockerd`, which starts and manages its own containerd. Compose and Buildx
+are installed through the platform's system package manager when missing.
+
+The native agent binary is selected from the `native-linux-amd64` or
+`native-linux-arm64` asset in a verified, revision-persisted signed engine
+manifest. Its immutable engine-release URL, SHA-256, and size are generated by
+CI, not copied from a stale bootstrap pin. Initial setup requires a published
+signed manifest matching the embedded engine version; missing, untrusted,
+incompatible, or unpublished assets block installation. The binary is installed
+at `/usr/local/bin/care-engine-agent`. Its root-owned
+systemd service uses the desktop account's existing primary group, creates
+`/run/care-engine-agent` with mode `0750`, and listens on
+`/run/care-engine-agent/control.sock` with mode `0660`. This avoids requiring
+the already-running desktop process to acquire a newly added supplementary
+group. If the active process nevertheless cannot access the socket, restart the
+desktop app or log out and back in before checking again.
+
+The installed version is recorded in
+`/usr/local/share/care-clinic/agent.version`. Setup and prerequisite repair never
+change an installed agent version. The panel reports a native engine update,
+and only an approved update-coordinator plan may download, stop the clinic,
+activate the signed binary, and commit after readiness and clinic health checks.
+The previous binary/version and `agent.update-pending` marker survive interrupted
+activation; recovery restores the previous service before startup. The daemon
+and native Docker packages are not replaced by an agent-version update.
 
 Adding the user to the `docker` group grants substantial host control through
 Docker. Static binaries are not updated by the distribution; a security fix
-reaches clinics when CARE updates the Linux pins in `deployments/.env`.
+reaches clinics when CARE updates the Linux Docker pin in `versions.toml`.
 
 ### Downloads and readiness
 
@@ -1439,10 +1458,12 @@ or an install/manual action otherwise. Readiness probes use a five-second
 per-command deadline. A successful check does not prove that later image pulls
 or external services are reachable.
 
-Downloads use the versions and SHA-256 values pinned in
-[`deployments/.env`](../deployments/.env). The CARE engine and its host tools
-use `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, and
-`QEMU_WINDOWS_*`; Linux uses `DOCKER_LINUX_*` and `COMPOSE_LINUX_*`. The
+Downloads use versions, URLs and SHA-256 values pinned in
+[`versions.toml`](../versions.toml). CARE engine bootstrap bundles use
+`CARE_VM_*`; native agents use signed dynamic engine-manifest assets. Native Linux Docker
+provisioning uses `DOCKER_LINUX_*`. Windows QEMU and the 7-Zip extractors use
+`QEMU_WINDOWS_*` and `SEVENZIP_*` and still download directly from their
+publishers. There are no host Docker CLI or Compose download pins. The
 [release runbook](releases.md#bump-a-pinned-prerequisite) explains updating the
 pins. Readiness checks do not download tools or request elevation. Downloaded
 files are verified before use; see [CARE engine](vm.md) for engine-specific

@@ -79,7 +79,7 @@ func EnsurePortFree(run proc.Runner, host string) error {
 }
 
 func caddyRunning(run proc.Runner) bool {
-	out, err := run.Capture("docker", "compose", "ps", "--services", "--filter", "status=running")
+	out, err := run.AgentCapture("compose", "ps", "--services", "--filter", "status=running")
 	if err != nil {
 		return false
 	}

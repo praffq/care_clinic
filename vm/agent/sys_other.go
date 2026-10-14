@@ -13,6 +13,5 @@ import (
 var errGuestOnly = errors.New("only available inside the CARE engine VM")
 
 func listenVsock(uint32) (net.Listener, error)         { return nil, errGuestOnly }
-func mountShare(string, string) error                  { return errGuestOnly }
 func setClock(time.Time) error                         { return errGuestOnly }
 func diskUsage(string) (free, total uint64, err error) { return 0, 0, errGuestOnly }

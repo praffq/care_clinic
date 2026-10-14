@@ -18,9 +18,6 @@ func (e *Clinic) Start() error {
 	if err := health.EnsurePortFree(e.Runner(), e.host()); err != nil {
 		return err
 	}
-	if err := e.applyStagedUpdate(); err != nil {
-		return err
-	}
 	if err := e.Builder().Parallel(compose.EnsureBackend, compose.EnsureFrontend,
 		compose.EnsureBackup, compose.EnsureCaddy); err != nil {
 		return err

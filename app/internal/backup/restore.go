@@ -17,15 +17,16 @@ type Backup struct {
 	FilesArchive string `json:"files_archive"`
 	Label        string `json:"label"`
 	Manual       bool   `json:"manual"`
+	PreUpdate    bool   `json:"pre_update,omitempty"`
 	Encrypted    bool   `json:"encrypted"`
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
-var dumpRe = regexp.MustCompile(`^care-(?:manual-)?(\d{8}-\d{6})\.dump(?:\.enc)?$`)
+var dumpRe = regexp.MustCompile(`^care-(?:(?:manual|pre-update)-)?(\d{8}-\d{6})\.dump(?:\.enc)?$`)
 
-var safeName = regexp.MustCompile(`^(?:care-(?:manual-)?\d{8}-\d{6}\.dump(?:\.enc)?|files-(?:manual-)?\d{8}-\d{6}\.tar\.gz(?:\.enc)?)$`)
+var safeName = regexp.MustCompile(`^(?:care-(?:(?:manual|pre-update)-)?\d{8}-\d{6}\.dump(?:\.enc)?|files-(?:(?:manual|pre-update)-)?\d{8}-\d{6}\.tar\.gz(?:\.enc)?)$`)
 
-var filesRe = regexp.MustCompile(`^files-((?:manual-)?\d{8}-\d{6})\.tar\.gz(?:\.enc)?$`)
+var filesRe = regexp.MustCompile(`^files-(((?:manual|pre-update)-)?\d{8}-\d{6})\.tar\.gz(?:\.enc)?$`)
 
 func SetName(dbDump string) string {
 	name := strings.TrimPrefix(dbDump, "care-")
@@ -81,6 +82,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 		b := Backup{
 			DBDump:    en.Name(),
 			Manual:    strings.HasPrefix(en.Name(), "care-manual-"),
+			PreUpdate: strings.HasPrefix(en.Name(), "care-pre-update-"),
 			Encrypted: strings.HasSuffix(en.Name(), ".enc"),
 			SizeBytes: info.Size(),
 		}
@@ -95,7 +97,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 				break
 			}
 		}
-		b.Label = backupLabel(ts, b.Manual, b.FilesArchive != "", b.Encrypted)
+		b.Label = backupLabel(ts, b.Manual, b.PreUpdate, b.FilesArchive != "", b.Encrypted)
 		out = append(out, b)
 	}
 
@@ -109,7 +111,7 @@ func (s *Store) ListBackups() ([]Backup, error) {
 	return out, nil
 }
 
-func backupLabel(ts string, manual, withFiles, encrypted bool) string {
+func backupLabel(ts string, manual, preUpdate, withFiles, encrypted bool) string {
 	when := ts
 	if t, err := time.Parse("20060102-150405", ts); err == nil {
 		when = t.Format("2006-01-02 15:04")
@@ -117,6 +119,8 @@ func backupLabel(ts string, manual, withFiles, encrypted bool) string {
 	kind := "daily"
 	if manual {
 		kind = "manual"
+	} else if preUpdate {
+		kind = "pre-update"
 	}
 	scope := "DB only"
 	if withFiles {
@@ -130,6 +134,11 @@ func backupLabel(ts string, manual, withFiles, encrypted bool) string {
 }
 
 func (s *Store) Restore(dbDump, filesArchive, recoveryFile string) error {
+	if s.Refresh != nil {
+		if err := s.Refresh(); err != nil {
+			return fmt.Errorf("the latest backups could not be read from the CARE engine: %w", err)
+		}
+	}
 	return s.RestoreFrom(s.BackupDir, dbDump, filesArchive, recoveryFile)
 }
 
@@ -178,6 +187,16 @@ func (s *Store) RestoreFrom(srcDir, dbDump, filesArchive, recoveryFile string) e
 			return err
 		}
 	}
+	return s.stagedRestore(filesArchive != "", func(j *restoreJournal) error {
+		return s.stageDump(j, srcDir, dbDump, filesArchive, key)
+	})
+}
+
+// stagedRestore runs the journaled restore: stage writes the replacement
+// /restore/database.dump (and files) into the stage volume; the dump is then
+// restored into a separate database, migrated and swapped only after every
+// check passes, with rollback until the swap is committed.
+func (s *Store) stagedRestore(withFiles bool, stage func(*restoreJournal) error) error {
 	if pending, err := s.readRestoreJournal(); err != nil {
 		return err
 	} else if pending != nil {
@@ -189,14 +208,20 @@ func (s *Store) RestoreFrom(srcDir, dbDump, filesArchive, recoveryFile string) e
 	if err := s.EnsureRestoreImages(); err != nil {
 		return err
 	}
-	j, err := s.newRestoreJournal(filesArchive != "")
+	j, err := s.newRestoreJournal(withFiles)
 	if err != nil {
 		return err
 	}
 	if err := s.writeRestoreJournal(j); err != nil {
 		return err
 	}
-	if err := s.prepareRestore(j, srcDir, dbDump, filesArchive, key); err != nil {
+	if err := s.createRestoreVolume(j, j.stageVolume()); err != nil {
+		return s.restoreFailure(j, err)
+	}
+	if err := stage(j); err != nil {
+		return s.restoreFailure(j, err)
+	}
+	if err := s.prepareRestore(j); err != nil {
 		return s.restoreFailure(j, err)
 	}
 	s.logln("Stopping and checking all CARE writers, including backups and uploads...")
@@ -252,34 +277,55 @@ func (s *Store) mustExist(dir, name string) error {
 	return nil
 }
 
-func (s *Store) prepareRestore(j *restoreJournal, srcDir, dump, archive, key string) error {
+func (s *Store) stageDump(j *restoreJournal, srcDir, dump, archive, key string) error {
 	s.logln("Copying and fully validating the backup without changing the current database or files...")
-	if err := s.createRestoreVolume(j, j.stageVolume()); err != nil {
-		return err
-	}
 	script := "set -eu\numask 077\n" + stageBackupFile(dump, "database.dump")
 	if archive != "" {
 		script += stageBackupFile(archive, "files.tar.gz")
 	}
 	script += "pg_restore --exit-on-error --file=/dev/null /restore/database.dump\nsync\n"
+	// The selected files and recovery key are sent to a unique guest folder
+	// for this step only, and removed whatever the outcome.
+	inputs, err := s.newRestoreInputs()
+	if err != nil {
+		return err
+	}
+	defer inputs.remove()
+	s.logln("Sending the selected backup to the CARE engine...")
+	for _, name := range []string{dump, archive} {
+		if name == "" {
+			continue
+		}
+		if _, err := inputs.add(filepath.Join(srcDir, name), name); err != nil {
+			return err
+		}
+	}
 	mounts := []string{"--mount", restoreMount("volume", j.stageVolume(), "/restore", false),
-		"--mount", restoreMount("bind", srcDir, "/backups", true)}
+		"--mount", restoreMount("bind", inputs.dir, "/backups", true)}
 	if key != "" {
-		mounts = append(mounts, "--mount", restoreMount("bind", key, "/restore-key.pem", true))
+		guestKey, err := inputs.addKey(key)
+		if err != nil {
+			return err
+		}
+		mounts = append(mounts, "--mount", restoreMount("bind", guestKey, "/restore-key.pem", true))
 	}
 	args := s.restoreHelperArgs(j, "preflight", "none", mounts...)
 	args = append(args, s.Image, "sh", "-c", script)
-	if err := s.run.Run("docker", args...); err != nil {
+	if err := s.run.AgentRun("run", args...); err != nil {
 		return fmt.Errorf("backup copy, decryption or full dump validation failed: %w", err)
 	}
 	if j.WithFiles {
 		args := s.restoreHelperArgs(j, "extract", "none",
 			"--mount", restoreMount("volume", j.stageVolume(), "/restore", false))
 		args = append(args, "--read-only", "--user", "0:0", "--entrypoint", "python", s.BackendImage, "-B", "-c", validateRestoreFiles)
-		if err := s.run.Run("docker", args...); err != nil {
+		if err := s.run.AgentRun("run", args...); err != nil {
 			return fmt.Errorf("files archive validation or staged extraction failed: %w", err)
 		}
 	}
+	return nil
+}
+
+func (s *Store) prepareRestore(j *restoreJournal) error {
 	if err := s.startRestoreDB(); err != nil {
 		return err
 	}

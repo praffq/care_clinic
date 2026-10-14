@@ -42,7 +42,7 @@ func TestKitRefreshRemovesOnlyPreviouslyShippedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	retained := []string{"backend.env", "frontend.env", "notes.txt", "keys/backup-cert.pem",
-		"backup-state/restore-state.json", "plugin-recovery.json", "plugins.json", "plugins-pending.json", "line.json"}
+		"backup-state/restore-state.json", "plugin-recovery.json", "plugins.json", "plugins-pending.json", "care-images.json"}
 	for _, rel := range retained {
 		putKitFile(t, a, rel, "operator data")
 	}

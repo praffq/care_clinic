@@ -4,26 +4,31 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
-	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 type Clinic struct {
 	InstallDir string
 
-	MDNSName          string
-	AdminPassword     string
-	BackupCertificate string
-	BackupDir         string
+	MDNSName           string
+	AdminPassword      string
+	BackupCertificate  string
+	BackupRecoveryPath string
+	BackupDir          string
 
 	Pins *release.Pins
+
+	// Agent overrides engine.Default, for tests.
+	Agent *engine.Client
 
 	Log     func(string)
 	Confirm func(title, message string) bool
@@ -44,12 +49,10 @@ func (e *Clinic) logln(s string) {
 func (e *Clinic) baseEnv() []string {
 	env := os.Environ()
 	set := func(k, v string) { env = append(env, k+"="+v) }
-	set("PATH", vm.PathWithBin(proc.AugmentedPath()))
-	// On macOS and Windows docker always means the CARE engine, whatever
-	// context or DOCKER_HOST the user has set for other tools.
-	env = append(env, vm.Env()...)
+	set("PATH", proc.AugmentedPath())
+	// Compose runs in the agent against the uploaded kit, never host paths.
 	set("COMPOSE_PROJECT_NAME", composeProject)
-	set("COMPOSE_FILE", filepath.Join(e.InstallDir, "docker-compose.yml"))
+	set("COMPOSE_FILE", path.Join(AgentClinicDir, "docker-compose.yml"))
 	set("BACKEND_IMAGE", e.Pins.BackendImage)
 	set("FRONTEND_IMAGE", e.Pins.FrontendImage)
 	set("POSTGRES_IMAGE", e.Pins.PostgresImage)
@@ -66,16 +69,12 @@ func (e *Clinic) baseEnv() []string {
 	benv := e.backendEnv()
 	set("FILE_UPLOAD_BUCKET", strings.TrimSpace(benv["FILE_UPLOAD_BUCKET"]))
 	set("FACILITY_S3_BUCKET", strings.TrimSpace(benv["FACILITY_S3_BUCKET"]))
-	set("BACKUP_DIR", e.backupDir())
+	set("BACKUP_DIR", AgentBackupDir)
 	set("CARE_BACKUP_RESERVE_KB", backupReserveKB(runtime.GOOS))
-	if err := vm.SetSyncRoots([]string{e.InstallDir, e.backupDir()}); err != nil {
-		e.logln("Warning: could not record the folders the CARE engine mirrors: " + err.Error())
-	}
 	return env
 }
 
 func (e *Clinic) minioCreds() (accessKey, secretKey string) {
-	accessKey, secretKey = "minioadmin", "minioadmin"
 	env := e.backendEnv()
 	if v := strings.TrimSpace(env["BUCKET_KEY"]); v != "" {
 		accessKey = v
@@ -120,24 +119,27 @@ func (e *Clinic) workdir() string {
 	return ""
 }
 
+// Runner runs host commands in the install folder and engine operations in
+// the agent's clinic folder, after uploading the clinic kit and configuration.
 func (e *Clinic) Runner() proc.Runner {
-	return proc.Runner{Dir: e.workdir(), Env: e.baseEnv(), Log: e.Log, Ctx: e.ctx}
+	return proc.Runner{Dir: e.workdir(), Env: e.baseEnv(), Log: e.Log, Ctx: e.ctx,
+		Agent: e.Agent, AgentDir: AgentClinicDir, PrepareAgent: e.uploadKit}
 }
 
-func (e *Clinic) run(extraEnv []string, name string, args ...string) error {
-	return e.Runner().RunWith(extraEnv, name, args...)
+func (e *Clinic) run(extraEnv []string, op engine.Operation, args ...string) error {
+	return e.Runner().AgentRunWith(extraEnv, op, args...)
 }
 
-func (e *Clinic) capture(name string, args ...string) (string, error) {
-	return e.Runner().Capture(name, args...)
+func (e *Clinic) capture(op engine.Operation, args ...string) (string, error) {
+	return e.Runner().AgentCapture(op, args...)
 }
 
-func (e *Clinic) captureLines(name string, args ...string) ([]string, error) {
-	return e.Runner().Lines(name, args...)
+func (e *Clinic) captureLines(op engine.Operation, args ...string) ([]string, error) {
+	return e.Runner().AgentLines(op, args...)
 }
 
 func (e *Clinic) dc(args ...string) error {
-	return e.run(nil, "docker", append([]string{"compose"}, args...)...)
+	return e.run(nil, "compose", args...)
 }
 
 func (e *Clinic) mdnsName() string {

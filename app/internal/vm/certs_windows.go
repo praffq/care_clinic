@@ -15,7 +15,7 @@ import (
 )
 
 // ensureCerts creates the self-signed certificate both ends of the Windows TCP
-// channel use: the guest agent as server and the docker CLI and this package
+// channel use: the guest agent as server and this package
 // as client. The same file is the CA, so only this install can connect.
 // It returns the combined cert+key PEM handed to the guest through fw_cfg.
 func ensureCerts(dir string) (string, error) {

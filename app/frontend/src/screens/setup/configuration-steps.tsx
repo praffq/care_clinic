@@ -42,9 +42,7 @@ export function AddressStep({ value, result, disabled, onChange, onCheck }: {
 function spaceDescription(space: BackupSpace, windows: boolean): string {
   if (space.total === 0) return "The available space couldn't be measured. Check the location again.";
   if (windows) return `${diskSize(space.free)} free`;
-  const room = space.days_left > 365 ? `room for about ${Math.floor(space.days_left / 365)} years of backups`
-    : space.days_left > 0 ? `room for about ${space.days_left} days of backups`
-    : space.need > 0 ? `each backup needs about ${diskSize(space.need)}` : "";
+  const room = space.need > 0 ? `each backup needs about ${diskSize(space.need)}` : "";
   return `${diskSize(space.free)} free${room ? ` · ${room}` : ""}`;
 }
 

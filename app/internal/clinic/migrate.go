@@ -12,7 +12,6 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/backup"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
 func (e *Clinic) migrate() error {
@@ -26,14 +25,14 @@ func (e *Clinic) stopWorkers() error {
 	if err := e.dc("stop", "celery-worker", "celery-beat"); err != nil {
 		return fmt.Errorf("could not stop workers and the scheduler; no migrations were attempted: %w", err)
 	}
-	ids, err := e.captureLines("docker", "compose", "ps", "--all", "--quiet", "celery-worker", "celery-beat")
+	ids, err := e.captureLines("compose", "ps", "--all", "--quiet", "celery-worker", "celery-beat")
 	if err != nil {
 		return fmt.Errorf("could not verify that workers stopped; no migrations were attempted: %w", err)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	states, err := e.captureLines("docker", append([]string{"inspect", "--format", "{{.State.Status}}"}, ids...)...)
+	states, err := e.captureLines("inspect", append([]string{"--format", "{{.State.Status}}"}, ids...)...)
 	if err != nil {
 		return err
 	}
@@ -76,7 +75,7 @@ func (e *Clinic) migrateStaged(database, restoreID string) error {
 	u.RawQuery = query.Encode()
 	databaseURL = u.String()
 	return e.run([]string{"POSTGRES_DB=" + database, "DATABASE_URL=" + databaseURL, "PGAPPNAME=" + composeProject + ":restore:" + restoreID},
-		"docker", "compose", "run", "--rm", "--no-deps",
+		"compose", "run", "--rm", "--no-deps",
 		"--name", composeProject+"-restore-"+restoreID+"-migrate",
 		"--label", backup.RestoreLabel+"="+restoreID,
 		"--entrypoint", "python", "-e", "POSTGRES_DB", "-e", "DATABASE_URL", "-e", "PGAPPNAME",
@@ -116,14 +115,17 @@ func (e *Clinic) createAdmin() error {
 	if e.AdminPassword == "" {
 		return nil
 	}
-	cmd := proc.Command("docker", "compose", "exec", "-T",
+	// Output is collected rather than logged: Django's refusal is expected
+	// when the login already exists and is reported in plain words below.
+	var output strings.Builder
+	run := e.Runner()
+	run.Log = func(line string) { output.WriteString(line + "\n") }
+	run.Env = append(run.Env, "DJANGO_SUPERUSER_PASSWORD="+e.AdminPassword)
+	stdout, err := run.AgentCapture("compose", "exec", "-T",
 		"-e", "DJANGO_SUPERUSER_PASSWORD",
 		"backend", "python", "manage.py", "createsuperuser", "--noinput",
 		"--username", "admin", "--email", "admin@care.local")
-	cmd.Env = append(e.baseEnv(), "DJANGO_SUPERUSER_PASSWORD="+e.AdminPassword)
-	cmd.Dir = e.workdir()
-	out, err := cmd.CombinedOutput()
-	message := strings.TrimSpace(string(out))
+	message := strings.TrimSpace(strings.TrimSpace(stdout) + "\n" + output.String())
 	lastLine := message[strings.LastIndex(message, "\n")+1:]
 	switch {
 	case err == nil:

@@ -114,8 +114,7 @@ export function StorageTab() {
           <p className="panel-small">{backup.level === "unknown"
             ? "Couldn't check the backup location. Check that the folder is available, or choose another location."
             : backup.level === "critical" ? "The next backup won't fit. Make room or choose another location."
-              : backup.days_left >= 0 ? `Room for about ${backup.days_left} ${backup.days_left === 1 ? "day" : "days"} of backups.`
-                : backup.need > 0 ? `The next backup needs about ${diskSize(backup.need)}.`
+              : backup.need > 0 ? `The next backup needs about ${diskSize(backup.need)}.`
                   : "Space is checked again before a backup runs."}</p>
           {backup.shares_docker_drive ? <p className="panel-small">This shares the clinic's drive. Keeping a copy on a separate drive protects it if this drive fails.</p> : null}
           {backup.level !== "ok" ? <div className="panel-actions">

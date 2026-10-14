@@ -25,7 +25,7 @@ type pluginContainer struct {
 const pluginContainerFormat = `{"ID":{{json .Id}},"Service":{{json (index .Config.Labels "com.docker.compose.service")}},"Image":{{json .Image}},"Status":{{json .State.Status}},"Health":{{with index .State "Health"}}{{json .Status}}{{else}}""{{end}},"StartedAt":{{json .State.StartedAt}},"RestartCount":{{.RestartCount}}}`
 
 func (e *Clinic) pluginContainers() ([]pluginContainer, error) {
-	ids, err := e.captureLines("docker", "compose", "ps", "--all", "--quiet")
+	ids, err := e.captureLines("compose", "ps", "--all", "--quiet")
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func (e *Clinic) pluginContainers() ([]pluginContainer, error) {
 		return nil, nil
 	}
 	// Inspect only operational metadata; container environment contains secrets.
-	lines, err := e.captureLines("docker", append([]string{"inspect", "--format", pluginContainerFormat}, ids...)...)
+	lines, err := e.captureLines("inspect", append([]string{"--format", pluginContainerFormat}, ids...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (e *Clinic) waitPluginRuntime() error {
 	if e.pluginReady != nil {
 		return e.pluginReady()
 	}
-	out, err := e.capture("docker", "compose", "config", "--services")
+	out, err := e.capture("compose", "config", "--services")
 	if err != nil {
 		return err
 	}

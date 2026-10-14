@@ -98,7 +98,7 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
   }, [enabled, check]);
 
   const install = async () => {
-    if (update?.blocked || disabled || busy || isBlocked?.() || checkPending.current || installPending.current || progressRef.current) return;
+    if (disabled || busy || isBlocked?.() || checkPending.current || installPending.current || progressRef.current) return;
     installPending.current = true;
     failure.current = null;
     setProblem(null);

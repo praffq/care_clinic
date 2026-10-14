@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -23,6 +22,16 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	if a.loadConfig().Role == roleServer {
+		if err := a.recoverUpdatePlan(ctx); err != nil {
+			a.logln("error: interrupted update recovery failed: " + err.Error())
+			a.reportError("Update recovery failed", err.Error())
+		} else if snapshot, err := a.updateSnapshot(); err != nil {
+			a.logln("error: installed update state could not be recorded: " + err.Error())
+			a.reportError("Update state unavailable", err.Error())
+		} else if err := a.updateCoordinator.SaveInstalled(snapshot); err != nil {
+			a.logln("error: installed update state could not be recorded: " + err.Error())
+			a.reportError("Update state unavailable", err.Error())
+		}
 		a.recoverEngineUpdate()
 	}
 	a.refreshInstallDir()
@@ -268,11 +277,6 @@ func jobQuitPrompt(label string) quitPrompt {
 		return quitPrompt{"the CARE Clinic update", "Quit during the CARE Clinic update?",
 			"The update stops and the version you have keeps working; you can update again later. " +
 				"If macOS is already replacing the app, that finishes on its own."}
-	case "upgrade-line":
-		return quitPrompt{"a release-line upgrade", "Quit during a CARE release-line upgrade?",
-			"A release-line upgrade can change clinic data. Quitting can interrupt the migration; " +
-				"reopen CARE Clinic and check the clinic before anyone uses it. If recovery is needed, " +
-				"restore the safety backup made for this upgrade."}
 	case "engine-update":
 		return quitPrompt{"the CARE engine update", "Quit while the CARE engine is updating?",
 			"The engine update may stop partway or finish in the background. Reopen CARE Clinic and " +
@@ -368,10 +372,11 @@ func (a *App) stopForQuit() error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopDeadline)
 	defer cancel()
 	run := a.engine().Runner()
-	cmd := proc.CommandContext(ctx, "docker", "compose", "stop")
-	cmd.Dir, cmd.Env = run.Dir, run.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Docker did not finish stopping; CARE Clinic was kept open: %w: %s", err, strings.TrimSpace(string(out)))
+	run.Ctx = ctx
+	var output []string
+	run.Log = func(line string) { output = append(output, line) }
+	if err := run.AgentRun("compose", "stop"); err != nil {
+		return fmt.Errorf("the clinic did not finish stopping; CARE Clinic was kept open: %w: %s", err, strings.TrimSpace(strings.Join(output, "\n")))
 	}
 	if err := vm.Stop(ctx); err != nil {
 		return fmt.Errorf("the CARE engine did not finish stopping; CARE Clinic was kept open: %w", err)

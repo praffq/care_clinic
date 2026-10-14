@@ -399,10 +399,9 @@ to warn that the computer will ask for permission.
 | `CleanupFailedInstall()` | `void` | Sync. Only for incomplete setup. Keeps the clinic address and existing backups, but resets backup-folder/password/recovery configuration. The UI clears those choices only after cleanup succeeds. New setup needs fresh recovery material; old backup keys may still be needed for earlier archives. |
 | `ClinicAction(action, adminPassword)` | `void` | Job. Allow-listed action dispatch; details below. |
 | `RunUninstall(removeImages, removeBackups, adminPassword)` | `void` | Job. Requires local admin authorization; persists removal state before destructive work. Stops the CARE engine on macOS/Windows; `removeImages` also removes its state folder. Unrelated Docker software is not uninstalled. The UI waits for both `uninstalled` and successful `care-done` before returning to Start or requesting desktop-app removal. |
-| `CareUpdateStatus()` | `ChannelStatus` | Query. The current line, running/staged commits, pending line, support dates, and newer compatible lines, using `line.json` and the cached manifest. |
-| `CheckCareUpdate()` | `void` | Returns at once and checks in the background: fetches the release-line manifest and downloads/prepares newer same-line images under `-next` tags; also reports newer compatible lines. Failure is logged and reported through `care-check.error`, never as "up to date". A check already in flight is joined rather than refused. |
-| `UpgradeCareLine(id)` | `void` | Job (`upgrade-line`). Stable installed server and ready Docker required; refuses an in-flight check. Stages both images of a newer compatible line, takes a pre-update backup, then applies/migrates. Returning to an older line requires restore. |
-| `DismissCareUpdate()` | `void` | Sync, under the exclusive job gate with a stable-clinic check. Records staged commits as declined so the banner stops. The same-line staged images still apply at the next normal start unless invalidated by changed plugin inputs. |
+| `CareUpdateStatus()` | `ChannelStatus` | Query. CARE 3.1 version and running/staged commits, using `care-images.json` without network access. |
+| `CheckCareUpdate()` | `void` | Returns at once and checks in the background: verifies signed update metadata and prepares newer CARE 3.1 images under `-next` tags. Failure is logged and reported through `care-check.error`, never as "up to date". A check already in flight is joined rather than refused. |
+| `DismissCareUpdate()` | `void` | Sync, under the exclusive job gate with a stable-clinic check. Records staged commits as declined so the banner stops. Prepared images still apply at the next normal start unless invalidated by changed plugin inputs. |
 | `CheckAppUpdate()` | `AppUpdate` | Query. Newest published GitHub release compared with the running version. Drafts and prereleases are excluded. `blocked` explains when the clinic's cached line disallows the proposed app version. |
 | `InstallAppUpdate()` | `void` | Role-independent job, available before setup and on clients. Downloads this platform's installer with `app-update-progress` events, verifies it against the release `SHA256SUMS` (retrying once), then on macOS replaces the app bundle in place and restarts, and on Windows launches the installer and quits. Enforces line app-version compatibility for an installed server and retains the single-job and closing guards. |
 | `ScanResidue()` | `ResidueReport` | Query. Role-independent. Inspects owned files, Docker resources, saved-password presence and native traces. No Docker executable means no Docker-side traces; an installed engine that cannot be inspected is an error. |
@@ -460,7 +459,7 @@ The password policy in [`password.go`](../app/password.go) is 8 through 20 Unico
 | `apply-plugins` | `ApplyPlugins()` | Healthy running clinic required; no CARE Clinic admin password. Applies a staged draft with bounded readiness checks and durable configuration/image rollback on failure. |
 | `backup-now` | `BackupNow()` | Stable clinic required. |
 | `free-space` | `FreeSpace()` | Stable clinic required. No administrator password: it never touches clinic data. Runs from the separate Storage tab's cleanable drive row. |
-| `update` | `ApplyUpdate()` | Stable clinic required. No administrator password: the update was prepared from published images in the current release line, and a second prompt would only encourage postponing it. |
+| `update` | `ApplyUpdate()` | Stable clinic required. No administrator password: the update was prepared from verified published CARE 3.1 images, and a second prompt would only encourage postponing it. |
 | `engine-update` | `App.updateEngine()` | Installed stable server and supported VM platform required. Automatic at panel boot or explicit retry, no second confirmation. Stages and verifies the engine and tools before removing containers, activates and verifies the new engine, then starts CARE. A failed activation or engine start restores the previous engine and tools and restarts CARE on them; a failed update is not retried automatically. Data disk and migrations are not rolled back. See [CARE engine](vm.md#engine-update-rollback). |
 
 Every action except `stop` and `engine-update` then passes `ensureDockerReady()`, which first rolls back any interrupted engine update. A stopped container
@@ -484,13 +483,17 @@ The API does not require the CARE Clinic admin password for every operational co
 
 | Method | Result | Execution and contract |
 | --- | --- | --- |
-| `ReadEnv(name, adminPassword)` | `string` | Read. Admin plus setup required; `name` is only `backend` or `frontend`. Returns installed file contents. |
-| `GetBackupPolicy()` | `BackupPolicy` | Query. Requires an installed server. Reports the 86,400-second interval and actual installed retention days; zero means forever. Missing/unreadable settings or invalid/negative retention reject rather than inventing a policy. |
-| `WriteEnv(name, content, adminPassword)` | `void` | Sync. Admin plus stable clinic required; parse dotenv syntax, then atomically replace the selected file. |
+| `ReadEnv(name, adminPassword)` | `string` | Read. Admin plus setup required; `name` is only `backend` or `frontend`. Returns explicit overrides, never effective env or secrets. |
+| `ReadEnvDefaults(name, adminPassword)` | `string` | Read. Same guards; returns the selected section's validated string defaults, without secrets or derived wiring. |
+| `WriteEnv(name, content, adminPassword)` | `void` | Sync. Admin plus stable clinic required; validate override syntax/managed keys, persist overrides privately, regenerate effective env. Does not restart or activate updates. |
 | `ReadPlugins()` | `CarePlugin[]` | Read. Installed server required, no password; read `plugins.json`, or derive the list from `ADDITIONAL_PLUGS` when that file is absent. |
 | `SavePlugins(plugins)` | `void` | Sync. Stable clinic required, no password; validate and stage `plugins-pending.json`, leaving active configuration untouched until apply. |
 | `PluginCatalog()` | `PluginCatalogEntry[]` | Query. The bundled plugin catalog. |
 | `ListBackups()` | `Backup[]` | Query. Returns an empty list if the installed compose file is absent; other file/read errors are not treated as an empty list. |
+| `GetBackupHealth()` | `BackupHealth` | Query. Setup required. Newest verified set, checks, saved-through time, WAL, weekly trial restore, optional copy and alerts. Only the newest verified set is kept; there is no retention setting. |
+| `SetBackupCopyDir(dir)` | `string` | Sync. Setup required. Chooses an existing absolute folder (USB drive, second disk, share) for the optional copy, refusing the backup, install, config or recovery-file locations; returns `<dir>/care-backup-copy` and starts a catch-up copy. |
+| `ClearBackupCopyDir()` | `void` | Sync. Setup required. Stops copying; already copied files stay. |
+| `RestorePointInTime(target, recoveryFile, adminPassword)` | `void` | Job. CARE Clinic admin plus stable clinic required. `target` is `latest` or an RFC 3339 time between `earliest_restore_at` and `saved_through`. Replays the full copy and change files in a throwaway helper, requires the target to be reached, then swaps through the journaled staged restore. Database only. |
 | `GetBackupDir()` | `string` | Query. Effective backup directory, including the engine's default if unconfigured. |
 | `SetBackupDir(dir)` | `string` | Sync. Stable clinic required. Takes a parent folder, appends `care-db-backups`, preserves the key and conditionally restarts the sidecar. |
 | `ChooseBackupFile()` | `string` | Native dialog. Starts in the backup directory; empty string means cancellation. Dialog errors reject and are logged. |
@@ -593,13 +596,14 @@ original text.
 | `setup-done` | `true` | Setup callback and persistence of `SetupDone` succeeded. Paired with matching job completion, opens Overview without a ready screen. |
 | `setup-failed` | `SetupFailure` | Sent before failed setup completion. Reports whether the current attempt can be retried without cleanup and whether the failed command reported a recent network/download interruption. Only the active setup consumes it; raw command diagnostics stay in the log. |
 | `uninstalled` | `true` | Normal uninstall completed its cleanup and local state removal. |
-| `care-update` | `{backend, frontend, newer_line?}` | Same-line images have been staged, or a newer compatible line is available. Raises the panel update offer. |
+| `care-update` | `{backend, frontend}` | CARE 3.1 images have been staged. Raises the panel update offer. |
 | `app-update-progress` | `{phase, done, total}` | `InstallAppUpdate` progress. The backend emits `downloading` (with bytes `done` of `total`, throttled to every 200 ms), `verifying`, `installing`, and `restarting`; `restarting` is the final handoff before this app exits. The external installer does not send a completion acknowledgement. |
 | `care-check` | `{running, found, error?}` | Check/build activity. Only a completed, error-free check with `found=false` means up to date. |
 | `client-connect-progress` | `finding`, `connecting`, `checking`, or `opening` | Real boundaries of client connection work. Trust/cleanup is not marked complete before administrator operations finish. |
 | `quit-requested` | `{id, title, message}` | A running-job close request for the registered frontend dialog. Only its current ID can be answered. |
 | `confirmation-requested` | `{id, title, message}` | A CARE-owned permission question for the registered root dialog. Its caller is still waiting and retains its job lock. |
 | `confirmation-cancelled` | Request ID | Invalidates a permission question after frontend unregistration, runtime cancellation or shutdown. |
+| `care-backup-copy` | `CopyStatus` | Result of an optional second-copy run (`copying`, `ok`, `disconnected`, `failed`, `off`). |
 | `care-storage` | `StorageReport` | Refreshed drive, backup-space and last-run information. Unknown measurements must not be displayed as confirmed free space. |
 
 There is no unique job identifier or measured clinic-installation percentage.
@@ -623,7 +627,7 @@ The core serialized shapes are:
 | `SetupIssue` | `step`, `message`; step is one of the wizard's requirement/configuration IDs. |
 | `SetupFailure` | `can_retry`, `download_interrupted`. Retry availability is checked again natively before acceptance; it is not permission to change setup settings. |
 | `SetupRecoveryStatus` | `backup_saved`, `backup_verified`, `codes_saved`, `backup_path`, `codes_path`, `backup_problem`, `codes_problem`. |
-| `BackupPolicy` | `interval_seconds`, `retention_days`. |
+| `BackupHealth` | `checked_at`, `last_backup_at`, `earliest_restore_at`, `set`, `verified`, `checks`, `saved_through`, `wal`, `trial`, `copy` (`state`, `dir`, `checked_at`, `last_copied_at`, `set`, `wal_through`, `message`), `last_run`, `alerts` (`code`, `level`, `message`). See [backups](backups-and-restore.md#4-latest-verified-backup-continuous-changes-and-the-optional-copy). |
 | `ConfirmationRequest`, `QuitRequest` | `id`, `title`, `message`. IDs identify requests within the current native process, not jobs or authorization sessions. |
 | `DockerStatus`, `NameStatus` | `ok`, `message`. |
 | `Health` | `active`, `code`, `detail`. |

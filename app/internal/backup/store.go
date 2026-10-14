@@ -17,6 +17,14 @@ type Store struct {
 	EnsureRestoreImages func() error
 	Migrate             func(database, restoreID string) error
 
+	// AgentBackupDir and AgentDir are the guest backup and clinic folders;
+	// BackupDir and Dir are their host counterparts.
+	AgentBackupDir string
+	AgentDir       string
+	// Refresh brings the host's verified export of the guest backups and
+	// backup state up to date before restore decisions read it.
+	Refresh func() error
+
 	run proc.Runner
 }
 
@@ -32,5 +40,5 @@ func (s *Store) logln(line string) {
 }
 
 func (s *Store) dc(args ...string) error {
-	return s.run.Run("docker", append([]string{"compose"}, args...)...)
+	return s.run.AgentRun("compose", args...)
 }

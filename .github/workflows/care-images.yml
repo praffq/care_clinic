@@ -1,0 +1,123 @@
+name: CARE images
+
+on:
+  workflow_call:
+    inputs:
+      build:
+        type: boolean
+        required: true
+      publish:
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Image regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: |
+          node --test images/scripts/*.test.mjs
+          python3 -m unittest discover -s .github/scripts -p 'test_build_images.py'
+  build:
+    name: Build planned images (${{ matrix.arch }})
+    if: inputs.build
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build only changed sources
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          IMAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          actual=$(docker info --format '{{.Architecture}}')
+          case "$IMAGE_ARCH:$actual" in
+            amd64:x86_64|amd64:amd64|arm64:aarch64|arm64:arm64) ;;
+            *) echo "::error::Image builds require a native $IMAGE_ARCH runner, got $actual"; exit 1 ;;
+          esac
+          args=()
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          python3 .github/scripts/build-images.py "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.publish
+        with:
+          name: output-images-${{ matrix.arch }}
+          path: outputs/images.json
+          if-no-files-found: error
+          retention-days: 7
+  assemble:
+    name: Assemble native image indexes
+    if: inputs.build && inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: output-images-amd64
+          path: outputs/amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: output-images-arm64
+          path: outputs/arm64
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - run: python3 .github/scripts/build-images.py --assemble
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: output-images
+          path: outputs/images.json
+          if-no-files-found: error
+          retention-days: 7

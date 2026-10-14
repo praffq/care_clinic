@@ -54,7 +54,7 @@ func protectedKitPath(rel string) bool {
 	root := strings.Split(rel, "/")[0]
 	switch root {
 	case kitInventoryFile, backupStateDir, "keys", "plugins.json", "plugins-pending.json",
-		"plugin-recovery.json", "restore-state.json", "line.json", "lines.json", "channel.lock":
+		"plugin-recovery.json", "restore-state.json", "care-images.json", "channel.lock":
 		return true
 	}
 	return (rel != ".env" && strings.HasSuffix(rel, ".env")) ||
@@ -290,17 +290,19 @@ func (a *App) ensureInstallDir() (string, error) {
 	return dest, writeKitInventory(dest, current)
 }
 
-const backupStateDir = "backup-state"
+const backupStateDir = "backup-state" // storage.StateDirName
 
 func (a *App) engine() *clinic.Clinic {
 	cfg := a.loadConfig()
 	return &clinic.Clinic{
-		InstallDir: a.installDir(),
-		MDNSName:   strings.TrimSuffix(strings.TrimSpace(cfg.MDNSName), ".local"),
-		BackupDir:  cfg.BackupDir,
-		Pins:       a.pins,
-		Log:        a.logln,
-		Confirm:    a.confirmDialog,
+		InstallDir:         a.installDir(),
+		MDNSName:           strings.TrimSuffix(strings.TrimSpace(cfg.MDNSName), ".local"),
+		BackupDir:          cfg.BackupDir,
+		BackupCertificate:  cfg.BackupCertificate,
+		BackupRecoveryPath: cfg.BackupRecoveryPath,
+		Pins:               a.pins,
+		Log:                a.logln,
+		Confirm:            a.confirmDialog,
 	}
 }
 

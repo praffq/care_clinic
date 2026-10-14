@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/lines"
+	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 )
 
 var stageMu sync.Mutex
@@ -13,10 +13,6 @@ var stageMu sync.Mutex
 type Update struct {
 	Backend  string `json:"backend"`
 	Frontend string `json:"frontend"`
-	// Line is set when the update moves the clinic to a newer release line.
-	Line string `json:"line,omitempty"`
-	// NewerLine names the newest release line this clinic could upgrade to.
-	NewerLine string `json:"newer_line,omitempty"`
 }
 
 func (u Update) Any() bool { return u.Backend != "" || u.Frontend != "" }
@@ -28,84 +24,43 @@ func Short(sha string) string {
 	return sha
 }
 
-// NewerLine is the newest published line this app can run that is newer than
-// the clinic's line, or "".
-func NewerLine(m *lines.Manifest, current, appVersion string) string {
-	newer := m.Newer(current)
-	for i := len(newer) - 1; i >= 0; i-- {
-		if newer[i].SupportsApp(appVersion) == nil {
-			return newer[i].ID
-		}
-	}
-	return ""
-}
-
-// PrepareUpdate checks the clinic's release line for newer images and
+// PrepareUpdate checks CARE 3.1 for newer images and
 // downloads them as "-next" images, ready to apply.
 func (b *Builder) PrepareUpdate() (Update, error) {
 	if b.stopped() {
 		return Update{}, nil
 	}
-	lock := ReadLock(b.dir)
-	if lock.Backend.Current.Image == "" || lock.Frontend.Current.Image == "" || lock.NextLine != "" {
+	m, err := careversions.Fetch(b.dir, b.set)
+	if err != nil {
+		return Update{}, err
+	}
+	return b.PrepareUpdateManifest(m)
+}
+
+func (b *Builder) PrepareUpdateManifest(m *careversions.Manifest) (Update, error) {
+	if b.stopped() {
 		return Update{}, nil
 	}
-	m, err := lines.Fetch(b.dir, b.linesSource())
-	if err != nil {
-		return Update{}, err
+	if m == nil {
+		return Update{}, errors.New("verified CARE image manifest is required")
 	}
-	id := b.LineID()
-	u := Update{NewerLine: NewerLine(m, id, b.set.AppVersion)}
-	l, ok := m.Line(id)
-	if !ok {
-		b.logln("CARE release line " + id + " is no longer published; choose a newer line to keep receiving updates.")
-		return u, nil
-	}
-	if err := l.SupportsApp(b.set.AppVersion); err != nil {
-		b.logln("CARE updates were not downloaded: " + err.Error())
-		return u, nil
+	lock := ReadLock(b.dir)
+	if lock.Backend.Current.Image == "" || lock.Frontend.Current.Image == "" {
+		return Update{}, nil
 	}
 	staged := map[string]Release{}
-	if wanted(lock.Backend, l.Backend) {
-		staged[Backend] = l.Backend
+	if wanted(lock.Backend, m.Backend) {
+		staged[Backend] = m.Backend
 	}
-	if wanted(lock.Frontend, l.Frontend) {
-		staged[Frontend] = l.Frontend
+	if wanted(lock.Frontend, m.Frontend) {
+		staged[Frontend] = m.Frontend
 	}
-	got, err := b.stage(staged, "")
-	got.NewerLine = u.NewerLine
-	return got, err
+	return b.stage(staged)
 }
 
-// StageLine downloads both CARE images of a newer release line, ready for
-// ApplyPending to switch the clinic over.
-func (b *Builder) StageLine(id string) (Update, error) {
-	m, err := lines.Fetch(b.dir, b.linesSource())
-	if err != nil {
-		return Update{}, err
-	}
-	current := b.LineID()
-	if !m.IsNewer(current, id) {
-		return Update{}, fmt.Errorf("CARE release line %q is not newer than %q", id, current)
-	}
-	l, _ := m.Line(id)
-	if err := l.SupportsApp(b.set.AppVersion); err != nil {
-		return Update{}, err
-	}
-	u, err := b.stage(map[string]Release{Backend: l.Backend, Frontend: l.Frontend}, id)
-	if err != nil {
-		return Update{}, err
-	}
-	return u, nil
-}
-
-func (b *Builder) stage(staged map[string]Release, line string) (Update, error) {
+func (b *Builder) stage(staged map[string]Release) (Update, error) {
 	stageMu.Lock()
 	defer stageMu.Unlock()
-	lock := ReadLock(b.dir)
-	if lock.NextLine != "" || line != "" && (lock.Backend.Next != nil || lock.Frontend.Next != nil) {
-		return Update{}, errors.New("a CARE update is already staged; apply or decline it before staging another release line")
-	}
 	var u Update
 	next := b.staging(staged)
 	for _, s := range []struct {
@@ -130,34 +85,15 @@ func (b *Builder) stage(staged map[string]Release, line string) (Update, error) 
 		if next.stopped() {
 			return Update{}, errors.New("the CARE update download was interrupted")
 		}
-		if line == "" {
-			if err := b.updateLock(func(l *Lock) {
-				c := l.Get(s.service)
-				r := rel
-				c.Next = &r
-				l.Set(s.service, c)
-			}); err != nil {
-				return Update{}, err
-			}
-		}
-		*s.dst = rel.Commit
-	}
-	if line != "" && u.Any() {
-		if next.stopped() {
-			return Update{}, errors.New("the CARE update download was interrupted")
-		}
 		if err := b.updateLock(func(l *Lock) {
-			for service, rel := range staged {
-				c := l.Get(service)
-				r := rel
-				c.Next = &r
-				l.Set(service, c)
-			}
-			l.NextLine = line
+			c := l.Get(s.service)
+			r := rel
+			c.Next = &r
+			l.Set(s.service, c)
 		}); err != nil {
 			return Update{}, err
 		}
-		u.Line = line
+		*s.dst = rel.Commit
 	}
 	return u, nil
 }
@@ -168,7 +104,7 @@ func wanted(c Channel, rel Release) bool {
 
 func (b *Builder) Waiting() Update {
 	lock := ReadLock(b.dir)
-	u := Update{Line: lock.NextLine}
+	u := Update{}
 	if lock.Backend.Next != nil {
 		u.Backend = lock.Backend.Next.Commit
 	}
@@ -182,13 +118,19 @@ func (b *Builder) ApplyPending() (Update, error) {
 	stageMu.Lock()
 	defer stageMu.Unlock()
 	var applied Update
+	var retagged []string
 	err := ModifyLock(b.dir, func(lock *Lock) error {
-		return b.applyPending(lock, &applied)
+		return b.applyPending(lock, &applied, &retagged)
 	})
+	if err != nil {
+		if rollbackErr := b.restoreStableTags(retagged); rollbackErr != nil {
+			return applied, fmt.Errorf("%w; restoring previous CARE image tags also failed: %v", err, rollbackErr)
+		}
+	}
 	return applied, err
 }
 
-func (b *Builder) applyPending(lock *Lock, applied *Update) error {
+func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) error {
 	for _, s := range []struct {
 		service string
 		image   string
@@ -211,38 +153,104 @@ func (b *Builder) applyPending(lock *Lock, applied *Update) error {
 			lock.Set(s.service, c)
 			continue
 		}
-		if err := b.run.Run("docker", "image", "tag", staged, s.image); err != nil {
+		previousTag := previousImageTag(s.image)
+		if c.Current.Image != "" {
+			if err := b.run.AgentRun("image", "tag", s.image, previousTag); err != nil {
+				return fmt.Errorf("could not retain the previous CARE %s image: %w", s.service, err)
+			}
+		}
+		previous := c.Current
+		c.Previous = &previous
+		lock.Set(s.service, c)
+		if err := writeLock(b.dir, *lock); err != nil {
+			return fmt.Errorf("record previous CARE %s image before activation: %w", s.service, err)
+		}
+		if err := b.run.AgentRun("image", "tag", staged, s.image); err != nil {
+			if c.Current.Image != "" {
+				if restoreErr := b.run.AgentRun("image", "tag", previousTag, s.image); restoreErr != nil {
+					return fmt.Errorf("could not activate CARE %s: %w; restoring its previous tag failed: %v", s.service, err, restoreErr)
+				}
+			}
 			return err
 		}
 		b.logln("CARE " + s.service + " updated to " + Short(c.Next.Commit) + ".")
 		*s.dst = c.Next.Commit
-		c.Current, c.Next, c.Declined = *c.Next, nil, ""
+		c.Current, c.Previous, c.Next, c.Declined = *c.Next, &previous, nil, ""
+		*retagged = append(*retagged, s.image)
 		lock.Set(s.service, c)
 	}
-	if lock.NextLine != "" {
-		if applied.Any() {
-			lock.Line = lock.NextLine
-			applied.Line = lock.NextLine
-			b.logln("This clinic now follows CARE release line " + lock.Line + ".")
-		}
-		lock.NextLine = ""
-	}
 	return nil
+}
+
+func previousImageTag(image string) string { return image + "-previous" }
+
+func (b *Builder) restoreStableTags(images []string) error {
+	var failures []error
+	for i := len(images) - 1; i >= 0; i-- {
+		if err := b.run.AgentRun("image", "tag", previousImageTag(images[i]), images[i]); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		service := Backend
+		if images[i] == b.set.FrontendImage {
+			service = Frontend
+		}
+		if err := ModifyLock(b.dir, func(lock *Lock) error {
+			channel := lock.Get(service)
+			if channel.Previous == nil {
+				return nil
+			}
+			if channel.Next == nil {
+				current := channel.Current
+				channel.Next = &current
+			}
+			channel.Current, channel.Previous = *channel.Previous, nil
+			lock.Set(service, channel)
+			return nil
+		}); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// RollbackApplied restores the previous local image tags and lock entries.
+// Kept image IDs remain available for retry or support investigation.
+func (b *Builder) RollbackApplied() error {
+	stageMu.Lock()
+	defer stageMu.Unlock()
+	err := ModifyLock(b.dir, func(lock *Lock) error {
+		for _, item := range []struct {
+			service string
+			image   string
+		}{{Backend, b.set.BackendImage}, {Frontend, b.set.FrontendImage}} {
+			channel := lock.Get(item.service)
+			if channel.Previous == nil {
+				continue
+			}
+			current := channel.Current
+			if channel.Next != nil {
+				current = *channel.Next
+			}
+			if err := b.run.AgentRun("image", "tag", previousImageTag(item.image), item.image); err != nil {
+				return fmt.Errorf("could not restore the previous CARE %s image: %w", item.service, err)
+			}
+			channel.Current, channel.Next, channel.Previous, channel.Declined =
+				*channel.Previous, &current, nil, ""
+			lock.Set(item.service, channel)
+		}
+		return nil
+	})
+	return err
 }
 
 func (b *Builder) DeclineUpdate() error {
 	stageMu.Lock()
 	defer stageMu.Unlock()
 	return ModifyLock(b.dir, func(lock *Lock) error {
-		lineUpgrade := lock.NextLine != ""
-		lock.NextLine = ""
 		for _, service := range []string{Backend, Frontend} {
 			c := lock.Get(service)
-			switch {
-			case c.Next == nil:
-			case lineUpgrade:
-				c.Next = nil
-			default:
+			if c.Next != nil {
 				c.Declined = c.Next.Commit
 			}
 
@@ -252,13 +260,12 @@ func (b *Builder) DeclineUpdate() error {
 	})
 }
 
-// DiscardPending removes the prepared update before staging another line.
+// DiscardPending removes the prepared update.
 // Declining a routine update intentionally keeps it for the next clinic start.
 func (b *Builder) DiscardPending() error {
 	stageMu.Lock()
 	defer stageMu.Unlock()
 	return ModifyLock(b.dir, func(lock *Lock) error {
-		lock.NextLine = ""
 		for _, service := range []string{Backend, Frontend} {
 			c := lock.Get(service)
 			c.Next = nil
@@ -267,5 +274,3 @@ func (b *Builder) DiscardPending() error {
 		return nil
 	})
 }
-
-func (b *Builder) PruneDangling() { b.pruneDangling() }

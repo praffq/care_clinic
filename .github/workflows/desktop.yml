@@ -1,0 +1,481 @@
+name: Desktop
+
+on:
+  workflow_call:
+    inputs:
+      build:
+        type: boolean
+        required: true
+      publish:
+        type: boolean
+        required: true
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Check Go formatting
+        working-directory: app
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Check engine boundary
+        run: |
+          if grep -Rn --include='*.go' '"github.com/wailsapp/wails' app/internal; then
+            echo "::error::Keep Wails in the application entrypoints, not internal packages."
+            exit 1
+          fi
+      - name: Validate GitHub Actions workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint -color -shellcheck="" -pyflakes=""
+      - uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
+        with:
+          version: v2.13.2
+          working-directory: app
+          args: --timeout=5m
+
+  go:
+    name: Go tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Prepare integration-test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql openssl
+          echo "$(pg_config --bindir)" >> "$GITHUB_PATH"
+      - name: Require test prerequisites
+        run: |
+          for tool in gcc git node python3 openssl initdb postgres psql pg_dump pg_restore; do
+            command -v "$tool"
+          done
+      - name: Build from a clean checkout
+        run: go build ./...
+      - name: Vet Linux and Windows engine boundaries
+        run: |
+          go vet ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+      - name: Test with race detection
+        run: go test -race -count=1 -timeout=15m ./...
+      - name: Check module files were not changed
+        run: git diff --exit-code -- go.mod go.sum
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm ci
+      - name: Check bindings, typecheck, and build frontend
+        working-directory: app/frontend
+        run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-frontend
+          path: app/frontend/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  native:
+    name: Build ${{ matrix.target }}
+    if: inputs.build
+    needs: [lint, go, frontend]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: desktop-macos, os: macos-15, platform: darwin/universal, extra: "" }
+          - { target: desktop-windows, os: windows-2025, platform: windows/amd64, extra: "-nsis" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Fetch built desktop frontend
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-frontend
+          path: app/frontend/dist
+      - name: Install Windows installer tooling
+        if: matrix.target == 'desktop-windows'
+        uses: ./.github/actions/install-nsis
+      - name: Install matching Wails CLI
+        working-directory: app
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@"$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
+      - name: Prepare installer metadata and deployment kit
+        run: node app/frontend/scripts/stage-install.mjs
+      - name: Vet on the native desktop host
+        working-directory: app
+        run: go vet ./...
+      - name: Build native application
+        working-directory: app
+        run: wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }}
+      - name: Verify and collect unsigned build
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_DIR: app/build/bin
+        run: |
+          mkdir -p ci-artifacts
+          case "$TARGET" in
+            *-macos)
+              apps=("$BUILD_DIR"/*.app)
+              test "${#apps[@]}" -eq 1 && test -d "${apps[0]}"
+              codesign --verify --strict "${apps[0]}"
+              ditto -c -k --keepParent "${apps[0]}" "ci-artifacts/$TARGET-unsigned.zip"
+              ;;
+            desktop-windows)
+              app="$BUILD_DIR/CARE Clinic.exe"
+              test -s "$app"
+              installers=("$BUILD_DIR"/*installer.exe)
+              test "${#installers[@]}" -eq 1 && test -s "${installers[0]}"
+              mkdir -p ci-app
+              cp "$app" ci-app/
+              cp "${installers[0]}" "ci-artifacts/$TARGET-unsigned-setup.exe"
+              ;;
+            *) echo "::error::Unknown build target: $TARGET"; exit 1 ;;
+          esac
+          git diff --exit-code -- app/go.mod app/go.sum
+      - name: Write the uninstaller for signing
+        if: matrix.target == 'desktop-windows'
+        shell: pwsh
+        run: |
+          $app = Join-Path $env:GITHUB_WORKSPACE "app\build\bin\CARE Clinic.exe"
+          $uninstaller = Join-Path $env:GITHUB_WORKSPACE "ci-app\uninstall.exe"
+          Push-Location app/build/windows/installer
+          makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DWRITE_UNINSTALLER=$uninstaller" project.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          Pop-Location
+          Start-Process -FilePath app/build/bin/uninstall-writer.exe -Wait
+          Remove-Item app/build/bin/uninstall-writer.exe
+          if (-not (Test-Path $uninstaller) -or (Get-Item $uninstaller).Length -eq 0) { throw "Uninstaller was not written" }
+      - name: Verify Windows version metadata
+        if: matrix.target == 'desktop-windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:VERSION
+          foreach ($file in @("ci-app/CARE Clinic.exe", "ci-app/uninstall.exe") + (Get-ChildItem ci-artifacts/*.exe).FullName) {
+            $info = (Get-Item $file).VersionInfo
+            "${file}: product='$($info.ProductName)' company='$($info.CompanyName)' version='$($info.ProductVersion)'"
+            if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $version) {
+              throw "Version metadata does not match versions.toml"
+            }
+          }
+      - name: Upload Windows application for signing
+        if: matrix.target == 'desktop-windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-app
+          path: ci-app/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload Windows installer inputs
+        if: matrix.target == 'desktop-windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-installer-inputs
+          path: |
+            app/build/windows/icon.ico
+            app/build/windows/installer/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}-unsigned
+          path: ci-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  required:
+    name: Desktop checks
+    if: always()
+    needs: [lint, go, frontend, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every check
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          BUILD: ${{ inputs.build }}
+        run: |
+          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [name, job] of Object.entries(jobs)) { const optional = name === "native" && process.env.BUILD === "false" && job.result === "skipped"; if (job.result !== "success" && !optional) process.exitCode = 1; }'
+
+  signing:
+    name: Validate signing configuration
+    if: inputs.build && inputs.publish
+    needs: required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      windows: ${{ steps.config.outputs.windows }}
+    steps:
+      - id: config
+        env:
+          TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          ORGANIZATION: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          count=0
+          for value in "$TOKEN" "$ORGANIZATION" "$PROJECT" "$POLICY"; do
+            if [ -n "$value" ]; then count=$((count + 1)); fi
+          done
+          case "$count" in
+            0) echo "windows=false" >> "$GITHUB_OUTPUT" ;;
+            4) echo "windows=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::SignPath is partially configured"; exit 1 ;;
+          esac
+  sign-windows-app:
+    name: Sign Windows application and uninstaller
+    needs: signing
+    if: needs.signing.outputs.windows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Find the current run's application artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "desktop-windows-app" and .expired == false)] | if length == 1 then .[0].id else error("expected one application artifact") end')
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.artifact.outputs.id }}
+          parameters: |
+            version: "${{ inputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "3600"
+          output-artifact-directory: signed-app
+      - run: test -s "signed-app/CARE Clinic.exe" && test -s signed-app/uninstall.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-app-signed
+          path: signed-app/
+          if-no-files-found: error
+          retention-days: 7
+  windows-installer:
+    name: Rebuild installer around signed Windows files
+    needs: sign-windows-app
+    runs-on: windows-2025
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-app-signed
+          path: signed-app
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-installer-inputs
+          path: app/build/windows
+      - uses: ./.github/actions/install-nsis
+      - name: Verify signatures and rebuild
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $app = Join-Path $env:GITHUB_WORKSPACE "signed-app\CARE Clinic.exe"
+          $uninstaller = Join-Path $env:GITHUB_WORKSPACE "signed-app\uninstall.exe"
+          foreach ($file in @($app, $uninstaller)) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne 'Valid') { throw "$file signature is $($signature.Status): $($signature.StatusMessage)" }
+            "$file signed by $($signature.SignerCertificate.Subject)"
+          }
+          git diff --exit-code -- app/build/windows/installer/project.nsi
+          if ($LASTEXITCODE -ne 0) { throw "Installer inputs do not match the checked-out project.nsi" }
+          New-Item -ItemType Directory -Force app/build/bin, installer | Out-Null
+          Push-Location app/build/windows/installer
+          makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DSIGNED_UNINSTALLER=$uninstaller" project.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          Pop-Location
+          $built = Get-ChildItem app/build/bin/*installer.exe
+          if ($built.Count -ne 1) { throw "Expected one installer, found $($built.Count)" }
+          $info = $built.VersionInfo
+          if ($info.ProductName -ne 'CARE Clinic' -or $info.CompanyName -ne 'Open Healthcare Network Foundation' -or $info.ProductVersion -ne $env:VERSION) {
+            throw "Installer metadata: product='$($info.ProductName)' company='$($info.CompanyName)' version='$($info.ProductVersion)'"
+          }
+          Copy-Item $built.FullName "installer/CARE-Clinic-$env:VERSION-windows-amd64-setup.exe"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-installer
+          path: installer/
+          if-no-files-found: error
+          retention-days: 7
+  sign-windows-installer:
+    name: Sign rebuilt Windows installer
+    needs: windows-installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.windows-installer.outputs.artifact-id }}
+          parameters: |
+            version: "${{ inputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "3600"
+          output-artifact-directory: signed-installer
+      - run: test -s "signed-installer/CARE-Clinic-${{ inputs.version }}-windows-amd64-setup.exe"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-installer-signed
+          path: signed-installer/
+          if-no-files-found: error
+          retention-days: 7
+  package:
+    name: Package and sign desktop binaries
+    needs: [signing, native, sign-windows-installer]
+    if: >-
+      !cancelled() && inputs.build && inputs.publish && needs.native.result == 'success'
+      && needs.signing.result == 'success'
+      && (needs.signing.outputs.windows == 'true' && needs.sign-windows-installer.result == 'success'
+          || needs.signing.outputs.windows != 'true' && needs.sign-windows-installer.result == 'skipped')
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-macos-unsigned
+          path: incoming/macos
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.signing.outputs.windows == 'true' && 'desktop-windows-installer-signed' || 'desktop-windows-unsigned' }}
+          path: incoming/windows
+      - name: Sign macOS application, notarize and package
+        env:
+          VERSION: ${{ inputs.version }}
+          SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: bash .github/scripts/package-macos.sh
+      - name: Collect Windows installer
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          installers=(incoming/windows/*.exe)
+          test "${#installers[@]}" -eq 1 && test -s "${installers[0]}"
+          cp "${installers[0]}" "release-assets/CARE-Clinic-$VERSION-windows-amd64-setup.exe"
+          cp versions.toml release-assets/versions.toml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    name: Publish immutable desktop binaries
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-release-assets
+          path: release-assets
+      - name: Hash all release assets without replacing an existing version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/pipeline.py assets --component desktop --publish
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: output-desktop
+          path: outputs/desktop.json
+          if-no-files-found: error
+          retention-days: 7

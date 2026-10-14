@@ -22,7 +22,7 @@ care_desktop/
 |   |-- configuration-and-settings.md
 |   |-- plugins.md
 |   |-- clinic-lifecycle.md
-|   |-- images-and-lines.md
+|   |-- images.md
 |   |-- local-logs.md
 |   |-- backups-and-restore.md
 |   |-- cleanup-and-uninstall.md
@@ -53,7 +53,6 @@ care_desktop/
 |   |-- install/
 |   `-- internal/
 |-- images/
-|   |-- lines.source.json
 |   |-- frontend/
 |   `-- scripts/
 |-- deployments/
@@ -95,7 +94,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_setup_check.go`](../app/app_setup_check.go) | Review preflight and the same checks repeated under RunSetup's exclusive lock. | [Setup configuration order](configuration-and-settings.md#setup-configuration-order). |
 | [`app_recovery.go`](../app/app_recovery.go) | Recovery-key/code export and verification, replacement, CARE Clinic password changes and offline reset. | [Recovery materials](backups-and-restore.md#3-backup-recovery-file-and-care-clinic-admin-recovery). |
 | [`app_setup_retry.go`](../app/app_setup_retry.go) | Retained setup attempt, failure metadata, non-destructive retry validation and preparation/startup boundary. | [Installation retries](desktop-workflows.md#during-installation). |
-| [`app_update.go`](../app/app_update.go) | CARE line-update status/check/dismiss and explicit upgrades, the background update watcher, and the GitHub-release desktop updater. | [Clinic lifecycle](clinic-lifecycle.md), [releases](releases.md). |
+| [`app_update.go`](../app/app_update.go) | CARE update status/check/dismiss, the background update watcher, and the GitHub-release desktop updater. | [Clinic lifecycle](clinic-lifecycle.md), [releases](releases.md). |
 | [`app_engine.go`](../app/app_engine.go) | Pinned/installed/running engine status, failed-update state, launch recovery and the engine-update job. | [CARE engine](vm.md). |
 | [`app_diagnostics.go`](../app/app_diagnostics.go) | Privacy-confirmed bounded local ZIP exports of logs and version metadata. | [Local diagnostics](local-logs.md). |
 | [`app_selfupdate.go`](../app/app_selfupdate.go) | macOS bundle verification/replacement and post-exit reopening. | [Wails application](wails-application.md). |
@@ -109,7 +108,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_osremove.go`](../app/app_osremove.go) | `--uninstall`/`--uninstall-check` modes for the Windows uninstaller, the shared "still set up" check, and in-app removal of the desktop app. | [Cleanup](cleanup-and-uninstall.md#removing-the-desktop-app). |
 | [`app_residue.go`](../app/app_residue.go) | Residue scanning, recovery of old install location, confirmed purge, preserving the selected first-run name. | [Cleanup](cleanup-and-uninstall.md). |
 | [`password.go`](../app/password.go) | Shared setup password policy. | [Wails application](wails-application.md). |
-| [`app_env_test.go`](../app/app_env_test.go) | Synthetic-app regressions for concurrent settings reads, guards, conflicting writes, and saved retention values. | [Configuration](configuration-and-settings.md). |
+| [`app_env_test.go`](../app/app_env_test.go) | Synthetic-app regressions for concurrent settings reads, guards, conflicting writes, and saved override values. | [Configuration](configuration-and-settings.md). |
 
 ### Application-boundary regression groups
 
@@ -273,9 +272,9 @@ app/internal/
 | [`internal/compose`](../app/internal/compose) | Published image downloads/relabeling, local customizations, freshness inputs, and line update staging. | [Clinic lifecycle](clinic-lifecycle.md). |
 | [`internal/health`](../app/internal/health) | HTTP readiness and port availability. | [Native integrations](native-integrations.md). |
 | [`internal/plugins`](../app/internal/plugins) | Active plugin list (`plugins.json`), inactive draft (`plugins-pending.json`), catalog, validation, derived `ADDITIONAL_PLUGS`, and frontend `PlugConfig` rows. | [Configuration](plugins.md). |
-| [`internal/lines`](../app/internal/lines) | Release-line manifest parsing, validation, cache, line ordering and app-version compatibility. | [Images and release lines](images-and-lines.md). |
+| [`internal/careversions`](../app/internal/careversions) | Single CARE 3.1 image model backed by verified signed update metadata. | [CARE images](images.md). |
 | [`internal/prereq`](../app/internal/prereq) | Docker readiness, CARE engine provisioning, Windows Hypervisor Platform setup, and native Linux Docker setup. | [Native integrations](native-integrations.md), [CARE engine](vm.md). |
-| [`internal/vm`](../app/internal/vm) | CARE engine host lifecycle, transactional engine/tool updates with rollback ([`update.go`](../app/internal/vm/update.go)), macOS and Windows VM drivers, Docker client configuration, folder sharing/synchronization, networking, and helper process. | [CARE engine](vm.md). |
+| [`internal/vm`](../app/internal/vm) | CARE engine host lifecycle, transactional engine/QEMU updates with rollback ([`update.go`](../app/internal/vm/update.go)), macOS and Windows VM drivers, private agent transport, web forwarding, and helper process. | [CARE engine](vm.md). |
 | [`internal/release`](../app/internal/release) | Validated desktop release pins, line selection and image identity. | [Development and release](development-and-release.md#release-identity-and-pins). |
 | [`internal/residue`](../app/internal/residue) | Owned-resource inventory, unknown-state errors, old kit location. | [Cleanup](cleanup-and-uninstall.md). |
 | [`internal/storage`](../app/internal/storage) | Storage thresholds, backup-space estimates, policy/status reporting and backup-run state. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
@@ -378,7 +377,7 @@ app/frontend/
 | [`backups-tab.tsx`](../app/frontend/src/screens/panel/backups-tab.tsx), [`restore-backup-dialog.tsx`](../app/frontend/src/screens/panel/restore-backup-dialog.tsx) | Actual policy/destination, backup operations, restore consent and cancelled/stale preflight handling. |
 | [`advanced-tab.tsx`](../app/frontend/src/screens/panel/advanced-tab.tsx), [`admin-recovery.tsx`](../app/frontend/src/screens/panel/admin-recovery.tsx) | Fixed 15-minute UI unlock, sensitive-state clearing, password/recovery controls and protected administration. |
 | [`remove-screen.tsx`](../app/frontend/src/screens/remove-screen.tsx) | The screen the Windows uninstaller opens: server uninstall, client disconnect or unfinished-setup cleanup, then exit. |
-| [`update-panel.tsx`](../app/frontend/src/screens/panel/update-panel.tsx) | The password-free Updates tab: CARE release-line status, explicit line upgrades and the compatibility-aware desktop release updater. |
+| [`update-panel.tsx`](../app/frontend/src/screens/panel/update-panel.tsx) | The password-free Updates tab: CARE 3.1 software status, staged patches and the desktop release updater. |
 | [`logs-tab.tsx`](../app/frontend/src/screens/panel/logs-tab.tsx), [`engine-update.tsx`](../app/frontend/src/screens/panel/engine-update.tsx) | Logs page, live collection state and engine mismatch/retry controls. |
 | [`env-editor.tsx`](../app/frontend/src/screens/panel/env-editor.tsx) | Concurrent environment reads, draft changes, writes and apply action. |
 | [`env-file.ts`](../app/frontend/src/lib/env-file.ts) | Line-based environment parsing, value quoting, change application. |
@@ -404,19 +403,19 @@ See [Wails API](wails-application.md) and [configuration](configuration-and-sett
 | [`backup.Dockerfile`](../deployments/backup.Dockerfile) | Tools and permissions required by backup/restore helper containers. |
 | [`backend-plugins.Dockerfile`](../deployments/backend-plugins.Dockerfile) | Adds plugins using the published backend builder/runtime images. |
 | [`frontend-rebuild.Dockerfile`](../deployments/frontend-rebuild.Dockerfile) | Recompiles changed non-runtime settings using the published frontend builder/runtime images. |
-| [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Scheduled/manual backup modes, encryption, writer locking, publication and retention. |
+| [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Verified latest-only backup cycle, manifest checks, trial restore, WAL status/pruning, writer locking and status files. |
 | [`minio/entrypoint.sh`](../deployments/minio/entrypoint.sh) | Starts Silo, waits for readiness, configures credentials and buckets under the retained storage-service identity. |
 
 Generated public trust files and restore/build working files belong to the installed copy, not the source kit.
 
-## Published CARE images and release lines
+## Published CARE images
 
-[`images/`](../images) contains `lines.source.json`, the frontend runtime wrapper
-and runtime-key defaults, and scripts that prepare, verify and render publication
+[`images/`](../images) contains the frontend runtime wrapper
+and runtime-key defaults, and scripts that prepare and verify publication
 metadata. Clinic machines download digest-pinned images; they do not check out
 CARE sources. The personal fork's CARE images workflow publishes these on a
 six-hour schedule and on input changes, separately from desktop CI.
-See [images and release lines](images-and-lines.md) for the file
+See [CARE images](images.md) for the file
 inventory and publication contract.
 
 ## Build and automation

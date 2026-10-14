@@ -13,6 +13,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	"golang.org/x/crypto/bcrypt"
@@ -75,7 +76,7 @@ func (a *App) runLockedJob(fn func() error, markSetup bool, label string) error 
 			_ = a.withdrawAdvertise()
 		} else if err == nil {
 			switch label {
-			case "start", "restart", "restore", "update", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "upgrade-line", "setup":
+			case "start", "restart", "restore", "update", "rebuild-all", "rebuild-backend", "rebuild-frontend", "apply-plugins", "setup":
 				a.advPaused.Store(false)
 			}
 		}
@@ -226,8 +227,6 @@ func failureTitle(label string) string {
 		return "The plugins couldn't be applied"
 	case "update":
 		return "The CARE update didn't finish"
-	case "upgrade-line":
-		return "The CARE release line upgrade didn't finish"
 	case "free-space":
 		return "Cleanup didn't finish"
 	case "engine-update":
@@ -263,7 +262,15 @@ func (a *App) ClinicAction(action, adminPassword string) (err error) {
 		// The update itself installs and starts the engine; an outdated stopped
 		// engine would otherwise be rejected by the readiness check below.
 		if action == "engine-update" {
-			return a.updateEngine()
+			return a.runCoordinatedUpdate(updates.Engine, a.installStagedDesktopUpdate)
+		}
+		if action == "update" {
+			return a.runCoordinatedUpdate(updates.CAREImages, a.installStagedDesktopUpdate)
+		}
+		if action == "start" {
+			if engine := a.EngineStatus(); engine.UpdateNeeded {
+				return fmt.Errorf("CARE engine %s is required; explicitly update the engine before starting CARE", engine.ExpectedVersion)
+			}
 		}
 		if strings.HasPrefix(action, "rebuild-") {
 			if err := a.requireAdmin(adminPassword); err != nil {
@@ -351,8 +358,6 @@ func actionFunc(e *clinic.Clinic, action string) func() error {
 		return e.ApplyPlugins
 	case "backup-now":
 		return e.BackupNow
-	case "update":
-		return e.ApplyUpdate
 	case "free-space":
 		return e.FreeSpace
 	}

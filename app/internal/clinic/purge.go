@@ -3,9 +3,10 @@ package clinic
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
@@ -16,16 +17,16 @@ func (e *Clinic) Project() string { return composeProject }
 func (e *Clinic) Images() []string { return e.uninstallImages() }
 
 func (e *Clinic) Purge() error {
-	dockerAvailable, err := e.dockerCLIAvailable()
+	dockerAvailable, err := e.engineAvailable()
 	if err != nil {
-		return fmt.Errorf("could not check Docker CLI: %w", err)
+		return fmt.Errorf("could not check the CARE engine: %w", err)
 	}
 	if dockerAvailable {
 		if _, err := e.inspectProject(); err != nil {
 			return err
 		}
 	} else {
-		e.logln("The managed CARE engine is absent or the Docker CLI is missing; skipping Docker resource, image, and build-cache cleanup.")
+		e.logln("The CARE engine is absent; skipping Docker resource, image, and build-cache cleanup.")
 	}
 	if err := e.Backups().PreserveBackupCertificate(); err != nil {
 		return err
@@ -74,23 +75,28 @@ func (e *Clinic) Purge() error {
 	return e.removeInstallFiles(false)
 }
 
-func (e *Clinic) dockerCLIAvailable() (bool, error) {
+// engineAvailable reports whether the CARE agent answers. A managed engine
+// whose disk remains must answer: its retained volumes are never treated as
+// gone just because the helper is stopped or damaged.
+func (e *Clinic) engineAvailable() (bool, error) {
 	absent, err := vm.ManagedEngineAbsent()
 	if err != nil || absent {
 		return false, err
 	}
-	_, err = e.capture("docker", "--version")
-	if errors.Is(err, exec.ErrNotFound) && vm.Supported() {
-		return false, fmt.Errorf("CARE engine files remain but its Docker CLI is missing; recover the engine before removing retained clinic volumes: %w", err)
+	_, err = e.Runner().AgentCaptureIn(30*time.Second, nil, "version", "--format", "{{.Server.Version}}")
+	if err != nil && vm.Supported() {
+		return false, fmt.Errorf("CARE engine files remain but its agent is not answering; recover the engine before removing retained clinic volumes: %w", err)
 	}
-	return dockerCLIStatus(err)
+	return agentStatus(err)
 }
 
-func dockerCLIStatus(err error) (bool, error) {
+// agentStatus treats only a missing native agent socket as an absent engine;
+// every other failure keeps cleanup fail-closed.
+func agentStatus(err error) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, exec.ErrNotFound) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	return false, err

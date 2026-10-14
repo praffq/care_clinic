@@ -22,11 +22,11 @@ application's own user or API documentation.
 | [Wails application and API](wails-application.md) | Process startup, background jobs, concurrency, authorization, all bound methods, and events. |
 | [Configuration and settings](configuration-and-settings.md) | The installed directory, persisted configuration, environment files, plugins, and settings changes. |
 | [Plugins](plugins.md) | How CARE loads backend and frontend plugins, the `catalog.yml` format, and how CARE Clinic installs and syncs them. |
-| [CARE images and release lines](images-and-lines.md) | Published images, runtime and compiled settings, release-line manifests, and explicit line upgrades. |
+| [CARE images](images.md) | Published CARE 3.1 images, runtime and compiled settings, and verified update metadata. |
 | [Clinic lifecycle and deployment](clinic-lifecycle.md) | Setup, image builds, starting, migrations, service relationships, and stopping. |
 | [CARE engine](vm.md) | The app-managed Linux VM used for Docker on macOS and Windows, including setup, storage, migration, and troubleshooting. |
 | [Local diagnostics](local-logs.md) | Shared logs, live collection status, retention, privacy and diagnostics ZIP exports. |
-| [Backups and restore](backups-and-restore.md) | Encryption, key preservation, scheduling, retention, staged restore, and interruption recovery. |
+| [Backups and restore](backups-and-restore.md) | Encryption, key preservation, latest verified set, continuous change files, optional copy, point-in-time restore, staged restore, and interruption recovery. |
 | [Cleanup and uninstall](cleanup-and-uninstall.md) | What each removal operation deletes or preserves, ownership checks, and partial-cleanup recovery. |
 | [Native integrations](native-integrations.md) | Process execution, file persistence, logs, prerequisites, elevation, TLS trust, mDNS, and OS differences. |
 | [Development and release](development-and-release.md) | Local builds, embedded assets, release pins, CI, packaging, and changing the backend safely. |

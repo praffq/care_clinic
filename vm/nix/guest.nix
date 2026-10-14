@@ -1,7 +1,6 @@
 { config, lib, pkgs, modulesPath, version, ... }:
 let
   agent = import ./agent.nix { inherit pkgs lib version; };
-  windowsDrives = map (i: builtins.substring i 1 "abcdefghijklmnopqrstuvwxyz") (lib.range 0 25);
 in
 {
   imports = [ "${modulesPath}/profiles/minimal.nix" "${modulesPath}/profiles/headless.nix" ];
@@ -32,22 +31,21 @@ in
     autoResize = true;
     neededForBoot = true;
   };
-  # Windows drive roots are mirrored here; the guest root itself is a tmpfs.
-  # Keep those files across VM restarts so a missing guest listing cannot look
-  # like deletion of the host's installed clinic or backup files.
-  systemd.tmpfiles.rules =
-    (map (drive: "d /var/lib/care-sync/${drive} 0755 root root -") windowsDrives)
-    ++ (map (drive: "L+ /${drive} - - - - /var/lib/care-sync/${drive}") windowsDrives);
+  systemd.tmpfiles.rules = [
+    "d /var/lib/care 0700 root root -"
+    "d /var/lib/care/clinic 0700 root root -"
+    "d /var/lib/care/backups 0755 root root -"
+    "d /var/lib/care/builds 0700 root root -"
+  ];
   boot.initrd.supportedFilesystems = [ "erofs" "ext4" ];
   boot.initrd.availableKernelModules = [ "virtio_pci" "virtio_blk" "virtio_mmio" ];
-  boot.kernelModules = [ "vmw_vsock_virtio_transport" "virtio_net" "virtiofs" "fuse" "qemu_fw_cfg" "virtio_balloon" "overlay" "br_netfilter" ];
+  boot.kernelModules = [ "vmw_vsock_virtio_transport" "virtio_net" "qemu_fw_cfg" "virtio_balloon" "overlay" "br_netfilter" ];
   boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
 
   networking.useDHCP = true;
   networking.firewall.enable = true;
-  # 80/443 for the clinic (Caddy container); 2376/2377 are the TLS docker and
-  # control ports used on Windows, where QEMU forwards host loopback to them.
-  networking.firewall.allowedTCPPorts = [ 80 443 2376 2377 ];
+  # Only the mTLS operation API, not a Docker daemon endpoint, is forwarded.
+  networking.firewall.allowedTCPPorts = [ 80 443 2377 ];
   networking.firewall.trustedInterfaces = [ "docker0" "br-+" ];
 
   time.timeZone = "UTC";
@@ -72,13 +70,17 @@ in
   };
 
   environment.systemPackages = [ pkgs.docker pkgs.util-linux pkgs.e2fsprogs ];
+  environment.etc."care-engine/docker/config.json".text = builtins.toJSON {
+    cliPluginsExtraDirs = [ "${pkgs.docker-compose}/bin" "${pkgs.docker-buildx}/bin" ];
+  };
 
   systemd.services.care-engine-agent = {
-    description = "CARE engine agent (docker and control proxy for the host app)";
+    description = "CARE engine operation and file-transfer agent";
     wantedBy = [ "multi-user.target" ];
     wants = [ "docker.service" ];
     after = [ "local-fs.target" "docker.socket" ];
-    path = [ pkgs.systemd pkgs.util-linux ];
+    path = [ pkgs.docker pkgs.docker-compose pkgs.docker-buildx pkgs.systemd pkgs.util-linux ];
+    environment.DOCKER_CONFIG = "/etc/care-engine/docker";
     serviceConfig = {
       ExecStart = "${agent}/bin/care-engine-agent";
       Restart = "always";

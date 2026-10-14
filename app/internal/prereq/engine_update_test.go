@@ -48,19 +48,9 @@ func stageTestEngine(t *testing.T, version string) *vm.StagedUpdate {
 		"system": "/nix/store/x", "files": sums})
 	files["manifest.json"] = string(mb)
 	f := vm.EngineFiles{
-		Engine:  filepath.Join(dir, "engine.tar.gz"),
-		Docker:  filepath.Join(dir, "docker.tgz"),
-		Compose: filepath.Join(dir, "compose"),
+		Engine: filepath.Join(dir, "engine.tar.gz"),
 	}
 	writeTestTarGz(t, f.Engine, files)
-	docker := "docker/docker"
-	if runtime.GOOS == "windows" {
-		docker += ".exe"
-	}
-	writeTestTarGz(t, f.Docker, map[string]string{docker: "docker " + version})
-	if err := os.WriteFile(f.Compose, []byte("compose "+version), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if runtime.GOOS == "windows" {
 		f.QEMU = filepath.Join(dir, "qemu.zip")
 		out, _ := os.Create(f.QEMU)

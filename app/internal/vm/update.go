@@ -7,14 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
 
-// An engine update replaces the engine bundle and the host tools as one
+// An engine update replaces the engine bundle and, on Windows, QEMU as one
 // transaction. Everything is downloaded, unpacked and verified into
 // engine-update/new while the clinic keeps running. Activation moves the
-// previous tools to engine-update/old and the new ones into place; the
+// previous QEMU files to engine-update/old and the new ones into place; the
 // previous engine bundle stays on disk until the update is committed, so
 // a failed or interrupted update can put the previous engine back. The
 // data disk is never copied or reverted.
@@ -45,9 +46,10 @@ func (u EngineUpdate) Interrupted() bool { return u.Phase != UpdateFailed }
 
 // EngineFiles are the verified downloads of one engine update.
 type EngineFiles struct {
-	Engine, Docker, Compose, QEMU string
-	QEMUBootstrap, QEMUExtractor  string
-	QEMUVersion                   string
+	Engine                       string
+	QEMU                         string
+	QEMUBootstrap, QEMUExtractor string
+	QEMUVersion                  string
 }
 
 // StagedUpdate is an update that is unpacked and verified but not active.
@@ -56,8 +58,14 @@ type StagedUpdate struct {
 	From     string
 }
 
+type stagedToolFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
 func updateDir() string  { return filepath.Join(StateDir(), "engine-update") }
 func recordFile() string { return filepath.Join(updateDir(), "record.json") }
+func toolsFile() string  { return filepath.Join(updateDir(), "tools.json") }
 func newDir() string     { return filepath.Join(updateDir(), "new") }
 func oldDir() string     { return filepath.Join(updateDir(), "old") }
 
@@ -67,11 +75,10 @@ type tool struct {
 }
 
 func updateTools() []tool {
-	t := []tool{{"docker", dockerCLI}, {"docker-compose", composePlugin}}
 	if runtime.GOOS == "windows" {
-		t = append(t, tool{"qemu", qemuDir})
+		return []tool{{"qemu", qemuDir}}
 	}
-	return t
+	return nil
 }
 
 // PendingEngineUpdate returns the update record, if any.
@@ -144,14 +151,6 @@ func StageEngineUpdate(f EngineFiles) (*StagedUpdate, error) {
 		return nil, err
 	}
 	s.Manifest = m
-	if err := stageDockerCLI(f.Docker); err != nil {
-		s.Discard()
-		return nil, fmt.Errorf("docker command: %w", err)
-	}
-	if err := installFile(f.Compose, filepath.Join(newDir(), "docker-compose")); err != nil {
-		s.Discard()
-		return nil, fmt.Errorf("Docker Compose: %w", err)
-	}
 	if runtime.GOOS == "windows" {
 		var err error
 		if f.QEMUExtractor != "" {
@@ -164,7 +163,148 @@ func StageEngineUpdate(f EngineFiles) (*StagedUpdate, error) {
 			return nil, fmt.Errorf("QEMU: %w", err)
 		}
 	}
+	if err := writeStagedToolDigests(); err != nil {
+		s.Discard()
+		return nil, fmt.Errorf("verify staged CARE engine tools: %w", err)
+	}
 	return s, nil
+}
+
+// OpenStagedEngineUpdate reopens a previously verified bundle and verifies its
+// manifest-listed files again before it can be activated.
+func OpenStagedEngineUpdate() (*StagedUpdate, error) {
+	m, err := readManifest(filepath.Join(newDir(), "engine"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read staged CARE engine manifest: %w", err)
+	}
+	for name, want := range m.Files {
+		if !filepath.IsLocal(name) {
+			return nil, fmt.Errorf("staged CARE engine manifest has unsafe file path %q", name)
+		}
+		path := filepath.Join(m.dir, name)
+		got, err := fileSHA256(path)
+		if err != nil {
+			return nil, fmt.Errorf("verify staged CARE engine file %s: %w", name, err)
+		}
+		if !strings.EqualFold(got, want) {
+			return nil, fmt.Errorf("staged CARE engine file %s is corrupt", name)
+		}
+	}
+	var tools []string
+	if runtime.GOOS == "windows" {
+		tools = append(tools, filepath.Join(newDir(), "qemu", "qemu-system-x86_64.exe"))
+	}
+	for _, path := range tools {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("staged CARE engine tool is unavailable at %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("staged CARE engine tool is not a regular file: %s", path)
+		}
+	}
+	if err := verifyStagedToolDigests(); err != nil {
+		return nil, err
+	}
+	var from string
+	if installed, err := Installed(); err == nil {
+		from = installed.Version
+	} else if !errors.Is(err, errNotInstalled) {
+		return nil, fmt.Errorf("read installed CARE engine version: %w", err)
+	}
+	return &StagedUpdate{Manifest: m, From: from}, nil
+}
+
+func stagedToolPaths() ([]string, error) {
+	var paths []string
+	if runtime.GOOS == "windows" {
+		root := filepath.Join(newDir(), "qemu")
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("staged CARE engine tool is not a regular file: %s", path)
+			}
+			paths = append(paths, path)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func writeStagedToolDigests() error {
+	paths, err := stagedToolPaths()
+	if err != nil {
+		return err
+	}
+	files := make([]stagedToolFile, 0, len(paths))
+	for _, path := range paths {
+		digest, err := fileSHA256(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(newDir(), path)
+		if err != nil {
+			return err
+		}
+		files = append(files, stagedToolFile{Path: filepath.ToSlash(rel), SHA256: digest})
+	}
+	data, err := json.MarshalIndent(files, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(toolsFile(), append(data, '\n'))
+}
+
+func verifyStagedToolDigests() error {
+	data, err := os.ReadFile(toolsFile())
+	if err != nil {
+		return fmt.Errorf("read staged CARE engine tool checksums: %w", err)
+	}
+	var expected []stagedToolFile
+	if err := json.Unmarshal(data, &expected); err != nil {
+		return fmt.Errorf("decode staged CARE engine tool checksums: %w", err)
+	}
+	paths, err := stagedToolPaths()
+	if err != nil {
+		return err
+	}
+	if len(paths) != len(expected) {
+		return errors.New("staged CARE engine tools do not match their verified file list")
+	}
+	for i, path := range paths {
+		rel, err := filepath.Rel(newDir(), path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if expected[i].Path != rel || !filepath.IsLocal(filepath.FromSlash(expected[i].Path)) {
+			return errors.New("staged CARE engine tools do not match their verified file list")
+		}
+		got, err := fileSHA256(path)
+		if err != nil {
+			return fmt.Errorf("verify staged CARE engine tool %s: %w", rel, err)
+		}
+		if !strings.EqualFold(got, expected[i].SHA256) {
+			return fmt.Errorf("staged CARE engine tool %s is corrupt", rel)
+		}
+	}
+	return nil
 }
 
 // Discard removes a staged update that was never activated.
@@ -190,15 +330,6 @@ func unpackEngine(archive, dest string) (Manifest, error) {
 	return m, nil
 }
 
-func stageDockerCLI(archive string) error {
-	tmp := filepath.Join(newDir(), ".docker")
-	defer func() { _ = os.RemoveAll(tmp) }()
-	if err := extract(archive, tmp, 0); err != nil {
-		return err
-	}
-	return installFile(filepath.Join(tmp, "docker", exe("docker")), filepath.Join(newDir(), "docker"))
-}
-
 func stageQEMU(archive, dest string) error {
 	if err := extract(archive, dest, 0); err != nil {
 		return err
@@ -209,7 +340,7 @@ func stageQEMU(archive, dest string) error {
 	return nil
 }
 
-// Activate makes the staged engine and tools the installed ones. The VM must
+// Activate makes the staged engine and QEMU the installed ones. The VM must
 // be stopped. The update record is written first, so an interruption at any
 // point is rolled back on the next launch.
 func (s *StagedUpdate) Activate() error {
@@ -256,7 +387,7 @@ func (s *StagedUpdate) Activate() error {
 }
 
 // CommitEngineUpdate keeps the active engine and deletes the previous
-// engine bundle and tools.
+// engine bundle and QEMU files.
 func CommitEngineUpdate() error {
 	u, ok, err := PendingEngineUpdate()
 	if err != nil {

@@ -8,9 +8,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -52,7 +53,6 @@ type host struct {
 	stopReq              chan struct{}
 	once                 sync.Once
 	background           sync.WaitGroup
-	sync                 *syncer
 	advertiseMu          sync.Mutex
 	advertiser           advertisementManager
 	advertiseCancelMu    sync.Mutex
@@ -64,7 +64,7 @@ type host struct {
 }
 
 // RunHost is the helper process (care-clinic --vm-host). It boots the VM,
-// exposes Docker to this computer and serves the control socket until asked to
+// forwards the private agent channel and serves the control socket until asked to
 // stop, then shuts the guest down cleanly.
 func RunHost() int {
 	if !Supported() {
@@ -100,6 +100,10 @@ func runHost(logf func(string, ...any)) (retErr error) {
 		return fmt.Errorf("control socket: %w", err)
 	}
 	defer func() { _ = os.Remove(controlSocket()) }()
+	if err := os.Chmod(controlSocket(), 0o600); err != nil {
+		_ = ctl.Close()
+		return err
+	}
 
 	h := &host{
 		logf: logf, stopReq: make(chan struct{}),
@@ -341,34 +345,15 @@ func (h *host) waitReady(ctx context.Context, limit time.Duration) error {
 	return fmt.Errorf("the engine did not become ready: %v", last)
 }
 
-// attach makes the engine usable from this computer: folder shares and
-// sockets on macOS, file sync on Windows.
+// attach forwards only web traffic. The desktop's agent requests use the
+// private control channel, never a Docker socket or mirrored host folders.
 func (h *host) attach(ctx context.Context) error {
 	if runtime.GOOS == "windows" {
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostTCPDocker))
-		if err != nil {
-			return fmt.Errorf("Docker relay: %w", err)
-		}
-		relay := newDockerRelay()
-		go forward(ctx, ln, relay.connect, h.logf)
-		h.sync = newSyncer(h.g, h.logf)
 		h.mu.Lock()
 		h.status.WebPorts = []int{80, 443}
 		h.mu.Unlock()
 		return nil
 	}
-	for _, s := range darwinShares() {
-		if err := h.g.mount(ctx, s.tag, s.guest); err != nil {
-			return fmt.Errorf("share %s: %w", s.host, err)
-		}
-	}
-	_ = os.Remove(dockerSocket())
-	ln, err := net.Listen("unix", dockerSocket())
-	if err != nil {
-		return fmt.Errorf("docker socket: %w", err)
-	}
-	_ = os.Chmod(dockerSocket(), 0o600)
-	go forward(ctx, ln, func(c context.Context) (net.Conn, error) { return h.m.dial(c, vsockDocker) }, h.logf)
 	// The clinic's web ports. Binding below 1024 needs no privilege on
 	// macOS 10.14+; if something else holds a port, the clinic reports it.
 	for _, p := range []uint32{vsockHTTP, vsockHTTPS} {
@@ -386,7 +371,7 @@ func (h *host) attach(ctx context.Context) error {
 }
 
 // housekeeping keeps the guest clock right after the computer sleeps, keeps
-// disk numbers fresh and, on Windows, keeps shared folders in step.
+// disk numbers fresh.
 func (h *host) housekeeping(ctx context.Context) {
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
@@ -394,11 +379,6 @@ func (h *host) housekeeping(ctx context.Context) {
 	for {
 		h.refresh(ctx)
 		h.refreshAdvertisement(ctx)
-		if h.sync != nil {
-			if err := h.sync.run(ctx, nil); err != nil {
-				h.logf("sync: %v", err)
-			}
-		}
 		select {
 		case <-ctx.Done():
 			return
@@ -457,21 +437,14 @@ func (h *host) routes() http.Handler {
 		h.withdrawAdvertisement()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /sync", func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			Paths []string `json:"paths"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		if h.sync == nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if err := h.sync.run(r.Context(), in.Paths); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
+	// VZ's vsock handle belongs to this VM-owning process. Forward HTTP without
+	// interpreting operations; Windows' guest dial retains mutual TLS.
+	if h.g != nil {
+		proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: "agent"})
+		proxy.Transport = h.g.http.Transport
+		proxy.FlushInterval = -1
+		mux.Handle("/v1/", proxy)
+	}
 	mux.HandleFunc("GET /journal", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if err := h.g.journal(r.Context(), w); err != nil {
@@ -509,17 +482,4 @@ func (h *host) writeStatus(w http.ResponseWriter) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-type share struct{ tag, host, guest string }
-
-// darwinShares are the macOS folders the VM can see, at the same paths, so
-// bind mounts from the install and backup folders work unchanged.
-func darwinShares() []share {
-	home, _ := os.UserHomeDir()
-	out := []share{{tag: "care-home", host: home, guest: filepath.ToSlash(home)}}
-	if fi, err := os.Stat("/Volumes"); err == nil && fi.IsDir() {
-		out = append(out, share{tag: "care-volumes", host: "/Volumes", guest: "/Volumes"})
-	}
-	return out
 }

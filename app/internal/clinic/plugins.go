@@ -38,7 +38,7 @@ func (e *Clinic) snapshotPluginRows(list []plugins.Plugin) (json.RawMessage, err
 	}
 	run := e.Runner()
 	run.Env = append(run.Env, frontendPluginsEnv+"="+string(payload))
-	out, err := run.Capture("docker", "compose", "exec", "-T", "-e", frontendPluginsEnv,
+	out, err := run.AgentCapture("compose", "exec", "-T", "-e", frontendPluginsEnv,
 		"backend", "python", "manage.py", "shell", "--verbosity", "0", "-c", `import json, os
 from django.db.models import Q
 from care.users.models import PlugConfig
@@ -57,7 +57,7 @@ print(json.dumps({"slugs": slugs, "rows": rows}))
 
 func (e *Clinic) restorePluginRows(rows json.RawMessage) error {
 	return e.run([]string{frontendPluginsEnv + "=" + string(rows)},
-		"docker", "compose", "exec", "-T", "-e", frontendPluginsEnv,
+		"compose", "exec", "-T", "-e", frontendPluginsEnv,
 		"backend", "python", "manage.py", "shell", "-c", `import json, os
 from django.db import transaction
 from django.db.models import Q
@@ -83,7 +83,7 @@ func (e *Clinic) SyncFrontendPlugins() error {
 		return err
 	}
 	if err := e.run([]string{frontendPluginsEnv + "=" + string(payload)},
-		"docker", "compose", "exec", "-T", "-e", frontendPluginsEnv,
+		"compose", "exec", "-T", "-e", frontendPluginsEnv,
 		"backend", "python", "manage.py", "shell", "-c", frontendPluginsScript); err != nil {
 		return fmt.Errorf("frontend plugins could not be registered with CARE: %w", err)
 	}

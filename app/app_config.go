@@ -23,6 +23,7 @@ type Config struct {
 	Removing                 bool      `json:"removing,omitempty"`
 	MDNSName                 string    `json:"mdns_name"`
 	BackupDir                string    `json:"backup_dir"`
+	BackupCopyDir            string    `json:"backup_copy_dir,omitempty"`
 	AdminPwHash              string    `json:"admin_pw_hash"`
 	AdminRecoveryHashes      [6]string `json:"admin_recovery_hashes"`
 	AdminRecoveryPath        string    `json:"admin_recovery_path,omitempty"`
@@ -41,7 +42,7 @@ const (
 )
 
 func (cfg Config) hasServerSettings() bool {
-	return cfg.SetupDone || cfg.Removing || cfg.AdminPwHash != "" || cfg.BackupDir != "" || cfg.MDNSName != "" ||
+	return cfg.SetupDone || cfg.Removing || cfg.AdminPwHash != "" || cfg.BackupDir != "" || cfg.BackupCopyDir != "" || cfg.MDNSName != "" ||
 		cfg.BackupCertificate != "" || cfg.BackupKeyEncrypted != "" || cfg.BackupKeyNeedsEnrollment || cfg.adminRecoveryCount() > 0
 }
 
@@ -99,6 +100,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg == nil {
 		return Config{}, fmt.Errorf("saved settings at %s must be a JSON object", path)
+	}
+	if cfg.BackupCopyDir != "" && !filepath.IsAbs(cfg.BackupCopyDir) {
+		return Config{}, fmt.Errorf("the saved backup copy folder must be an absolute path: %s", cfg.BackupCopyDir)
 	}
 	if cfg.BackupDir != "" && !filepath.IsAbs(cfg.BackupDir) {
 		return Config{}, fmt.Errorf("the saved backup directory must be an absolute path: %s", cfg.BackupDir)

@@ -8,10 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 )
 
 const chunkSize = 64 * 1024
@@ -20,10 +23,13 @@ const pathMarker = "__care_path__"
 
 // Runner executes commands with a fixed working directory, environment, and log
 type Runner struct {
-	Dir string
-	Env []string
-	Log func(string)
-	Ctx context.Context
+	Dir          string
+	Env          []string
+	Log          func(string)
+	Ctx          context.Context
+	Agent        *engine.Client
+	AgentDir     string
+	PrepareAgent func(context.Context) error
 }
 
 func (r Runner) logln(s string) {
@@ -34,71 +40,34 @@ func (r Runner) logln(s string) {
 
 func Command(name string, args ...string) *exec.Cmd {
 	c := exec.Command(name, args...)
+	if err := localCommand(name); err != nil {
+		c.Err = err
+	}
 	hideConsole(c)
 	return c
 }
 
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	c := exec.CommandContext(ctx, name, args...)
+	if err := localCommand(name); err != nil {
+		c.Err = err
+	}
 	c.WaitDelay = 2 * time.Second
 	hideConsole(c)
 	return c
 }
 
-// DockerHook, when set, sees every docker command a Runner starts. It may
-// rewrite the arguments and returns a function to call once the command has
-// finished. Windows uses it to map bind-mount paths into the CARE engine and
-// keep the folders it mounts in step. A preparation error stops the command
-// from running and after is not called; a completion error is joined with the command's own result.
-var DockerHook func(args []string) (rewritten []string, after func() error, err error)
-
-// HookError reports a DockerHook failure before or after a docker command.
-type HookError struct {
-	Stage string // "prepare" or "finish"
-	Err   error
+func localCommand(name string) error {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ".exe")
+	if base == "docker" || base == "docker-compose" {
+		return errors.New("Docker operations must use the CARE agent")
+	}
+	return nil
 }
 
-func (e *HookError) Error() string {
-	if e.Stage == "prepare" {
-		return "prepare docker command: " + e.Err.Error()
-	}
-	return "finish docker command: " + e.Err.Error()
-}
-
-func (e *HookError) Unwrap() error { return e.Err }
-
-func noAfter() error { return nil }
-
-func dockerHook(name string, args []string) ([]string, func() error, error) {
-	if name != "docker" || DockerHook == nil {
-		return args, noAfter, nil
-	}
-	out, after, err := DockerHook(args)
-	if err != nil {
-		return nil, nil, &HookError{Stage: "prepare", Err: err}
-	}
-	if after == nil {
-		after = noAfter
-	}
-	return out, func() error {
-		if err := after(); err != nil {
-			return &HookError{Stage: "finish", Err: err}
-		}
-		return nil
-	}, nil
-}
-
-// joinAfter runs after and joins its failure into *err.
-func joinAfter(err *error, after func() error) {
-	if afterErr := after(); afterErr != nil {
-		*err = errors.Join(*err, afterErr)
-	}
-}
-
-func (r Runner) cmd(name string, args ...string) (*exec.Cmd, func() error, error) {
-	args, after, err := dockerHook(name, args)
-	if err != nil {
-		return nil, nil, err
+func (r Runner) cmd(name string, args ...string) (*exec.Cmd, error) {
+	if err := localCommand(name); err != nil {
+		return nil, err
 	}
 	c := Command(name, args...)
 	if r.Ctx != nil {
@@ -106,7 +75,7 @@ func (r Runner) cmd(name string, args ...string) (*exec.Cmd, func() error, error
 	}
 	c.Dir = r.Dir
 	c.Env = r.Env
-	return c, after, nil
+	return c, nil
 }
 
 func (r Runner) Run(name string, args ...string) error {
@@ -116,6 +85,9 @@ func (r Runner) Run(name string, args ...string) error {
 // RunLauncher discards output through the OS null device, not pipes tied to
 // CARE's lifetime or an unbounded inherited file. Readiness is checked separately.
 func (r Runner) RunLauncher(timeout time.Duration, name string, args ...string) error {
+	if err := localCommand(name); err != nil {
+		return err
+	}
 	parent := r.Ctx
 	if parent == nil {
 		parent = context.Background()
@@ -134,11 +106,10 @@ func (r Runner) RunLauncher(timeout time.Duration, name string, args ...string) 
 }
 
 func (r Runner) RunWith(extraEnv []string, name string, args ...string) (err error) {
-	cmd, after, err := r.cmd(name, args...)
+	cmd, err := r.cmd(name, args...)
 	if err != nil {
 		return err
 	}
-	defer joinAfter(&err, after)
 	if len(extraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), extraEnv...)
 	}
@@ -212,11 +183,10 @@ func (r Runner) RunWith(extraEnv []string, name string, args ...string) (err err
 
 // Capture returns trimmed stdout without streaming.
 func (r Runner) Capture(name string, args ...string) (_ string, err error) {
-	cmd, after, err := r.cmd(name, args...)
+	cmd, err := r.cmd(name, args...)
 	if err != nil {
 		return "", err
 	}
-	defer joinAfter(&err, after)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
@@ -228,11 +198,9 @@ func (r Runner) CaptureIn(timeout time.Duration, extraEnv []string, name string,
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	args, after, err := dockerHook(name, args)
-	if err != nil {
+	if err := localCommand(name); err != nil {
 		return "", err
 	}
-	defer joinAfter(&err, after)
 	cmd := CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env = r.Dir, r.Env
 	if len(extraEnv) > 0 {

@@ -5,7 +5,7 @@ import type {
   AppState,
   AppUpdate,
   Backup,
-  BackupPolicy,
+  BackupHealth,
   BackupSpace,
   CarePlugin,
   PluginCatalogEntry,
@@ -94,6 +94,7 @@ declare global {
           RetrySetup(): Promise<void>;
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;
+          ReadEnvDefaults(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
           ReadPlugins(): Promise<CarePlugin[]>;
           SavePlugins(plugins: CarePlugin[]): Promise<void>;
@@ -101,7 +102,10 @@ declare global {
           ListBackups(): Promise<Backup[]>;
           GetBackupDir(): Promise<string>;
           ExportBackupRecovery(adminPassword: string, recoveryFile: string): Promise<boolean>;
-          GetBackupPolicy(): Promise<BackupPolicy>;
+          GetBackupHealth(): Promise<BackupHealth>;
+          SetBackupCopyDir(dir: string): Promise<string>;
+          ClearBackupCopyDir(): Promise<void>;
+          RestorePointInTime(target: string, recoveryFile: string, adminPassword: string): Promise<void>;
           SetBackupDir(dir: string): Promise<string>;
           ChooseBackupFile(): Promise<string>;
           InspectBackupFile(path: string): Promise<ImportedBackup>;
@@ -112,7 +116,7 @@ declare global {
           ChooseFolder(title: string): Promise<string>;
           LogPath(): Promise<string>;
           OpenLogFolder(): Promise<void>;
-          ExportDiagnostics(): Promise<void>;
+          ExportDiagnostics(passwordWarningAccepted: boolean): Promise<void>;
           WasAutostartLaunched(): Promise<boolean>;
           UninstallRequested(): Promise<boolean>;
           ExitUninstall(): Promise<void>;
@@ -120,7 +124,6 @@ declare global {
           RemoveApp(): Promise<void>;
           AutostartEnabled(): Promise<boolean>;
           SetAutostart(on: boolean): Promise<void>;
-          UpgradeCareLine(id: string): Promise<void>;
           CareUpdateStatus(): Promise<ChannelStatus>;
           CheckCareUpdate(): Promise<void>;
           DismissCareUpdate(): Promise<void>;

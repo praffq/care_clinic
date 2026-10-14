@@ -26,7 +26,8 @@ Related guides:
 - [Wails application](wails-application.md): desktop calls, authorization, jobs,
   events, and the shared-read/exclusive-write application gate.
 - [Configuration and settings](configuration-and-settings.md): effective paths,
-  passwords, retention settings, and changing the backup destination.
+  passwords, the optional backup copy destination, and changing the backup
+  destination.
 - [Clinic lifecycle](clinic-lifecycle.md): starting services, live migrations,
   worker sequencing, and deployment services.
 - [Cleanup and uninstall](cleanup-and-uninstall.md): explicit deletion choices
@@ -51,9 +52,11 @@ names. They are not instructions to rename a service or migrate a volume.
 
 | Term | Meaning in this implementation |
 | --- | --- |
-| Manual backup / "Backup now" | An encrypted database dump plus an encrypted files archive, named `care-manual-<ts>` and `files-manual-<ts>`. Both must publish before it reports success. Unlike the scheduled cycle, it applies no retention. |
-| Scheduled backup | The sidecar attempts a database dump and a files archive with the same timestamp. Both must publish, and cleanup must succeed, before the cycle reports success. |
-| Backup set | A database dump plus an optional matching files archive. Matching names do not prove application-level consistency. |
+| Verified backup set | The single kept set: encrypted physical full copy (`base-<ts>`), database dump, files archive and `manifest.json`. A new set replaces the previous one only after every check passes (section 4). |
+| "Back up now" | Runs the same verified cycle immediately. |
+| Change files (WAL) | PostgreSQL write-ahead log segments, compressed and encrypted to the clinic certificate in `backups/wal`, used to replay changes after the full copy. |
+| Point-in-time restore | Rebuilds the database from the full copy plus change files up to a chosen moment, then swaps it in through the staged restore. |
+| Optional copy | A mirror of the verified set and change files on a USB drive, second disk or network folder. |
 | Restore source | The folder containing the selected dump, optional files archive, and preferably their recovery key. It can differ from the current backup destination. |
 | Staging | Preparing replacement data separately from the current database and uploaded files. |
 | Cutover | Stopping writers, replacing the live files when requested, and renaming databases so the staged database takes the live name. |
@@ -73,7 +76,9 @@ flowchart TD
     App --> Clinic["Clinic"]
     Clinic --> Now["BackupNow"]
     Now --> Sidecar["Existing backup container"]
-    Sidecar --> Script["backup.sh: dump, archive, encrypt, prune"]
+    Sidecar --> Script["backup.sh: full copy, dump, files, verify, manifest, prune previous"]
+    DB["PostgreSQL archive_command"] --> WAL["wal-archive.sh: compress, encrypt, temp then rename"]
+    App --> Copier["backupcopy: optional verified second copy"]
     Clinic --> Store["backup.Store"]
     Store --> Local["Go: names, paths, key copies, journal"]
     Store --> Helpers["Docker and Compose helper processes"]
@@ -103,10 +108,13 @@ The examples use the synthetic timestamp `20260102-030405`.
 
 | Name | Contents |
 | --- | --- |
-| `care-20260102-030405.dump.enc` | Scheduled PostgreSQL custom-format dump, encrypted as an OpenSSL CMS envelope. |
+| `base-20260102-030405/base.tar.gz.enc` | Encrypted `pg_basebackup` physical full copy of the verified set. |
+| `care-20260102-030405.dump.enc` | PostgreSQL custom-format dump of the verified set, encrypted as an OpenSSL CMS envelope. |
 | `files-20260102-030405.tar.gz.enc` | Matching encrypted gzip-compressed tar archive of the storage volume. |
-| `care-manual-20260102-030405.dump.enc` | Manual database dump. |
-| `files-manual-20260102-030405.tar.gz.enc` | Matching manual files archive. Pairs only with the `care-manual-` dump of the same timestamp, never with a scheduled one. |
+| `manifest.json` | Record of the verified set: checksums, checks passed, base LSNs and `ended_at`, WAL start, trial restore. |
+| `wal/<segment>.gz.enc` and `wal/<segment>.sha256` | Encrypted change file and its checksum/verification record. `wal/<timeline>.history` files are kept. |
+| `care-pre-update-20260102-030405.dump.enc` / `files-pre-update-…` | Newest pre-update safety copy only. |
+| `care-manual-20260102-030405.dump.enc` / `files-manual-…` | Older manual names, still recognized as restore input. Current writers no longer create them. |
 | `care-20260102-030405.dump` | Recognized unencrypted database dump, supported as restore input. Current backup writers do not create this final form. |
 | `files-20260102-030405.tar.gz` | Recognized unencrypted files archive, also supported as restore input. |
 | `backup-cert.pem` | Public certificate identifying the backup encryption key. It cannot decrypt backups. |
@@ -177,17 +185,24 @@ about possible OneDrive syncing, but does not detect or block every cloud folder
 <installation>/
 |-- backend.env
 |-- backup-state/
-|   `-- backup-status        # last scheduled run (or successful manual one): running, ok, or failed and why
+|   |-- backup-status        # last cycle: running, ok, or failed and why
+|   |-- wal-status           # change-file archiving: state, saved_through, gap
+|   `-- copy-status.json     # optional second copy: ok, disconnected, copying, failed
 |-- keys/
 |   `-- backup-cert.pem
 `-- restore-state.json       # exists while a restore needs recovery/finalization
 
 <separate backup folder>/
 |-- backup-cert.pem          # public ownership marker, cannot decrypt
+|-- manifest.json
+|-- base-20260102-030405/base.tar.gz.enc
 |-- care-20260102-030405.dump.enc
 |-- files-20260102-030405.tar.gz.enc
-|-- care-manual-20260103-101112.dump.enc
-`-- files-manual-20260103-101112.tar.gz.enc
+`-- wal/
+    |-- 000000010000000000000004.gz.enc
+    `-- 000000010000000000000004.sha256
+
+<optional copy destination>/care-backup-copy/   # same layout, manifest written last
 ```
 
 The backup service's mounts in
@@ -195,11 +210,12 @@ The backup service's mounts in
 
 | Container path | Purpose |
 | --- | --- |
-| `/backup.sh` | Read-only mounted backup script. |
+| `/scripts` | Read-only backup, WAL and point-in-time helper scripts. |
 | `/backups` | Writable backup destination supplied through `BACKUP_DIR`. |
 | `/keys` | Read-only installation keys directory. The writer uses the certificate, not the private key or its password. |
 | `/minio-data` | Read-only mount of the storage data volume for archiving. |
-| `/state` | Writable `<installation>/backup-state`, holding `backup-status` from each scheduled run. |
+| `/state` | Writable `<installation>/backup-state`, holding `backup-status`, `wal-status` and trial stamps. |
+| `/pgdata` | Read-only view of the database volume, used only to check free space for the trial restore. |
 
 The Compose file also has a raw relative backup-path fallback. Running Compose
 outside the desktop's configured environment is not equivalent to using the
@@ -347,204 +363,212 @@ Encryption is not a signed manifest or proof of cross-file consistency.
 Only restore backups from trusted sources. Docker administrators and privileged
 OS users can inspect mounted secrets and decrypted staging data.
 
-## 4. Creating backups and applying retention
+## 4. Latest verified backup, continuous changes, and the optional copy
 
-### Manual backup
+This section is the operating model from points 44–54 of the
+[redesign](redesign.md). In short: CARE keeps **one** verified backup set on
+the local backup folder, archives database changes continuously between full
+copies, can optionally mirror that set to a second place, and lets an
+administrator restore the database to any moment the archive covers. There is
+no retention-period setting: `DB_BACKUP_RETENTION_PERIOD`, the Advanced
+"Backups" group and the old `GetBackupPolicy()` bridge were removed.
 
-[`Clinic.BackupNow()`](../app/internal/clinic/backup.go):
+### Latest verified backup set
 
-1. Refuses to run if the certificate-presence check says encryption is absent.
-2. Refuses to run if the backup folder's drive has less free space than a
-   full set needs (see below), naming both sizes.
-3. Generates a timestamp in Go.
-4. Runs `sh /backup.sh once manual-<timestamp>` using `docker compose exec -T`
-   in the already running `backup` service.
-5. Logs the resulting `care-manual-<timestamp>.dump.enc` and
-   `files-manual-<timestamp>.tar.gz.enc` paths.
+The sidecar's nightly cycle ([`backup.sh`](../deployments/scripts/backup.sh),
+`run_cycle`) writes a complete new set next to the current one:
 
-The script's `once` mode refuses to start if either final name already exists,
-then writes the dump and the files archive exactly as the scheduled cycle does.
-If the files step fails, the published dump stays and is listed as
-database-only, but the command exits non-zero so the app reports the failure.
-It does not apply retention or write the status file, and it does not start a
-stopped clinic. An execution
-failure re-checks free space first, so a full drive is reported as such; any
-other failure reports that CARE must be running to take the backup.
+| Member | Purpose |
+| --- | --- |
+| `base-<ts>/base.tar.gz.enc` | `pg_basebackup` physical full copy, compressed and CMS-encrypted to the clinic certificate. Starting point for continuous-change replay and point-in-time restore. |
+| `care-<ts>.dump.enc` | Daily `pg_dump -Fc`, kept for moves across PostgreSQL major versions or CPU architectures, where a physical copy cannot be used. |
+| `files-<ts>.tar.gz.enc` | Uploaded files from the storage volume. |
+| `manifest.json` | The record of the verified set: SHA-256 of every member (ciphertext and plaintext), base start/end LSN, `base.ended_at`, starting WAL segment and timeline, the checks that passed, and the latest weekly trial restore. |
 
-### Space checks and the status file
+The order is fixed: **write → verify → record → only then delete the previous
+set**. Before `manifest.json` is replaced, every member must pass all of:
 
-A backup run briefly holds more than its final size: each member is written as
-plaintext, sealed next to it, and only then is the plaintext removed. With `d`
-the dump size and `f` the files archive size of the newest daily set, the peak
-is `max(2d, d + 2f)`. The required space is that peak plus a quarter for growth
-plus 256 MB, and never less than 1 GB. Manual and scheduled runs use the same full-set estimate.
-With no earlier set, the script estimates from `pg_database_size` and
-`du -sk /minio-data`; the app uses the 1 GB floor.
+| Check | Meaning |
+| --- | --- |
+| `checksums` | Each published file is read back against the SHA-256 recorded for it. |
+| `decrypt_test` | Each member is encrypted to the clinic certificate **and** a single-use verification key held only in memory-backed storage. The sidecar decrypts with that key, checks the plaintext hash, then deletes the key. The recovery key never enters the sidecar, and the envelope is checked to be addressed to the clinic certificate. |
+| `pg_restore_list` | The dump's table of contents is readable. |
+| `pg_verifybackup` | The physical full copy matches PostgreSQL's own backup manifest. |
+| `pg_waldump` | The WAL range inside the full copy parses from start to end LSN. |
+| `wal_chain` | Every archived change file from the copy's start segment to the newest one is present, intact and on the same timeline. |
 
-The same formula lives in two places that must agree:
-`storage.BackupNeed` in Go and `need_kb` in `backup.sh`.
+`manifest.json` is written to a temporary name and renamed into place. Only
+after that does `prune_previous` remove the older set and change files that
+are wholly older than the **new** full copy's start segment. If any step
+fails, the new files are discarded, the previous set and **every** change file
+stay, the status records the failure, and Backups raises an alert. If the new
+set was recorded but removing the old one failed, the new set is kept and the
+failure is still reported.
 
-| Where | Check | On failure |
-| --- | --- | --- |
-| Choosing a folder (setup and Backups tab) | `ValidateBackupDir` compares free space on the chosen drive with the need sized from the *current* folder's backups. | The folder is refused with both sizes. A folder on the clinic data drive is accepted, with a note recommending a USB drive. |
-| Every scheduled run | `check_space` before anything is written. | Nothing is written; `[backup] ERROR: not enough space in the backup folder`; retention skipped. |
-| Any step failing mid-run | `disk_full` re-reads `df`: under 256 MB free, or under the need, is classified as a full drive. | Reason `disk_full` instead of `error`. |
+Pre-update safety copies (`backup.sh once pre-update-<ts>`, used by the update
+coordinator's checkpoint) are a database dump plus files archive; only the
+newest safety copy is kept.
 
-Scheduled runs write `backup-state/backup-status` under the install folder
-(mounted at `/state`), never in the backup folder, which may be the full drive.
-A successful **Back up now** also writes `state=ok`, so it clears a failed daily
-run as the failure message suggests; a failed or refused manual backup leaves the
-file alone, so it never hides or overwrites the daily run's state:
+**Back up now** runs the same verified cycle (`backup.sh now`) inside the
+running sidecar; it is not a separate, less-checked path.
+
+### Space checks
+
+Because the previous set stays until the new one verifies, the backup folder
+must hold a second encrypted set beside the current one, and the data disk must
+hold the plaintext work area. `space_ok` sizes both from the live cluster and
+files volume, with a quarter for growth plus 256 MB and a 1 GB floor;
+[`storage.BackupNeed`](../app/internal/storage/backup.go) uses the same
+latest-set formula for folder choice and the Backups summary ("Room for the
+next backup; only the newest verified backup is kept"). A shortfall refuses
+before anything is written and records `disk_full`.
+
+### Continuous WAL archive
+
+The database runs with `wal_level=replica`, `archive_mode=on` and
+`archive_timeout=300`, set by
+[`db-entrypoint.sh`](../deployments/scripts/db-entrypoint.sh). Its
+`archive_command` is [`wal-archive.sh`](../deployments/scripts/wal-archive.sh):
+
+1. Compress the segment and encrypt it with `openssl cms` to the **same clinic
+   certificate** used for backups.
+2. Write `backups/wal/.tmp-*`, flush, verify, then rename to
+   `<segment>.gz.enc`, followed by a `<segment>.sha256` record (also via
+   temp-then-rename). A name already archived with different contents is
+   refused rather than overwritten.
+3. Return success to PostgreSQL only after both are published, so PostgreSQL
+   keeps the segment until it is safely archived.
+
+Timeline `.history` files are archived and copied but never pruned. The live
+clinic never changes timeline (restores swap a database inside the same
+cluster, and point-in-time replay happens in a throwaway cluster), so archived
+segments on a later timeline are treated as an unsupported branch: the
+`wal_chain` check refuses to record a set rather than claim an unbroken chain.
+
+Change files are deleted only after a **new** full copy is verified, and only
+those wholly older than that copy's start segment. A failed cycle deletes no
+change files.
+
+Every minute the sidecar writes `backup-state/wal-status`
+(`state`, `checked_at`, `saved_through`, `last_archived_at`, `last_failed_at`,
+`gap`, `message`). `saved_through` is the last moment nothing was waiting to
+be archived — the **changes saved through** time shown in Backups.
+
+### Point-in-time restore
+
+**Backups > Restore to a point in time** opens the restore dialog in time mode:
+"The latest saved change" or "A specific time". The time is bounded by:
+
+- **Earliest:** `base.ended_at`, when the physical copy became consistent
+  (not the start of the copy, which is not yet restorable).
+- **Latest:** `saved_through`, never earlier than `base.ended_at`. A moment
+  after the last archived change is refused rather than silently restoring to
+  an earlier point.
+
+It also requires a verified set, no WAL gap, the recovery file, the CARE
+Clinic admin password and replacement acknowledgement.
+
+`RestorePointInTime` ([`pitr.go`](../app/internal/backup/pitr.go)) re-checks
+those bounds in Go, then runs
+[`pitr-stage.sh`](../deployments/scripts/pitr-stage.sh) in a throwaway
+helper container with the backup folder read-only and no network. The helper:
+
+1. Verifies the full copy against the manifest and the WAL chain.
+2. Decrypts and extracts the full copy into the staging volume.
+3. Starts a private PostgreSQL with a `restore_command` that runs
+   [`wal-restore.sh`](../deployments/scripts/wal-restore.sh), which decrypts
+   each intact change file with the recovery key, plus
+   `recovery_target_time`, `recovery_target_action=promote` and
+   `recovery_target_timeline=current`.
+4. Waits for promotion. For a time target it requires PostgreSQL's
+   "recovery stopping before/after" record; replay that ran out of change
+   files fails here.
+5. Checks health and dumps the result.
+
+Only then does the normal journaled staged restore (section 6 onwards) load
+that dump into a staging database and swap it in. Uploaded files are not
+changed by a point-in-time restore. Any failure before the swap leaves the
+live database untouched.
+
+### Optional second copy
+
+**Backups > Extra copy (optional)** lets an administrator choose a USB drive,
+second disk or network folder (`SetBackupCopyDir` / `ClearBackupCopyDir`,
+stored as `BackupCopyDir` in the desktop config). The main backup always stays
+on the local backup folder.
+
+On each storage check (about every 5 minutes) the app's copier
+([`backupcopy`](../app/internal/backupcopy/copy.go)) mirrors the verified set
+and the contiguous WAL chain plus `.history` files into
+`<chosen>/care-backup-copy/`:
+
+- If the destination is absent, the state is **disconnected**: nothing is
+  created on the parent path, local backups and WAL archiving continue, and
+  Backups shows when it was last copied. The copy catches up on reconnect.
+- Each file is written to a temporary name, flushed, hashed back and renamed;
+  the copy's `manifest.json` is written last.
+- Files the new copy no longer needs are deleted only after everything else
+  verified.
+- The result is recorded in `backup-state/copy-status.json` and emitted as the
+  `care-backup-copy` event. A failure to record status is itself raised as an
+  alert (`copy_status_unwritable`).
+
+### Weekly trial restore
+
+At most once a week (`CARE_TRIAL_RESTORE_INTERVAL`, default 7 days) the cycle
+restores the new dump into a throwaway database, compares per-table row counts
+with counts taken before and after the dump, then drops the throwaway database.
+
+The trial runs only if free space on the database disk exceeds the database
+size plus a margin (a fifth of the database, at least 512 MB). Otherwise it is
+**skipped with a notice** in Backups. A failed trial fails the cycle, so the
+previous set is kept. The result is recorded in `manifest.json.trial_restore`.
+
+### Backups health and alerts
+
+`GetBackupHealth()` ([`storage/health.go`](../app/internal/storage/health.go))
+combines the manifest, `backup-status`, `wal-status` and `copy-status.json`.
+The Backups screen shows:
+
+- the last backup time
+- a **✓ Verified** badge, or "Not verified"
+- the **changes saved through** time
+- the weekly trial restore
+- the copy's state and its last-copied time
+
+| Alert | When |
+| --- | --- |
+| `no_backup`, `unverified`, `backup_stale`, `backup_failed` | No verified set; newest set missing a check; no verified set for over a day while running; last cycle failed (previous kept). |
+| `wal_failing`, `wal_stale`, `wal_off`, `wal_gap`, `wal_unknown` | PostgreSQL cannot archive; changes waiting too long; archiving off; missing segment; no report yet. |
+| `status_stale`, `status_unreadable` | The sidecar has not refreshed its status for 15 minutes (for example it cannot write `/state`); a status file is unreadable. |
+| `trial_failed`, `trial_skipped` | Weekly trial restore failed or was skipped for space. |
+| `copy_missing`, `copy_failed`, `copy_stale`, `copy_status_unwritable` | Copy drive disconnected (with last-copied time); copy failed; copy older than two days; copy status could not be saved. |
+
+The sidecar treats status persistence as part of the job. `write_status`,
+`stamp_file` and `write_wal_status` log an error and fail when `/state` is
+missing or unwritable. A cycle whose success cannot be recorded exits
+non-zero, so **Back up now** reports it.
+
+### Schedule, locking and statuses
+
+The sidecar loop checks WAL status every minute (`CARE_BACKUP_TICK`) and runs
+the cycle when it is due: one day after the last success
+(`CARE_BACKUP_INTERVAL`), or one hour after a failure (`CARE_BACKUP_RETRY`). It
+waits for PostgreSQL to accept connections first and records
+`database_unavailable` without touching files if it never does. `flock` on
+`.backup.lock` serializes the loop, **Back up now** and pre-update safety
+copies.
+
+`backup-state/backup-status` holds the last run:
 
 ```text
 state=failed        # running | ok | failed
-reason=disk_full    # disk_full | error | empty
+reason=disk_full    # disk_full | database_unavailable | error
 at=1767225600
 need_kb=1048576
 free_kb=1024
-message=not enough space in the backup folder
+message=not enough space for a new backup; the previous backup was kept
 ```
-
-The app reads it on each storage check. `failed` raises the red panel banner
-and an alert on the Backups tab with the sizes and a "Choose another folder"
-button. Independently, if the clinic is running, no run is in progress, and the
-newest backup file is more than 26 hours old, the report is marked `stale`,
-which catches a sidecar that is not running at all. A `running` state older than
-6 hours is treated as abandoned so a killed container cannot hide staleness.
-
-With retention `0` (keep forever) the Backups tab also shows roughly how many
-days of backups still fit: free space minus the need, divided by the newest set's
-size. Under 30 days is shown as `low`.
-
-Manual and scheduled backup creation share the same script implementation,
-including its certificate/database-password guards and locking. There is no
-second inline dump/encryption implementation in the Wails backend.
-
-### The schedule lives in the sidecar
-
-In its normal mode, the script attempts a complete set immediately, then sleeps
-for `86400` seconds after the attempt. It repeats while the container runs.
-
-This is not a midnight cron job, a Wails timer, a missed-run catch-up mechanism,
-or a cloud backup service. Cycle duration is additional to the sleep interval.
-After a failed cycle it logs the failure and still sleeps before its next
-attempt.
-
-The script refuses to start without `/keys/backup-cert.pem` or a nonempty
-`POSTGRES_PASSWORD`. It defaults other database connection values to host `db`,
-port `5432`, user `postgres`, and database `care`.
-
-Both scheduled and manual backups wait for PostgreSQL to accept connections
-before dumping. Docker can restart the sidecar before the database after a
-runtime reboot, without reapplying Compose's initial `depends_on` ordering.
-Readiness uses the configured database connection values, with at most 30
-`pg_isready` checks, each bounded to five seconds and separated by five seconds.
-A scheduled attempt remains `running` while waiting. If the database never
-becomes ready, it records `database_unavailable`, skips all dump/archive and
-retention work, and reports the database problem rather than blaming the backup
-folder. Existing backup files remain untouched. A later successful scheduled or
-manual backup clears the failure status.
-
-### Locking and publication
-
-```mermaid
-flowchart TD
-    Request["Scheduled cycle or manual once"] --> Lock["Acquire exclusive flock on .backup.lock"]
-    Lock --> Collision["Reject existing final paths, including dangling links"]
-    Collision --> Ready["Wait for PostgreSQL to accept connections"]
-    Ready --> Dump["pg_dump -Fc into hidden plaintext file"]
-    Dump --> Verify["pg_restore --list"]
-    Verify --> Encrypt["CMS encrypt into hidden encrypted file"]
-    Encrypt --> Remove["Remove plaintext; fail if removal fails"]
-    Remove --> Publish["Rename encrypted file to final dump name"]
-    Publish --> Files["Archive and verify storage files; encrypt; remove plaintext; rename"]
-    Files --> Mode{"Scheduled?"}
-    Mode -- No --> Unlock["Release lock and return"]
-    Mode -- Yes --> Prune["Remove abandoned intermediates and apply retention"]
-    Prune --> Result["Report success only if all required steps succeeded"]
-    Result --> Sleep["Release lock, then sleep 86400 seconds"]
-```
-
-`flock -x` on file descriptor 9 serializes cooperating manual and scheduled
-writers in the same backup folder. A waiting manual backup does not prune an
-active scheduled backup's intermediate files. The scheduled loop releases the
-lock before sleeping. The lock is advisory: unrelated programs that ignore it
-can still modify the folder.
-
-Before a scheduled or manual set starts, **both** final output paths must be unused. Existing files, directories, and even
-dangling symbolic links at those final names cause refusal rather than
-intentional replacement.
-
-Each individual file follows this order:
-
-1. Write plaintext under a hidden intermediate name.
-2. Verify its format.
-3. Encrypt to another intermediate name.
-4. Remove plaintext and check that removal succeeded.
-5. Rename the encrypted intermediate file to its final name in the same folder.
-
-For the database, capture-time verification is `pg_restore --list`. For files,
-`tar -czf` must succeed, the archive must be nonempty, and `tar -tzf` must
-succeed. A failed archive operation is not excused merely because it left a
-readable-looking output file.
-
-The files command archives `.` from the storage volume root, including its
-hidden contents. It is a filesystem archive of that volume's layout, not an
-object-by-object export through the storage API.
-
-The final-name rename gives **per-file atomic publication** under normal
-same-filesystem rename semantics. It does not atomically publish the two files
-as one set. A database dump may remain published if the later files step fails.
-The script also does not explicitly fsync its published backup files and
-directory as the restore journal writer does. Do not turn atomic publication
-into a blanket power-loss durability claim.
-
-### Retention `0` really means keep published backups
-
-The script reads `DB_BACKUP_RETENTION_PERIOD`, defaulting an absent/empty value
-to `0`. The settings editor's validation and persistence of the literal zero
-are described in [configuration and settings](configuration-and-settings.md).
-
-After both members of a scheduled set publish, `prune()`:
-
-1. Deletes top-level **regular files** matching `.care-*.tmp*` or
-   `.files-*.tmp*`.
-2. With retention `0`, keeps published backups and returns.
-3. Otherwise deletes top-level regular files matching `care-*.dump*` or
-   `files-*.tar.gz*` using `find -mtime +<days>`.
-
-Consequences:
-
-- Zero does not mean "disable backups" or "delete everything".
-- Zero still permits removal of abandoned intermediate files after a successful
-  scheduled set.
-- Age is based on filesystem modification time and `find`'s whole-day
-  calculation, not the filename's timestamp or a count of retained sets.
-- Manual dumps and manual files archives match the retention globs too,
-  although manual mode itself never calls `prune()`.
-- Directories, nested contents, and symbolic links are not recursively pruned.
-- The recovery key and `.backup.lock` are not retention targets.
-- The shell globs are broader than the Go restore filename expressions. Keep
-  unrelated files with backup-like names out of this directory.
-
-The log says it is deleting old "sets", but deletion is actually file-by-file.
-There is no database/files transaction for pruning.
-
-### Failures are not all equivalent
-
-| Failure point | What can already exist | Reported behavior |
-| --- | --- | --- |
-| Certificate/password guard or lock acquisition | Existing backups remain; no new set is intentionally written. | Refuse startup/attempt. |
-| Not enough free space | Nothing new. | Refuse before writing; status `failed` / `disk_full`; retention skipped. |
-| Final-name collision | The colliding entry is retained. | Refuse overwrite before the relevant work; scheduled mode checks both names before dumping. |
-| Dump, verification, encryption, or publication | An intermediate file can remain if cleanup also fails. | Fail the step; skip retention. |
-| Files step after dump publication | A new database-only dump may already be visible. | Fail the set; skip retention, rather than claiming a complete set. |
-| Plaintext removal | Plaintext may remain in the folder. | Refuse to publish that member as though cleanup succeeded. |
-| Temporary-file or retention pruning | Both new members are published; some cleanup deletions may already have happened. | Report "published, but cleanup FAILED", not success and not "every old backup retained". |
-
-An interrupted process or failed deletion can therefore leave plaintext
-intermediates. A later successful scheduled cycle attempts abandoned-file
-cleanup, but that is not a guarantee of immediate removal or secure erasure.
 
 ## 5. Discovering and selecting a restore
 
@@ -555,11 +579,11 @@ printing its filesystem location. Backups retains the effective destination
 and folder-management controls; hiding the summary path does not move files or
 change the backup policy.
 
-The policy card calls `GetBackupPolicy()` for the 86,400-second interval and
-installed retention value. Missing or invalid settings produce a retryable
-policy error, not a hard-coded default. The interval is not a fixed nightly
-time. Current backup activity and completion come from native state and events;
-request acceptance alone cannot mark a backup successful.
+The health card calls `GetBackupHealth()` (section 4) and also reads the
+`health` field of each storage report. It shows only the newest verified set;
+there is no retention setting. Current backup activity and completion come
+from native state and events; request acceptance alone cannot mark a backup
+successful.
 
 There is one visible **Restore from a backup file** route for local and imported
 files. It calls `ChooseBackupFile`, then `InspectBackupFile`, and presents the
@@ -1150,7 +1174,7 @@ cleanup**, not routine uninstall/purge. Do not apply its narrow "provably unused
 and ours" exception to keys protecting retained backups. Full lifecycle choices
 belong in [cleanup and uninstall](cleanup-and-uninstall.md).
 
-### Deletion has a different policy from retention
+### Explicit deletion versus latest-only replacement
 
 `DeleteBackups()` enumerates the selected folder's immediate entries:
 
@@ -1165,8 +1189,9 @@ belong in [cleanup and uninstall](cleanup-and-uninstall.md).
   back.
 
 A recognized symbolic link can be unlinked by explicit deletion, but its
-target is not recursively deleted. This differs from scheduled retention's
-`find -type f` behavior, which excludes symbolic links.
+target is not recursively deleted. The verified cycle's own replacement of the
+previous set (section 4) only removes regular files and its own `base-<ts>`
+folders, and only after the new set is recorded.
 
 Ownership here is a naming convention within the selected backup folder, not
 proof of who created the data. A personal file deliberately given a recognized
@@ -1183,16 +1208,16 @@ secure disk erasure.
 The code supports guarded backup creation and staged restore, but several
 boundaries are important:
 
-1. **A local backup is still local.** This subsystem does not upload offsite,
-   replicate to cloud storage, or protect against losing both the machine and
-   its backup drive.
+1. **A local backup is still local.** The optional second copy can live on a
+   USB drive or network folder, but nothing is uploaded to the cloud. Without
+   a second copy, losing the machine and its backup drive loses both.
 2. **A scheduled pair is not an application-wide snapshot.** PostgreSQL is
    dumped, then the storage volume is archived while ordinary services can
    still run. No cross-database/files snapshot transaction or quiescing step
    is implemented during backup capture.
-3. **Listing and encryption are not restore verification.** Names, `.enc`,
-   format checks, and a successful scheduled log do not prove usable clinical
-   data on a replacement machine.
+3. **Verification is strong but not a rehearsal.** Manifest checks, decrypt
+   tests and the weekly row-count trial restore catch most damage. They do not
+   prove that a full clinic on a replacement machine starts with that data.
 4. **Restore requires working infrastructure.** Docker/Compose, compatible
    images, required command-line tools, readable connection settings, and
    sufficient privileges must be available. Prepared recovery cannot succeed
@@ -1239,7 +1264,9 @@ this machine or proof of real-world disaster recovery.
 | [`crypto_test.go`](../app/internal/backup/crypto_test.go) | Recovery-file matching; public-only installation; non-overwrite; symlink/location rejection; certificate ownership and cleanup; real OpenSSL CMS round trip. | Uses synthetic data and production-sized keys. OpenSSL absence skips the CLI round trip; symlink cases skip on Windows. |
 | [`restore_test.go`](../app/internal/backup/restore_test.go) | Unsafe input rejection before Docker; preparation failures preserving live data; rollback before commitment; committed recovery preserving new writes; missing/foreign-resource refusal; journal validation; environment-only secret values; manual scope; pairing rules; resumable cleanup. | Docker is a test double implemented by rerunning the Go test binary. Database IDs, file contents, and container states are synthetic. It does not exercise a real Docker activation/health sequence. POSIX fixture cases skip on Windows. |
 | [`restore_archive_test.go`](../app/internal/backup/restore_archive_test.go) | Real Python validation of synthetic regular/corrupt/truncated/path-escaping/link archives. An isolated PostgreSQL fixture tests full-payload validation, transactional load, quoted database names, tagged-session termination, transactional rename failure, swap, and rollback. | Python case skips without `python3`. PostgreSQL case skips on Windows, as root, or without its local PostgreSQL tools. It starts its own local fixture with TCP listening disabled, not a live clinic. No Docker-volume or power-loss disaster is reproduced. |
-| [`backup_script_test.go`](../app/internal/clinic/backup_script_test.go) | Scheduled/manual failure reporting; plaintext and publication cleanup; partial prune failures; zero/positive retention; top-level-only deletion; collision refusal; writer serialization and lock release before sleep. | Uses isolated folders and command wrappers. Dump, encryption, and archive commands are simulated, so it does not prove real encryption/compression or capture consistency. POSIX shell required; serialization cases skip without native `flock`. |
+| [`backup_script_test.go`](../app/internal/clinic/backup_script_test.go) | Real OpenSSL/jq against faked PostgreSQL tools. Covers: WAL encryption and atomic publication; replace-previous-only-after-verification; failure keeps the previous set and all WAL; start-LSN WAL pruning; refusal of later-timeline segments; trial-restore space gating; status-write and missing `/state` failures; `pitr-stage.sh` refusing an unreached target; collision refusal; writer serialization. | PostgreSQL programs, `df`, `flock` and the clock are simulated. POSIX shell required; serialization cases skip without native `flock`. |
+| [`pitr_test.go`](../app/internal/backup/pitr_test.go) | Point-in-time bounds (earliest = `base.ended_at`, latest = saved-through), WAL-gap refusal before any helper runs, and the staged replay → stage-db → swap order. | Docker is the same re-executed test double as `restore_test.go`. |
+| [`health_test.go`](../app/internal/storage/health_test.go) and [`copy_test.go`](../app/internal/backupcopy/copy_test.go) | Health alerts and saved-through; copy disconnected and reconnect catch-up; temp-then-rename; prune only after verification; missing WAL never marked current; status-write errors surfaced. | Filesystem fixtures only. |
 
 Two particularly useful regression distinctions are:
 
@@ -1278,16 +1305,20 @@ This is the complete Go-file inventory owned by this guide.
 | [`app/internal/backup/crypto_test.go`](../app/internal/backup/crypto_test.go) | Key preservation, non-overwrite, foreign data, safe location/deletion, and certificate recovery regressions. |
 | [`app/internal/backup/restore_test.go`](../app/internal/backup/restore_test.go) | Synthetic Docker/state fixture and restore input, interruption, commitment, cleanup, ownership, secret-transport, and listing regressions. |
 | [`app/internal/backup/restore_archive_test.go`](../app/internal/backup/restore_archive_test.go) | Synthetic archive tests through Python plus tool-gated, isolated PostgreSQL payload/transaction/session/swap regressions. |
-| [`app/internal/clinic/backup.go`](../app/internal/clinic/backup.go) | `Clinic.BackupNow`: encryption-presence guard, timestamp generation, existing-sidecar one-shot execution, and database-only completion logging. |
+| [`app/internal/clinic/backup.go`](../app/internal/clinic/backup.go) | `Clinic.BackupNow`: encryption and space guards, then the sidecar's verified cycle (`backup.sh now`). |
+| [`app/internal/backup/pitr.go`](../app/internal/backup/pitr.go) | `RestorePointInTime`, `PITRTarget` and `SavedThrough` bounds, and the staged replay helper. |
+| [`app/internal/storage/health.go`](../app/internal/storage/health.go) | Manifest, WAL and copy status, and `ReadHealth` alerts. |
+| [`app/internal/backupcopy/copy.go`](../app/internal/backupcopy/copy.go) | Optional verified second copy. |
 | [`app/internal/clinic/backupstore.go`](../app/internal/clinic/backupstore.go) | Compose project constant, clinic-to-store dependency/callback wiring, effective backup path, and recovery-before-sidecar-restart. |
-| [`app/internal/clinic/backup_script_test.go`](../app/internal/clinic/backup_script_test.go) | Isolated shell-script fixtures for success/failure reporting, retention, publication, collision checks, manual scope, and locking. |
+| [`app/internal/clinic/backup_script_test.go`](../app/internal/clinic/backup_script_test.go) | Isolated shell-script fixtures for the verified cycle, WAL archive/restore, latest-only replacement, trial restore, status reporting, staging replay and locking. |
 
 The two runtime deployment sources in scope are:
 
 | Source file | Current role |
 | --- | --- |
-| [`deployments/scripts/backup.sh`](../deployments/scripts/backup.sh) | Unattended loop and manual one-shot mode; free-space check, encrypted database/files publication, advisory locking, temporary cleanup, retention, and the `backup-status` file. |
-| [`storage/backup.go`](../app/internal/storage/backup.go) | Newest-set sizing, `BackupNeed`, days-left estimate, and `backup-status` parsing. |
+| [`deployments/scripts/backup.sh`](../deployments/scripts/backup.sh) | Sidecar loop, `now` and pre-update modes. Covers: verified latest-only cycle, manifest, trial restore, WAL status, start-segment pruning, and status files. |
+| [`deployments/scripts/backup-lib.sh`](../deployments/scripts/backup-lib.sh), [`wal-archive.sh`](../deployments/scripts/wal-archive.sh), [`wal-restore.sh`](../deployments/scripts/wal-restore.sh), [`pitr-stage.sh`](../deployments/scripts/pitr-stage.sh), [`db-entrypoint.sh`](../deployments/scripts/db-entrypoint.sh) | Shared WAL helpers, encrypted archive/restore commands, staged point-in-time replay, and database WAL settings. |
+| [`storage/backup.go`](../app/internal/storage/backup.go) | Latest-set sizing, `BackupNeed`, and `backup-status` parsing. |
 | [`deployments/backup.Dockerfile`](../deployments/backup.Dockerfile) | PostgreSQL-image-derived tool image with OpenSSL added. |
 
 ### Current restore architecture

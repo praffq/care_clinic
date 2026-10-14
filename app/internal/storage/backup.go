@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,82 +19,57 @@ const (
 type BackupSet struct {
 	Stamp      string    `json:"stamp"`
 	At         time.Time `json:"-"`
+	BaseBytes  uint64    `json:"base_bytes"`
 	DumpBytes  uint64    `json:"dump_bytes"`
 	FilesBytes uint64    `json:"files_bytes"`
-	Manual     bool      `json:"manual"`
 }
 
-func (s BackupSet) Bytes() uint64 { return s.DumpBytes + s.FilesBytes }
+func (s BackupSet) Bytes() uint64 { return s.BaseBytes + s.DumpBytes + s.FilesBytes }
 
-var dailyDump = regexp.MustCompile(`^care-(\d{8}-\d{6})\.dump(?:\.enc)?$`)
-var manualDump = regexp.MustCompile(`^care-manual-(\d{8}-\d{6})\.dump(?:\.enc)?$`)
+var setDump = regexp.MustCompile(`^care-(\d{8}-\d{6})\.dump\.enc$`)
 
-func LatestSets(dir string) (daily, newest BackupSet, found bool, err error) {
+// LatestSet finds the newest verified-set dump (not pre-update safety copies)
+// and sizes it together with its full copy and files archive.
+func LatestSet(dir string) (BackupSet, bool, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return BackupSet{}, BackupSet{}, false, nil
+		return BackupSet{}, false, nil
 	}
 	if err != nil {
-		return BackupSet{}, BackupSet{}, false, err
+		return BackupSet{}, false, err
 	}
-	sizes := map[string]uint64{}
-	var sets []BackupSet
+	var set BackupSet
+	found := false
 	for _, en := range entries {
+		m := setDump.FindStringSubmatch(en.Name())
+		if m == nil || (found && m[1] <= set.Stamp) {
+			continue
+		}
 		info, err := en.Info()
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		sizes[en.Name()] = uint64(info.Size())
-		if m := dailyDump.FindStringSubmatch(en.Name()); m != nil {
-			sets = append(sets, BackupSet{Stamp: m[1], At: info.ModTime(), DumpBytes: uint64(info.Size())})
-		} else if m := manualDump.FindStringSubmatch(en.Name()); m != nil {
-			sets = append(sets, BackupSet{Stamp: m[1], At: info.ModTime(), DumpBytes: uint64(info.Size()), Manual: true})
-		}
+		set, found = BackupSet{Stamp: m[1], At: info.ModTime(), DumpBytes: uint64(info.Size())}, true
 	}
-	for i := range sets {
-		prefix := "files-"
-		if sets[i].Manual {
-			prefix = "files-manual-"
-		}
-		for _, name := range []string{prefix + sets[i].Stamp + ".tar.gz.enc", prefix + sets[i].Stamp + ".tar.gz"} {
-			if n, ok := sizes[name]; ok {
-				sets[i].FilesBytes = n
-				break
-			}
-		}
+	if !found {
+		return BackupSet{}, false, nil
 	}
-	if len(sets) == 0 {
-		return BackupSet{}, BackupSet{}, false, nil
+	if info, err := os.Lstat(filepath.Join(dir, "files-"+set.Stamp+".tar.gz.enc")); err == nil && info.Mode().IsRegular() {
+		set.FilesBytes = uint64(info.Size())
 	}
-	sort.Slice(sets, func(i, j int) bool { return sets[i].Stamp > sets[j].Stamp })
-	newest = sets[0]
-	daily = newest
-	for _, s := range sets {
-		if !s.Manual {
-			daily = s
-			break
-		}
+	if info, err := os.Lstat(filepath.Join(dir, "base-"+set.Stamp, "base.tar.gz.enc")); err == nil && info.Mode().IsRegular() {
+		set.BaseBytes = uint64(info.Size())
 	}
-	return daily, newest, true, nil
+	return set, true, nil
 }
 
+// BackupNeed is the room a new set needs beside the current one: only one set
+// is kept, but the previous set is deleted after the new one is verified.
 func BackupNeed(set BackupSet, found bool) uint64 {
 	if !found {
 		return BackupFloor
 	}
-	d, f := set.DumpBytes, set.FilesBytes
-	peak := max(2*d, d+2*f)
-	return max(peak*5/4+backupMargin, BackupFloor)
-}
-
-func DaysLeft(free, need, perDay uint64) int {
-	if perDay == 0 {
-		return -1
-	}
-	if free <= need {
-		return 0
-	}
-	return int((free - need) / perDay)
+	return max(set.Bytes()*5/4+backupMargin, BackupFloor)
 }
 
 type BackupRun struct {

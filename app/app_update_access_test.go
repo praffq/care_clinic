@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -14,7 +13,7 @@ type updateTransport func(*http.Request) (*http.Response, error)
 
 func (f updateTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
+func TestClinicAppUpdateDoesNotUseUnsignedLatestReleaseListing(t *testing.T) {
 	for _, role := range []string{"", roleClient, roleServer} {
 		t.Run("role="+role, func(t *testing.T) {
 			a := roleApp(t)
@@ -24,11 +23,8 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 			var requests atomic.Int32
 			original := http.DefaultClient
 			http.DefaultClient = &http.Client{Transport: updateTransport(func(r *http.Request) (*http.Response, error) {
-				if r.URL.String() != releasesAPI {
-					return nil, fmt.Errorf("unexpected update request: %s", r.URL)
-				}
 				requests.Add(1)
-				// No newer version: exercise the asynchronous failure path without replacing the app.
+				// The coordinator no longer trusts the unsigned GitHub "latest" listing.
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1.2.3","assets":[
@@ -51,8 +47,8 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			a.jobMu.Unlock()
-			if requests.Load() != 1 {
-				t.Fatal("update did not reach the release check")
+			if requests.Load() != 0 {
+				t.Fatal("desktop update used the unsigned GitHub latest-release listing")
 			}
 			if a.loadConfig() != before || a.activeJob.Load() != "" {
 				t.Fatal("desktop update changed clinic setup or left a busy job")

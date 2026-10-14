@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
 
@@ -38,18 +39,17 @@ func migrationFixture(t *testing.T) (*Clinic, func() string, string) {
 	trace, credentials := filepath.Join(root, "calls"), filepath.Join(root, "credentials")
 	t.Setenv("CARE_MIGRATION_TRACE", trace)
 	t.Setenv("CARE_MIGRATION_CREDENTIALS", credentials)
-	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	const fixtureRef = "0123456789abcdef0123456789abcdef01234567"
 	digest := "@sha256:" + strings.Repeat("a", 64)
-	lock := `{"line":"fixture","backend":{"current":{"commit":"` + fixtureRef + `","image":"fixture/backend` + digest +
+	lock := `{"version":"3.1.0","backend":{"current":{"commit":"` + fixtureRef + `","image":"fixture/backend` + digest +
 		`","builder":"fixture/backend-builder` + digest + `"}},"frontend":{"current":{"commit":"` + fixtureRef +
-		`","image":"fixture/frontend` + digest + `","builder":"fixture/frontend-builder` + digest + `","runtime_keys":["REACT_CARE_API_URL"]}}}`
+		`","image":"fixture/frontend` + digest + `","builder":"fixture/frontend-builder` + digest + `"}}}`
 	hash := func(data string) string {
 		sum := sha256.Sum256([]byte(data))
 		return hex.EncodeToString(sum[:])[:12]
 	}
 	pins := &release.Pins{
-		AppVersion: "fixture", DefaultLine: "fixture",
+		AppVersion: "fixture", CAREVersion: "3.1.0",
 		BackendImage: "fixture-backend", FrontendImage: "fixture-frontend", BackupImage: "fixture-backup",
 		CaddyWafImage: "fixture-caddy", CaddyImage: "fixture-caddy-base", PostgresImage: "fixture-postgres", CorazaVersion: "fixture",
 	}
@@ -104,21 +104,25 @@ esac
 exit 99
 `
 	for path, data := range map[string]string{
-		"docker":            script,
-		"backend.env":       "POSTGRES_PASSWORD='SyntheticDatabaseSecret'\nDATABASE_URL='postgres://fixture:SyntheticURLSecret@db:5432/care?sslmode=disable'\n",
-		"frontend.env":      "",
-		"backup.Dockerfile": "synthetic-backup",
-		"caddy.Dockerfile":  "synthetic-caddy",
-		"line.json":         lock,
+		"engine-docker":              script,
+		"docker-compose.yml":         "services: {}\n",
+		"backend-plugins.Dockerfile": "FROM fixture\n",
+		"backend.env":                "POSTGRES_PASSWORD='SyntheticDatabaseSecret'\nDATABASE_URL='postgres://fixture:SyntheticURLSecret@db:5432/care?sslmode=disable'\n",
+		"frontend.env":               "",
+		"backup.Dockerfile":          "synthetic-backup",
+		"caddy.Dockerfile":           "synthetic-caddy",
+		"care-images.json":           lock,
 	} {
 		mode := os.FileMode(0o600)
-		if path == "docker" {
+		if path == "engine-docker" {
 			mode = 0o700
 		}
 		if err := os.WriteFile(filepath.Join(root, path), []byte(data), mode); err != nil {
 			t.Fatal(err)
 		}
 	}
+	agent := enginetest.New(t, nil).Install(t)
+	agent.SetHandler(agent.Exec(filepath.Join(root, "engine-docker")))
 	e := &Clinic{InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: pins, AdminPassword: "SyntheticAdminSecret123"}
 	readTrace := func() string {
 		t.Helper()

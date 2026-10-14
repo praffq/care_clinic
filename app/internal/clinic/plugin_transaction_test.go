@@ -27,7 +27,7 @@ case "$1 $2" in
   'image tag')
     case "$4" in
       *-plugin-rollback) ;;
-      *) touch recovering ;;
+      *) touch "$CARE_MIGRATION_TRACE.recovering" ;;
     esac
     exit 0 ;;
   'image rm') exit 0 ;;
@@ -39,7 +39,7 @@ case "$1 $2" in
     exit 0 ;;
   'compose stop') exit 0 ;;
   'compose up')
-    if [ -f recovering ]; then
+    if [ -f "$CARE_MIGRATION_TRACE.recovering" ]; then
       [ "$CARE_PLUGIN_RECOVERY_FAILURE" != yes ]; exit $?
     fi
     case "$*" in
@@ -62,12 +62,12 @@ case "$*" in
     exit 0 ;;
   *' manage.py migrate --noinput') [ "$CARE_PLUGIN_FAILURE" != migration ]; exit $? ;;
   *' shell '*)
-    [ -f recovering ] && exit 0
+    [ -f "$CARE_MIGRATION_TRACE.recovering" ] && exit 0
     [ "$CARE_PLUGIN_FAILURE" != sync ]; exit $? ;;
 esac
 exit 99
 `
-	if err := os.WriteFile(filepath.Join(e.InstallDir, "docker"), []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(e.InstallDir, "engine-docker"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	list := []plugins.Plugin{{

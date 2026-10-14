@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/netfix"
@@ -244,16 +245,18 @@ func (h *host) clinicAvailable(ctx context.Context, c AdvertisementConfig) (bool
 	if !ready {
 		return false, nil
 	}
-	env := append(os.Environ(), Env()...)
-	run := proc.Runner{Ctx: ctx, Env: env}
+	run := proc.Runner{Ctx: ctx}
+	if h.g != nil {
+		run.Agent = &engine.Client{HTTP: h.g.http}
+	}
 	// Inspect the actual daemon, not a public port that another process could own.
-	out, err := run.Capture(filepath.Join(BinDir(), exe("docker")), "ps",
+	out, err := run.AgentCapture("ps",
 		"--filter", "label=com.docker.compose.project=care-clinic",
 		"--format", `{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}`)
 	if err != nil {
 		return false, fmt.Errorf("could not check the advertised clinic containers: %w", err)
 	}
-	if !clinicContainersAvailable(out, c.InstallDir) {
+	if !clinicContainersAvailable(out, "/var/lib/care/clinic") {
 		return false, nil
 	}
 	if err := probeClinic(ctx, "https://127.0.0.1/ping/", mdns.Label(c.Name)+".local"); err != nil {
@@ -287,7 +290,7 @@ func clinicContainersAvailable(out, install string) bool {
 	services := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		service, dir, ok := strings.Cut(line, "|")
-		if ok && (filepath.Clean(dir) == filepath.Clean(install) || dir == GuestPath(install)) {
+		if ok && dir == install {
 			services[service] = true
 		}
 	}

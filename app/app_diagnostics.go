@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,20 +14,19 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-func (a *App) ExportDiagnostics() (err error) {
+const supportLogWarning = "This file contains clinic passwords. Share it only with the CARE support team."
+
+func (a *App) ExportDiagnostics(passwordWarningAccepted bool) (err error) {
 	defer a.logError(&err)
-	yes, err := a.askToProceed("Export diagnostics",
-		"Logs may contain patient information, URLs or other sensitive details. Review the ZIP before sharing it. Nothing is uploaded automatically.",
-		"Export")
-	if err != nil || !yes {
-		return err
+	if !passwordWarningAccepted {
+		return fmt.Errorf("export cancelled: the clinic-password warning must be acknowledged first")
 	}
 	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{
-		Title: "Save CARE diagnostics", DefaultFilename: "care-diagnostics-" + time.Now().Format("20060102-150405") + ".zip",
+		Title: "Save CARE support logs", DefaultFilename: "care-support-logs-" + time.Now().Format("20060102-150405") + ".zip",
 		Filters: []wruntime.FileFilter{{DisplayName: "ZIP archive", Pattern: "*.zip"}},
 	})
 	if err != nil || path == "" {
@@ -42,16 +43,33 @@ func (a *App) ExportDiagnostics() (err error) {
 	metadata := map[string]string{
 		"app_version": a.pins.AppVersion, "engine_version": a.pins.CareVMVersion,
 		"platform": runtime.GOOS + "/" + runtime.GOARCH, "captured_at": time.Now().UTC().Format(time.RFC3339),
-		"warning": "Logs may contain sensitive information. Review before sharing.",
+		"warning": supportLogWarning,
 	}
 	lock := compose.ReadLock(a.installDir())
-	metadata["care_line"] = lock.Line
+	metadata["care_version"] = a.pins.CAREVersion
 	metadata["backend_commit"] = lock.Get("backend").Current.Commit
 	metadata["frontend_commit"] = lock.Get("frontend").Current.Commit
-	if err := writeDiagnostics(dir, path, metadata); err != nil {
+	health := map[string]any{"engine": a.EngineStatus()}
+	status, statusErr := a.engine().Status()
+	health["clinic_status"] = status
+	if statusErr != nil {
+		health["clinic_status_error"] = statusErr.Error()
+	}
+	if version, err := a.engine().Runner().AgentCaptureIn(5*time.Second, nil, "version", "--format", "{{.Server.Version}}"); err != nil {
+		health["engine_agent_error"] = err.Error()
+	} else {
+		health["engine_agent_version"] = version
+	}
+	// The engine journal comes from the CARE agent on every platform: the
+	// helper VM on macOS/Windows and the native agent socket on Linux.
+	var journal bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	vm.WriteDiagnostics(ctx, &journal)
+	cancel()
+	if err := writeDiagnostics(dir, filepath.Join(a.installDir(), "updates"), a.installDir(), path, metadata, health, journal.Bytes()); err != nil {
 		return err
 	}
-	a.logln("Diagnostics saved to " + path)
+	a.logln("CARE support log bundle saved locally to " + path)
 	return nil
 }
 
@@ -62,7 +80,13 @@ func diagnosticsPathInsideLogDir(rel string, relErr error) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
-func writeDiagnostics(root, dest string, metadata map[string]string) (err error) {
+type diagnosticFile struct {
+	path string
+	name string
+	size int64
+}
+
+func writeDiagnostics(logRoot, updatesRoot, installRoot, dest string, metadata map[string]string, health any, engineJournal []byte) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(dest), ".care-diagnostics-*.zip")
 	if err != nil {
 		return err
@@ -79,51 +103,63 @@ func writeDiagnostics(root, dest string, metadata map[string]string) (err error)
 	if err := json.NewEncoder(meta).Encode(metadata); err != nil {
 		return err
 	}
-	var total int64
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || d.Type()&os.ModeSymlink != 0 || !applog.IsLog(d.Name()) {
-			return nil
-		}
-		f, err := os.Open(path)
-		if os.IsNotExist(err) {
-			return nil // rotated between listing and opening
-		}
-		if err != nil {
-			return err
-		}
-		defer func() { _ = f.Close() }()
-		info, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		size := min(info.Size(), int64(10<<20))
-		if total+size > applog.LogBudget {
-			return fmt.Errorf("diagnostics exceed the 500 MB limit; try again after log retention runs")
-		}
-		if _, err := f.Seek(info.Size()-size, io.SeekStart); err != nil {
-			return err
-		}
-		name, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		out, err := archive.Create(filepath.ToSlash(name))
-		if err != nil {
-			return err
-		}
-		n, err := io.Copy(out, io.LimitReader(f, size))
-		total += n
+	healthFile, err := archive.Create("health.json")
+	if err != nil {
 		return err
-	})
+	}
+	if err := json.NewEncoder(healthFile).Encode(health); err != nil {
+		return err
+	}
+	if len(engineJournal) > 0 {
+		journal, err := archive.Create("engine/journal.txt")
+		if err == nil {
+			_, err = journal.Write(engineJournal)
+		}
+		if err != nil {
+			_ = archive.Close()
+			return err
+		}
+	}
+	files, err := collectDiagnosticFiles(logRoot, updatesRoot, installRoot)
 	if err != nil {
 		_ = archive.Close()
 		return err
+	}
+	var total int64
+	for _, item := range files {
+		if item.size > 0 && total+item.size > 500<<20 {
+			_ = archive.Close()
+			return fmt.Errorf("support log bundle exceeds the 500 MB limit; clear old logs or free disk space and retry")
+		}
+		f, err := os.Open(item.path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			_ = archive.Close()
+			return fmt.Errorf("open support log file %s: %w", item.name, err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			_ = archive.Close()
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			_ = f.Close()
+			continue
+		}
+		out, err := archive.Create(item.name)
+		if err == nil {
+			var n int64
+			n, err = io.Copy(out, f)
+			total += n
+		}
+		_ = f.Close()
+		if err != nil {
+			_ = archive.Close()
+			return fmt.Errorf("add support log file %s: %w", item.name, err)
+		}
 	}
 	if err := archive.Close(); err != nil {
 		return err
@@ -132,4 +168,58 @@ func writeDiagnostics(root, dest string, metadata map[string]string) (err error)
 		return err
 	}
 	return os.Rename(tmp.Name(), dest)
+}
+
+func collectDiagnosticFiles(logRoot, updatesRoot, installRoot string) ([]diagnosticFile, error) {
+	var files []diagnosticFile
+	for _, root := range []struct {
+		path   string
+		prefix string
+	}{{logRoot, "logs"}, {updatesRoot, "updates"}} {
+		err := filepath.WalkDir(root.path, func(path string, entry os.DirEntry, walkErr error) error {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(root.path, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, diagnosticFile{path: path, name: filepath.ToSlash(filepath.Join(root.prefix, rel)), size: info.Size()})
+			return nil
+		})
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range []string{".env", "backend.env", "frontend.env", "backend.overrides.env", "frontend.overrides.env", "secrets.env", "env-defaults.yml"} {
+		path := filepath.Join(installRoot, name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
+		files = append(files, diagnosticFile{path: path, name: filepath.ToSlash(filepath.Join("env", name)), size: info.Size()})
+	}
+	return files, nil
 }

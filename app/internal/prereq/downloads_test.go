@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -276,7 +275,11 @@ func deploymentPins(t *testing.T) *release.Pins {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pins, err := release.Load(data)
+	config, err := os.ReadFile("../../../versions.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins, err := release.LoadSource(config, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,11 +303,11 @@ func pinnedDownloads(t *testing.T, p *release.Pins) []Download {
 		}
 	}
 	for _, goarch := range []string{"amd64", "arm64"} {
-		engine, compose, err := dockerLinuxDownloads(p, goarch)
+		engine, err := dockerLinuxDownloads(p, goarch)
 		if err != nil {
 			t.Fatal(err)
 		}
-		all = append(all, engine, compose)
+		all = append(all, engine)
 	}
 	return all
 }
@@ -319,12 +322,12 @@ func TestWindowsQEMUUsesDeploymentPins(t *testing.T) {
 		Name: "qemu-w64-setup-20250826.exe", URL: p.QEMUWindowsURL,
 		SHA256: p.QEMUWindowsSHA256,
 	}
-	if len(downloads) != 6 || downloads[3] != want ||
-		downloads[4].URL != p.SevenZipBootstrapURL || downloads[4].SHA256 != p.SevenZipBootstrapSHA256 ||
-		downloads[5].URL != p.SevenZipWindowsURL || downloads[5].SHA256 != p.SevenZipWindowsSHA256 {
+	if len(downloads) != 4 || downloads[1] != want ||
+		downloads[2].URL != p.SevenZipBootstrapURL || downloads[2].SHA256 != p.SevenZipBootstrapSHA256 ||
+		downloads[3].URL != p.SevenZipWindowsURL || downloads[3].SHA256 != p.SevenZipWindowsSHA256 {
 		t.Fatalf("Windows provisioning must automatically include pinned QEMU: %+v", downloads)
 	}
-	for _, d := range downloads[3:] {
+	for _, d := range downloads[1:] {
 		if strings.Contains(d.URL, p.CareVMBaseURL) {
 			t.Fatalf("third-party software must download directly from upstream: %+v", d)
 		}
@@ -338,33 +341,23 @@ func TestEngineDownloadsMatchPlatform(t *testing.T) {
 	p := &release.Pins{
 		CareVMVersion: "0.1.0", CareVMBaseURL: "https://example.test/engine/",
 		CareVMAarch64SHA256: "vm-arm", CareVMX8664SHA256: "vm-intel",
-		DockerCLIVersion: "29.8.1", DockerCLIMacAarch64SHA256: "cli-arm", DockerCLIMacX8664SHA256: "cli-intel",
-		DockerCLIWindowsSHA256: "cli-win", ComposeLinuxVersion: "5.5.1",
-		ComposeMacAarch64SHA256: "compose-arm", ComposeMacX8664SHA256: "compose-intel", ComposeWindowsSHA256: "compose-win",
 		QEMUWindowsVersion: "10.1.0", QEMUWindowsSHA256: "qemu", QEMUWindowsURL: "https://qemu.example.test/setup.exe",
 		SevenZipBootstrapURL: "https://7zip.example.test/7zr.exe", SevenZipBootstrapSHA256: "bootstrap",
 		SevenZipWindowsURL: "https://7zip.example.test/7zip.exe", SevenZipWindowsSHA256: "extractor",
 	}
 
-	compose := "https://github.com/docker/compose/releases/download/v5.5.1/"
 	for _, tc := range []struct {
 		goos, goarch string
 		want         []Download
 	}{
 		{"darwin", "arm64", []Download{
 			{"care-engine-0.1.0-linux-arm64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-arm64.tar.gz", "vm-arm"},
-			{"docker-29.8.1.tgz", "https://download.docker.com/mac/static/stable/aarch64/docker-29.8.1.tgz", "cli-arm"},
-			{"docker-compose-darwin-aarch64", compose + "docker-compose-darwin-aarch64", "compose-arm"},
 		}},
 		{"darwin", "amd64", []Download{
 			{"care-engine-0.1.0-linux-amd64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-amd64.tar.gz", "vm-intel"},
-			{"docker-29.8.1.tgz", "https://download.docker.com/mac/static/stable/x86_64/docker-29.8.1.tgz", "cli-intel"},
-			{"docker-compose-darwin-x86_64", compose + "docker-compose-darwin-x86_64", "compose-intel"},
 		}},
 		{"windows", "amd64", []Download{
 			{"care-engine-0.1.0-linux-amd64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-amd64.tar.gz", "vm-intel"},
-			{"docker-29.8.1.zip", "https://download.docker.com/win/static/stable/x86_64/docker-29.8.1.zip", "cli-win"},
-			{"docker-compose-windows-x86_64.exe", compose + "docker-compose-windows-x86_64.exe", "compose-win"},
 			{"setup.exe", "https://qemu.example.test/setup.exe", "qemu"},
 			{"7zr.exe", "https://7zip.example.test/7zr.exe", "bootstrap"},
 			{"7zip.exe", "https://7zip.example.test/7zip.exe", "extractor"},
@@ -397,7 +390,7 @@ func TestWindowsUpstreamDownloadsRejectInvalidURLs(t *testing.T) {
 
 func TestIncompleteEngineDownloadsFailBeforeDownloading(t *testing.T) {
 	pr := &Provisioner{}
-	for _, count := range []int{0, 2, 4, 5, 6, 7} {
+	for _, count := range []int{0, 2, 3, 5, 6, 7} {
 		if err := pr.installEngineDownloads(make([]Download, count), nil); err == nil {
 			t.Fatalf("incomplete download configuration accepted: %d", count)
 		}
@@ -407,13 +400,12 @@ func TestIncompleteEngineDownloadsFailBeforeDownloading(t *testing.T) {
 func TestDockerLinuxDownloadsMatchArchitecture(t *testing.T) {
 	p := &release.Pins{
 		DockerLinuxVersion: "29.8.1", DockerLinuxX8664SHA256: "engine-intel", DockerLinuxAarch64SHA256: "engine-arm",
-		ComposeLinuxVersion: "5.5.1", ComposeLinuxX8664SHA256: "compose-intel", ComposeLinuxAarch64SHA256: "compose-arm",
 	}
-	for _, tc := range []struct{ goarch, arch, engineSum, composeSum string }{
-		{"amd64", "x86_64", "engine-intel", "compose-intel"},
-		{"arm64", "aarch64", "engine-arm", "compose-arm"},
+	for _, tc := range []struct{ goarch, arch, engineSum string }{
+		{"amd64", "x86_64", "engine-intel"},
+		{"arm64", "aarch64", "engine-arm"},
 	} {
-		engine, compose, err := dockerLinuxDownloads(p, tc.goarch)
+		engine, err := dockerLinuxDownloads(p, tc.goarch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,86 +414,62 @@ func TestDockerLinuxDownloadsMatchArchitecture(t *testing.T) {
 			URL:    "https://download.docker.com/linux/static/stable/" + tc.arch + "/docker-29.8.1.tgz",
 			SHA256: tc.engineSum,
 		}
-		wantCompose := Download{
-			Name:   "docker-compose-linux-" + tc.arch,
-			URL:    "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-" + tc.arch,
-			SHA256: tc.composeSum,
-		}
-		if engine != wantEngine || compose != wantCompose {
-			t.Errorf("%s: got %+v and %+v", tc.goarch, engine, compose)
+		if engine != wantEngine {
+			t.Errorf("%s: got %+v", tc.goarch, engine)
 		}
 	}
-	if _, _, err := dockerLinuxDownloads(p, "riscv64"); err == nil {
+	if _, err := dockerLinuxDownloads(p, "riscv64"); err == nil {
 		t.Error("riscv64: expected no Docker download")
 	}
 }
 
-func TestReleaseWorkflowVerifiesTheDownloadsTheAppUses(t *testing.T) {
-	if !proc.Exists("node") {
-		t.Skip("Node.js is not installed")
+func TestLinuxAgentDownloadsMatchSignedAssets(t *testing.T) {
+	base := "https://example.test/care-engine-v0.1.3"
+	p := release.EngineUpdate{Version: "0.1.3", Assets: map[string]release.Asset{}}
+	for _, tc := range []struct {
+		goarch, name, sum string
+	}{
+		{"amd64", "care-engine-agent-linux-amd64", strings.Repeat("a", 64)},
+		{"arm64", "care-engine-agent-linux-arm64", strings.Repeat("b", 64)},
+	} {
+		p.Assets["native-linux-"+tc.goarch] = release.Asset{URL: base + "/" + tc.name, SHA256: tc.sum, Size: 42}
+		got, err := linuxAgentDownload(p, tc.goarch)
+		want := Download{Name: tc.name, URL: base + "/" + tc.name, SHA256: tc.sum}
+		if err != nil || got != want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.goarch, got, err, want)
+		}
 	}
-	expected, err := json.Marshal(pinnedDownloads(t, deploymentPins(t)))
+	if _, err := linuxAgentDownload(p, "riscv64"); err == nil {
+		t.Error("riscv64: expected no native agent download")
+	}
+}
+
+// CI verifies every [tools] entry of versions.toml; the app must download
+// exactly those pinned URLs and checksums.
+func TestVersionsTOMLPinsTheDownloadsTheAppUses(t *testing.T) {
+	data, err := os.ReadFile("../../../" + release.ConfigFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := `
-const fs = require("fs");
-const vm = require("vm");
-const crypto = require("crypto");
-const assert = require("assert/strict");
-const workflow = fs.readFileSync(".github/workflows/release.yml", "utf8");
-const match = workflow.match(/          node <<'PREREQS'\n([\s\S]*?)\n          PREREQS/);
-if (!match) throw new Error("Prerequisite verifier is missing");
-const verifier = match[1].replace(/^          /gm, "");
-const downloads = JSON.parse(process.env.CARE_DOWNLOADS);
-const pins = fs.readFileSync("deployments/.env", "utf8");
-const body = url => "installer served from " + url;
-const hash = value => crypto.createHash("sha256").update(value).digest("hex");
-let served = pins;
-for (const d of downloads) served = served.replace(d.SHA256, hash(body(d.URL)));
-const run = async (env, missing) => {
-  const fetched = [];
-  const logs = [];
-  const proc = {env: {}, exitCode: undefined};
-  await vm.runInNewContext(verifier, {
-    URL,
-    process: proc,
-    console: {log: line => logs.push(line)},
-    fetch: async url => {
-      fetched.push(url);
-      if (url === missing) return {ok: false, status: 404};
-      return {ok: true, status: 200, body: (async function* () { yield Buffer.from(body(url)); })()};
-    },
-    require: name => {
-      if (name === "crypto") return crypto;
-      assert.equal(name, "fs");
-      return {readFileSync: path => { assert.equal(path, "deployments/.env"); return env; }};
-    },
-  });
-  return {fetched: fetched.sort(), logs, failed: proc.exitCode === 1};
-};
-(async () => {
-  const urls = downloads.map(d => d.URL).sort();
-  const ok = await run(served);
-  assert.deepEqual(ok.fetched, urls);
-  assert.equal(ok.failed, false, ok.logs.join("\n"));
-  const first = downloads[0];
-  const tampered = await run(served.replace(hash(body(first.URL)), "0".repeat(64)));
-  assert.equal(tampered.failed, true);
-  assert.ok(tampered.logs.some(line => line.startsWith("::error::") && line.includes(first.URL)));
-  const gone = await run(served, downloads[3].URL);
-  assert.equal(gone.failed, true);
-  assert.ok(gone.logs.some(line => line.includes("HTTP 404")));
-  let threw = false;
-  try { await run(served.replace(/^CARE_VM_VERSION=.*$/m, "CARE_VM_VERSION=latest")); } catch { threw = true; }
-  assert.ok(threw, "an unpinned CARE engine version was accepted");
-})().catch(error => { console.error(error); process.exit(1); });
-`
-	cmd := proc.Command("node", "-e", script)
-	cmd.Dir = "../../.."
-	cmd.Env = append(os.Environ(), "CARE_DOWNLOADS="+string(expected))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("prerequisite verifier failed: %v\n%s", err, output)
+	config, err := release.ReadConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := map[string]string{}
+	for _, tool := range config.Tools {
+		pinned[tool.URL] = tool.SHA256
+	}
+	used := map[string]bool{}
+	for _, d := range pinnedDownloads(t, deploymentPins(t)) {
+		if sum, ok := pinned[d.URL]; !ok || sum != d.SHA256 {
+			t.Errorf("%s (%s) is not pinned in %s", d.URL, d.SHA256, release.ConfigFile)
+		}
+		used[d.URL] = true
+	}
+	for url := range pinned {
+		if !used[url] {
+			t.Errorf("%s pins %s, which the app never downloads", release.ConfigFile, url)
+		}
 	}
 }
 

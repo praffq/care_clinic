@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/backupcopy"
 	"github.com/ohcnetwork/care_desktop/app/internal/health"
 	"github.com/ohcnetwork/care_desktop/app/internal/storage"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
@@ -16,6 +20,9 @@ import (
 const (
 	storageFirstCheck = 20 * time.Second
 	storageInterval   = 5 * time.Minute
+
+	backupExportTimeout      = 30 * time.Minute
+	backupStateExportTimeout = 10 * time.Second
 )
 
 type storageWatch struct {
@@ -25,6 +32,80 @@ type storageWatch struct {
 	alerted    string
 	notifyOnce sync.Once
 	notifyOK   bool
+	copying    bool
+	copyErr    string
+	exportErr  string
+	stateErr   string
+}
+
+// backupHealth reads the backup state and adds failures the app itself saw
+// but could not record in the state folder.
+func (a *App) backupHealth(source, stateDir string, running bool, now time.Time) storage.BackupHealth {
+	h := storage.ReadHealth(source, stateDir, running, now)
+	if a.loadConfig().BackupCopyDir == "" && h.Copy.State != "off" {
+		h.Copy = storage.CopyStatus{State: "off", CheckedAt: h.Copy.CheckedAt}
+		h.Alerts = slices.DeleteFunc(h.Alerts, func(al storage.Alert) bool { return strings.HasPrefix(al.Code, "copy_") })
+	}
+	a.store.mu.Lock()
+	copyErr := a.store.copyErr
+	exportErr, stateErr := a.store.exportErr, a.store.stateErr
+	a.store.mu.Unlock()
+	if copyErr != "" {
+		h.Alerts = append(h.Alerts, storage.Alert{Code: "copy_status_unwritable", Level: storage.LevelLow,
+			Message: "The backup copy status could not be saved: " + copyErr})
+	}
+	if exportErr != "" || stateErr != "" {
+		msg := exportErr
+		if msg == "" {
+			msg = stateErr
+		}
+		h.Alerts = append(h.Alerts, storage.Alert{Code: "engine_export_failed", Level: storage.LevelLow,
+			Message: "The engine's latest backups or status could not be exported; this computer's backup view may be stale: " + msg})
+	}
+	return h
+}
+
+// startBackupCopy brings the optional second copy up to date in the
+// background; a large first copy must never hold up the storage check.
+func (a *App) startBackupCopy(source, stateDir, dest string) {
+	a.store.mu.Lock()
+	if a.store.copying {
+		a.store.mu.Unlock()
+		return
+	}
+	a.store.copying = true
+	a.store.mu.Unlock()
+	go func() {
+		// The guest backup folder is the source of truth; bring the host's
+		// verified export (new nightly sets and saved changes) up to date
+		// before the copy reads it.
+		ctx, cancel := context.WithTimeout(context.Background(), backupExportTimeout)
+		exportErr := a.engine().ExportBackups(ctx)
+		cancel()
+		if exportErr != nil {
+			a.logln("backup export: " + exportErr.Error())
+			a.store.mu.Lock()
+			a.store.copying = false
+			a.store.exportErr = exportErr.Error()
+			a.store.mu.Unlock()
+			a.emit("care-backup-copy", storage.CopyStatus{State: "failed", Message: "Engine backup export failed: " + exportErr.Error()})
+			return
+		}
+		st, err := backupcopy.Run(source, stateDir, dest, time.Now())
+		if err != nil {
+			a.logln("backup copy: " + err.Error())
+			st.State, st.Message = "failed", err.Error()
+		}
+		a.store.mu.Lock()
+		a.store.copying = false
+		a.store.copyErr = ""
+		a.store.exportErr = ""
+		if err != nil {
+			a.store.copyErr = err.Error()
+		}
+		a.store.mu.Unlock()
+		a.emit("care-backup-copy", st)
+	}()
 }
 
 func (a *App) DiskStatus() storage.InstallResult {
@@ -97,10 +178,10 @@ func (a *App) backupSpace(target string) (storage.BackupSpace, error) {
 	e := a.engine()
 	u, err := diskspace.Of(target)
 	if err != nil {
-		return storage.BackupSpace{Dir: target, DaysLeft: -1, Level: storage.LevelUnknown,
+		return storage.BackupSpace{Dir: target, Level: storage.LevelUnknown,
 			Message: "Couldn't measure free space: " + err.Error()}, err
 	}
-	daily, _, found, err := storage.LatestSets(e.BackupDirPath())
+	set, found, err := storage.LatestSet(e.BackupDirPath())
 	if err != nil {
 		found = false
 	}
@@ -108,7 +189,7 @@ func (a *App) backupSpace(target string) (storage.BackupSpace, error) {
 	if docker, err := diskspace.Of(a.dockerDataDir()); err == nil {
 		shares = docker.Volume == u.Volume
 	}
-	return storage.AssessBackup(target, u, daily, found, e.BackupKeepsForever(), shares), nil
+	return storage.AssessBackup(target, u, set, found, shares), nil
 }
 
 func (a *App) backupSpaceProblem(target string) string {
@@ -147,13 +228,15 @@ func (a *App) checkStorage() storage.Report {
 			r.Drives = append(r.Drives, d)
 		}
 	}
+	stateDir := filepath.Join(a.installDir(), backupStateDir)
+	if running {
+		a.exportBackupState()
+	}
 	r.Backup, _ = a.backupSpace(e.BackupDirPath())
-	if run, err := storage.ReadBackupRun(filepath.Join(a.installDir(), backupStateDir)); err == nil {
-		r.LastRun = run
-	}
-	if _, newest, found, err := storage.LatestSets(e.BackupDirPath()); err == nil && found {
-		r.NewestBackupAt = newest.At.Unix()
-	}
+	a.startBackupCopy(e.BackupDirPath(), stateDir, cfg.BackupCopyDir)
+	r.Health = a.backupHealth(e.BackupDirPath(), stateDir, running, now)
+	r.LastRun = r.Health.LastRun
+	r.NewestBackupAt = r.Health.LastBackupAt
 	storage.Summarise(&r, running, now)
 	return r
 }
@@ -210,4 +293,22 @@ func (a *App) notificationsReady() bool {
 		a.store.notifyOK = err == nil && ok
 	})
 	return a.store.notifyOK
+}
+
+// exportBackupState refreshes the host's copy of the guest backup status
+// files that backup health reads. The exported backups themselves follow in
+// the background copy pass.
+func (a *App) exportBackupState() {
+	ctx, cancel := context.WithTimeout(context.Background(), backupStateExportTimeout)
+	defer cancel()
+	err := a.engine().ExportBackupState(ctx)
+	a.store.mu.Lock()
+	a.store.stateErr = ""
+	if err != nil {
+		a.store.stateErr = err.Error()
+	}
+	a.store.mu.Unlock()
+	if err != nil {
+		a.logln("backup status export: " + err.Error())
+	}
 }

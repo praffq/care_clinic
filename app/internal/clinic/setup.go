@@ -12,16 +12,16 @@ func (e *Clinic) Setup() error {
 	if err := backup.CheckLocation(e.backupDir(), e.InstallDir); err != nil {
 		return err
 	}
-	if err := plugins.New(e.InstallDir).InitializeDefaults(); err != nil {
-		return err
-	}
-	if err := e.Backups().InstallCertificate([]byte(e.BackupCertificate)); err != nil {
-		return err
-	}
 	if err := e.genSecret(); err != nil {
 		return err
 	}
 	if err := e.ApplyDomain(); err != nil {
+		return err
+	}
+	if err := plugins.New(e.InstallDir).InitializeDefaults(); err != nil {
+		return err
+	}
+	if err := e.Backups().InstallCertificate([]byte(e.BackupCertificate)); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(e.backupDir(), 0o755); err != nil {

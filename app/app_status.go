@@ -145,6 +145,7 @@ func (a *App) OpenDocker() error {
 func (a *App) provisioner() *prereq.Provisioner {
 	e := a.engine()
 	pr := prereq.NewProvisioner(e.Runner(), a.pins, e.Log)
+	pr.ReleaseDir = a.installDir()
 	pr.DiagnosticsDir = a.log.Folder()
 	pr.Progress = func(progress prereq.DownloadProgress) {
 		a.emit("prereq-download-progress", progress)

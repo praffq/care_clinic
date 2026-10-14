@@ -103,7 +103,8 @@
   text-transform: uppercase;
 }
 
-.care-backups .care-backups-folder-path {
+.care-backups .care-backups-folder-path,
+.care-backups .care-backups-copy-path {
   overflow: hidden;
   margin-top: 3px;
   color: var(--backup-ink);
@@ -221,11 +222,11 @@
   font-size: 12.5px;
 }
 
-.care-backups-retention {
+.care-backups-keep {
   font-size: inherit;
 }
 
-.care-backups-retention::before {
+.care-backups-keep::before {
   content: "· ";
 }
 
@@ -727,3 +728,13 @@
     margin-top: 12px;
   }
 }
+
+.care-backups-health-when { font-weight: 600; margin: 0.15rem 0 0.5rem; }
+.care-backups-health-facts { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin: 0; }
+.care-backups-health-facts div { display: flex; flex-direction: column; }
+.care-backups-health-facts dt { font-size: 0.75rem; opacity: 0.7; }
+.care-backups-health-facts dd { margin: 0; font-size: 0.875rem; }
+.care-backups-copy-state { margin: 0.25rem 0 0; font-size: 0.875rem; opacity: 0.85; }
+.care-restore-time { display: flex; flex-direction: column; gap: 0.4rem; border: 0; }
+.care-restore-time label { display: flex; gap: 0.5rem; align-items: center; }
+.care-restore-time input[type="datetime-local"] { max-width: 16rem; padding: 0.25rem 0.5rem; }

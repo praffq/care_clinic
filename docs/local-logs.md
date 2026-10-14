@@ -24,11 +24,12 @@ the `/v1/logs` agent endpoint and Docker's journald logging driver. Existing
 containers retain their original logging driver until recreated.
 
 The Logs page shows the live collection state reported by the helper
-(collecting, connecting, reconnecting, engine stopped). If an older engine is
-still running after an app update, the app updates it automatically on launch
-and recreates the containers so they use journald. If that fails, the page shows
-"CARE engine update required" with an **Update CARE engine** retry, or **Try the
-update again** when the new engine was rolled back
+(collecting, connecting, reconnecting, engine stopped). Engine updates are
+downloaded and verified in advance, but opening CARE Clinic or starting the
+clinic never applies one. When an engine update is required, the page shows
+"CARE engine update required" and waits for staff to choose **Update CARE
+engine**. A failed update restores the previous engine; retry is an explicit
+staff action
 ([details](vm.md#engine-update-rollback)).
 
 Linux runs Docker directly: container logs stay in the Docker daemon and can be
@@ -49,15 +50,20 @@ Serial capture uses a bounded queue and Docker logging uses non-blocking buffers
 logging must not stall the VM or containers if the host disk falls behind.
 
 The **Logs** sidebar page shows the folder path, log categories, retention limits
-and sharing guidance. **Open logs folder** opens the shared folder. **Export diagnostics** saves a ZIP
-of retained logs and app/engine version information, after a privacy warning.
-No automatic upload occurs. Exports exclude environment files, database contents,
-credentials and full journal metadata, but logged messages can still contain
-patient information, URLs or secrets printed by services. Review before sharing.
-Export snapshots may omit messages written during export or rotation. They include
-only the last 10 MiB per file, with a 500 MiB combined log limit, and reject symlinks
-and destinations inside the log directory. `versions.json` records the app's
-engine pin, not a measurement of the running engine version; check the live
-engine status when diagnosing a version mismatch.
+and sharing guidance. **Open logs folder** opens the shared folder. **Download
+support logs** first displays: “This file contains clinic passwords. Share it
+only with the CARE support team.” The ZIP includes retained app and engine/guest
+logs, the update journal and history, version and health evidence, and the
+installation's `.env`, `backend.env`, `frontend.env`, `secrets.env` and
+`env-defaults.yml` files. Those environment files include clinic passwords and
+other secrets. The operator explicitly confirms before the ZIP is saved locally;
+it is never uploaded automatically. Review it and share it only with CARE support.
+
+Logged messages can also contain patient information, URLs or secrets printed by
+services. Export snapshots may omit messages written during export or rotation.
+They include only the last 10 MiB per file, with a 500 MiB combined log limit,
+and reject symlinks and destinations inside the log directory. `versions.json`
+records the app's engine pin, not a measurement of the running engine version;
+check the live engine status when diagnosing a version mismatch.
 
 GitHub Actions build logs remain on GitHub and are not included in local exports.

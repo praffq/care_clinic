@@ -127,7 +127,7 @@ opens Overview only after both the saved setup-success event and matching
 successful job completion arrive. A failure keeps the failure screen, relevant
 guidance and logs instead of entering the panel.
 
-Initial installation needs internet to download the release-line manifest, images, and any local customization dependencies.
+Initial installation needs internet to download verified update metadata, images, and any local customization dependencies.
 Recognized connection failures show **The download was interrupted**, ask the
 operator to reconnect, and do not suggest updating CARE Clinic as the remedy.
 Keep CARE Clinic open and choose **Try again** to retry the same unfinished
@@ -199,7 +199,7 @@ and [earlier-installation recovery](client-recovery.md).
 | Overview | Clinic health, Start/Stop/Restart, opening CARE, startup at login, phone/tablet connection, backup summary and actionable problems. |
 | Backups | Actual backup policy and recent backup state, Back up now, backup destination management and restoring a selected file. |
 | Storage | Drive measurements and explicit cleanup of supported disposable Docker resources, not clinic records. |
-| Updates | Separate CARE backend/frontend updates and CARE Clinic application updates. |
+| Updates | Prepared CARE image, CARE engine and CARE Clinic updates, coordinated by the signed release manifest. |
 | Logs | Shared diagnostics folder, live engine/container collection state, retention and local ZIP export with a privacy warning. |
 | Plugins | Add catalog or custom plugins and Save and apply from a healthy running clinic. No CARE Clinic password is required. Entries stay **Not applied** until successful; a failed batch is discarded when leaving the tab. Failed loading rolls back to the previous configuration, and unfinished recovery exposes **Recover clinic** in Overview. |
 | Advanced | Ten everyday clinic settings, support-only extra overrides, CARE Clinic password/recovery management, diagnostic log, rebuild and uninstall. |
@@ -228,9 +228,12 @@ available where it can be managed in Backups.
 ### Backups and restore
 
 Scheduled backups run at a 24-hour interval while their service is running, not
-at a fixed nightly clock time. The displayed retention comes from the installed
-settings; zero means keep backups indefinitely. Start CARE before taking a
-manual backup.
+at a fixed nightly clock time. Only the newest verified backup set is kept; the
+previous one is deleted only after the new one passes every check. Backups shows
+the last backup time, a verified badge, the time changes are saved through, the
+weekly trial restore, the optional extra copy, and alerts. **Restore to a point
+in time** replays saved changes up to a chosen moment. Start CARE before taking
+a manual backup.
 
 **Re-download backup key** asks for the current CARE Clinic admin password and saves
 another copy of the original recovery file. After installation or explicit
@@ -295,36 +298,45 @@ and recovery codes do not change the CARE web login after initial setup.
 ### Updates and running work
 
 On panel launch, CARE Clinic checks the installed and running CARE engine against
-its pinned version before the first clinic-health refresh. An outdated engine
-updates automatically; the panel shows **Updating**, not **Running**, until the
-engine-update job (including clinic startup) finishes. Pending restore or plugin
-recovery takes priority. The app downloads and verifies the engine before stopping
-containers, keeps volumes and the VM data disk, and recreates containers with the
-new logging configuration. If the new engine does not start and answer, the
-previous engine and tools are restored and the clinic is started on them; an
-interrupted update is rolled back on the next launch. The data disk and database
-migrations are not rolled back. A failed update is not retried automatically;
-the panel offers **Try the update again**. See [CARE engine](vm.md#engine-update-rollback).
+its pinned version before the first clinic-health refresh. An outdated engine is
+not applied automatically: background checks download and verify it in advance,
+and the panel waits for staff to choose **Update CARE engine**. Starting CARE
+does not apply a staged update. The coordinator preflights disk, power, clock and
+health, then journals and executes the approved plan. It keeps volumes and the VM
+data disk, recreates containers with the new logging configuration, and retains
+the previous engine and tools until the clinic is healthy. If the update fails,
+the previous engine and tools are restored and the clinic is started on them;
+an interrupted update is recovered before ordinary startup. The data disk and
+database migrations are not rolled back by an engine-only update. Failed updates
+are retried only after staff explicitly choose the update again. See
+[CARE engine](vm.md#engine-update-rollback).
 
-CARE updates download and stage backend/frontend images within the current release line.
-The Updates tab shows the current line and offers an explicit upgrade to a newer
-compatible line, after a safety backup. Desktop updates outside the line's app-version
-range are blocked. See [images and release lines](images-and-lines.md). A failed
-check remains a retryable failure, not "Up to date". Installing a staged CARE
-update can interrupt service.
+The background checker verifies the signed release manifest and downloads and
+stages backend/frontend images and compatible engine/desktop assets. It never
+applies an update. The Updates tab shows the software version and prepared
+updates; staff must choose **Update** to approve and apply them. CARE image,
+engine and desktop steps share one dependency-ordered journaled plan. A release
+with no safe intermediate desktop/engine combination requires a bridge release.
+See [CARE images](images.md). A failed check remains a retryable failure, not
+"Up to date". Installing a staged CARE update can interrupt service; backend
+migrations are preceded by an encrypted safety backup, and a data rollback
+restores that backup. The coordinator durably checkpoints the backup ID and
+retained-image metadata before activation, marks data as potentially migrated
+before invoking migrations, and checkpoints rollback before restoring anything.
+Recovery therefore uses the same safety backup even if the apply hook never returns.
 
-After upgrading to a newer line, checks follow only that line's backend/frontend
-images, not older lines. The personal `3.1` branch test is available on Clinic
-`0.1.15`; it is not an official upstream release. Returning to an older line
-requires a backup restore, not an ordinary update button.
+Only CARE 3.1 ships; there is no CARE version selector.
 
-A CARE Clinic update downloads a verified application installer or replaces
-the app bundle. Conflicting actions stay locked while it runs:
+A CARE Clinic update downloads and verifies the signed application installer
+in advance. Applying it requires staff to choose **Update**; the journal remains
+active across the helper handoff and the newly launched app resumes the approved
+plan. The previous app copy is retained for recovery. Conflicting actions stay
+locked while it runs:
 
 The clinic can keep serving during desktop installer download/replacement.
 An included engine upgrade can then take it offline for a few minutes when
 the app reopens. CARE software, CARE Clinic and the CARE engine have separate
-versions; a CARE line upgrade does not redesign the desktop interface.
+versions; a CARE software update does not redesign the desktop interface.
 
 | Desktop update state | How to proceed |
 | --- | --- |

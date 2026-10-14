@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,16 +16,18 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	ctx       context.Context
-	installFS fs.FS
-	pins      *release.Pins
-	log       *applog.Logger
+	ctx               context.Context
+	installFS         fs.FS
+	pins              *release.Pins
+	log               *applog.Logger
+	updateCoordinator *updates.Coordinator
 
 	cfgMu      sync.RWMutex
 	cfg        Config
@@ -49,6 +52,9 @@ type App struct {
 	quitUIReady   bool
 	quitSequence  uint64
 	quitRequest   *QuitRequest
+
+	stagedUpdateMu   sync.Mutex
+	stagedAppUpdates map[string]string
 
 	confirmationMu       sync.Mutex
 	confirmationUIReady  bool
@@ -97,7 +103,12 @@ func NewApp(installFS fs.FS, log *applog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{installFS: installFS, pins: pins, log: log, cfg: cfg, configFile: path}
+	a := &App{installFS: installFS, pins: pins, log: log, cfg: cfg, configFile: path,
+		stagedAppUpdates: make(map[string]string)}
+	a.updateCoordinator, err = updates.New(filepath.Join(a.installDir(), "updates"))
+	if err != nil {
+		return nil, err
+	}
 	if err := a.inferInstalledRole(); err != nil {
 		return nil, err
 	}

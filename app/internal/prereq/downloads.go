@@ -7,8 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
 
 func downloadError(err error) error {
@@ -23,10 +28,7 @@ func downloadError(err error) error {
 	return err
 }
 
-const (
-	dockerLinuxStatic = "https://download.docker.com/linux/static/stable/"
-	composeReleases   = "https://github.com/docker/compose/releases/download/v"
-)
+const dockerLinuxStatic = "https://download.docker.com/linux/static/stable/"
 
 type Download struct {
 	Name   string
@@ -73,19 +75,74 @@ func linuxArch(goarch string) (string, bool) {
 	return "", false
 }
 
-func dockerLinuxDownloads(p *release.Pins, goarch string) (engine, compose Download, err error) {
+func dockerLinuxDownloads(p *release.Pins, goarch string) (Download, error) {
 	arch, ok := linuxArch(goarch)
 	if !ok {
-		return Download{}, Download{}, fmt.Errorf("CARE does not install Docker on linux/%s - install it yourself from %s",
+		return Download{}, fmt.Errorf("CARE does not install Docker on linux/%s - install it yourself from %s",
 			goarch, dockerEnginePage)
 	}
-	engineSum, composeSum := p.DockerLinuxX8664SHA256, p.ComposeLinuxX8664SHA256
+	engineSum := p.DockerLinuxX8664SHA256
 	if arch == "aarch64" {
-		engineSum, composeSum = p.DockerLinuxAarch64SHA256, p.ComposeLinuxAarch64SHA256
+		engineSum = p.DockerLinuxAarch64SHA256
 	}
 	engineName := "docker-" + p.DockerLinuxVersion + ".tgz"
-	composeName := "docker-compose-linux-" + arch
-	engine = Download{Name: engineName, URL: dockerLinuxStatic + arch + "/" + engineName, SHA256: engineSum}
-	compose = Download{Name: composeName, URL: composeReleases + p.ComposeLinuxVersion + "/" + composeName, SHA256: composeSum}
-	return engine, compose, nil
+	return Download{Name: engineName, URL: dockerLinuxStatic + arch + "/" + engineName, SHA256: engineSum}, nil
+}
+
+func linuxAgentDownload(engine release.EngineUpdate, goarch string) (Download, error) {
+	if goarch != "arm64" && goarch != "amd64" {
+		return Download{}, fmt.Errorf("CARE does not provide a native agent for linux/%s", goarch)
+	}
+	asset, ok := engine.Assets["native-linux-"+goarch]
+	if !ok {
+		return Download{}, fmt.Errorf("signed engine %s has no native Linux %s agent", engine.Version, goarch)
+	}
+	name := "care-engine-agent-linux-" + goarch
+	u, err := url.Parse(asset.URL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "" || path.Base(u.Path) != name ||
+		path.Base(path.Dir(u.Path)) != "care-engine-v"+engine.Version ||
+		asset.Size <= 0 || !validPublishedChecksum(asset.SHA256) {
+		return Download{}, fmt.Errorf("signed engine %s has an invalid native agent asset", engine.Version)
+	}
+	return Download{Name: name, URL: asset.URL, SHA256: asset.SHA256}, nil
+}
+
+func validPublishedChecksum(sum string) bool {
+	if len(sum) != 64 || sum == strings.Repeat("0", 64) {
+		return false
+	}
+	for _, c := range sum {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (pr *Provisioner) signedNativeEngine(version string, fetch bool) (release.EngineUpdate, error) {
+	if pr.pins == nil || pr.ReleaseDir == "" {
+		return release.EngineUpdate{}, errors.New("native agent installation needs release pins and a manifest trust directory")
+	}
+	client := release.NewClient(pr.ReleaseDir)
+	m, _, err := client.ReadVerified()
+	if fetch && errors.Is(err, os.ErrNotExist) {
+		ctx, cancel := context.WithTimeout(context.Background(), downloadHeaderTimeout)
+		defer cancel()
+		m, err = client.Fetch(ctx, pr.pins.UpdatesURL)
+	}
+	if err != nil {
+		return release.EngineUpdate{}, fmt.Errorf("native agent requires a published signed engine manifest: %w", err)
+	}
+	if m.Engine.Version != version || !updates.Compatible(m.Engine.RequiresDesktop, pr.pins.AppVersion) ||
+		!updates.Compatible(">= "+pr.pins.CareVMVersion, version) {
+		return release.EngineUpdate{}, fmt.Errorf("signed engine %s is not compatible with required engine %s and desktop %s",
+			m.Engine.Version, version, pr.pins.AppVersion)
+	}
+	for _, blocked := range m.Blocked {
+		if blocked == "engine" || blocked == "engine:"+version || blocked == version {
+			return release.EngineUpdate{}, fmt.Errorf("signed engine %s is blocked", version)
+		}
+	}
+	return m.Engine, nil
 }

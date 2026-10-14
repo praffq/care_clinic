@@ -10,22 +10,20 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
 func TestUnavailableDockerIsNotClean(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(enginetest.Call) enginetest.Result {
+		return enginetest.Result{Error: "engine inspection unavailable"}
+	})
 	t.Setenv("PATH", root)
-	run := proc.Runner{Env: os.Environ()}
+	run := proc.Runner{Env: os.Environ(), Agent: agent.Client}
 	report, err := scan(Options{
 		Runner: run, Project: "care-clinic", InstallDir: filepath.Join(root, "install"),
 	}, noSystemTraces)
@@ -37,9 +35,9 @@ func TestUnavailableDockerIsNotClean(t *testing.T) {
 	}
 }
 
-func TestMissingDockerIsNotDockerResidue(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
+func TestMissingManagedEngineIsNotDockerResidue(t *testing.T) {
+	if !vm.Supported() || runtime.GOOS == "windows" {
+		t.Skip("uses isolated macOS managed-engine absence; native absence is covered separately")
 	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
@@ -73,21 +71,18 @@ func TestMissingDockerIsNotDockerResidue(t *testing.T) {
 }
 
 func TestStoppedDockerIsDistinguishedFromAnAbsentOne(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(enginetest.Call) enginetest.Result {
+		return enginetest.Result{Stderr: "Cannot connect to the Docker daemon\n", Exit: 1}
+	})
 	t.Setenv("PATH", root)
 	report, err := scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"),
 	}, noSystemTraces)
-	if err == nil || report.Clean || !strings.Contains(err.Error(), "start Docker and try again") {
+	if err == nil || report.Clean || (!strings.Contains(err.Error(), "recover the engine") && !strings.Contains(err.Error(), "start the CARE agent")) {
 		t.Fatalf("an installed but stopped Docker was treated as absent: %+v, %v", report, err)
 	}
 }
@@ -129,13 +124,15 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	docker := "#!/bin/sh\ncase \"$1 $2\" in \"images --format\") echo care:clinic ;; esac\n"
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(docker), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(c enginetest.Call) enginetest.Result {
+		if c.Operation == "images" {
+			return enginetest.Result{Stdout: "care:clinic\n"}
+		}
+		return enginetest.Result{}
+	})
 	t.Setenv("PATH", root)
 	report, err := scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"), Images: []string{"care:clinic"},
 	}, noSystemTraces)
 	if err != nil || !report.Clean || len(report.Traces) != 1 || report.Traces[0].ID != "images" {
@@ -145,7 +142,7 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err = scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"), Images: []string{"care:clinic"},
 	}, noSystemTraces)
 	if err != nil || report.Clean {
@@ -189,13 +186,11 @@ func TestAbsentManagedEngineDoesNotProbeAnExternalDockerCLI(t *testing.T) {
 }
 
 func TestSystemTracesClassifySetupResidue(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("HOME", root)
+	t.Setenv("LOCALAPPDATA", root)
+	markManagedDisk(t)
+	agent := enginetest.New(t, nil)
 	t.Setenv("PATH", root)
 	inspectionError := errors.New("hosts file could not be read")
 	for _, tc := range []struct {
@@ -214,7 +209,7 @@ func TestSystemTracesClassifySetupResidue(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			report, err := scan(Options{
-				Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+				Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 				InstallDir: filepath.Join(root, "install"),
 			}, func(proc.Runner) ([]Trace, error) { return tc.traces, tc.err })
 			if report.Clean != tc.clean || !errors.Is(err, tc.err) || len(report.Traces) != len(tc.traces) {

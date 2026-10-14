@@ -3,11 +3,13 @@ package compose
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
@@ -145,11 +147,27 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 	if !proc.Exists("docker") {
 		t.Skip("Docker Compose is not installed")
 	}
-	if _, err := (proc.Runner{}).Capture("docker", "compose", "version", "--short"); err != nil {
+	if _, err := exec.Command("docker", "compose", "version", "--short").Output(); err != nil {
 		t.Skip("Docker Compose is not installed")
 	}
 	dir, err := filepath.Abs("../../../deployments")
 	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile("../../../versions.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := release.StageEnv(source, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envFile, staged, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
@@ -163,19 +181,21 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 		wantBucket string
 		wantPublic string
 	}{
-		{"defaults", "", "", "", "", "minioadmin", "minioadmin", "patient-bucket", "facility-bucket"},
+		{"generated credentials and default buckets", "generated-access", "generated-secret", "", "", "generated-access", "generated-secret", "patient-bucket", "facility-bucket"},
 		{"custom", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			run := proc.Runner{Dir: dir, Env: append(os.Environ(),
+			cmd := exec.Command("docker", "compose", "--project-directory", dir,
+				"--env-file", envFile, "-f", filepath.Join(dir, "docker-compose.yml"),
+				"config", "--format", "json")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
 				"MINIO_ACCESS_KEY="+tt.user,
 				"MINIO_SECRET_KEY="+tt.password,
 				"FILE_UPLOAD_BUCKET="+tt.patient,
 				"FACILITY_S3_BUCKET="+tt.facility,
-			)}
-			output, err := run.Capture("docker", "compose", "--project-directory", dir,
-				"--env-file", filepath.Join(dir, ".env"), "-f", filepath.Join(dir, "docker-compose.yml"),
-				"config", "--format", "json")
+			)
+			output, err := cmd.Output()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +204,7 @@ func TestComposePassesSharedStorageSettings(t *testing.T) {
 					Environment map[string]string `json:"environment"`
 				} `json:"services"`
 			}
-			if err := json.Unmarshal([]byte(output), &config); err != nil {
+			if err := json.Unmarshal(output, &config); err != nil {
 				t.Fatal(err)
 			}
 			for _, service := range []string{"minio", "caddy"} {

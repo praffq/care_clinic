@@ -100,7 +100,7 @@ test("Windows recovery folders and backup capacity copy", async ({ page }) => {
 test("Non-Windows backup presentation is unchanged", async ({ page }) => {
   await backups(page);
   await estimatedBackupSpace(page);
-  await expect(page.getByText(/room for about .* of backups/i)).toBeVisible();
+  await expect(page.getByText(/each backup needs about/i)).toBeVisible();
   await saveBackup(page);
   await expect(page.getByRole("button", { name: "Open folder", exact: true })).toHaveCount(0);
   await expect(page.getByText(/Desktop may sync to OneDrive/)).toHaveCount(0);
@@ -136,7 +136,7 @@ for (const step of ["backup", "admin"] as const) {
 async function estimatedBackupSpace(page: Page) {
   await page.evaluate(() => window.careTest.respond("BackupDirSpace", {
     dir: "/test-fixtures/CLINIC-BACKUP/care-db-backups", free: 418 * 2 ** 30, total: 500 * 2 ** 30,
-    need: 6 * 2 ** 30, set_bytes: 2 * 2 ** 30, days_left: 190,
+    need: 6 * 2 ** 30, set_bytes: 2 * 2 ** 30,
     shares_docker_drive: false, level: "ok", message: "",
   }));
   await page.getByRole("button", { name: "Change folder", exact: true }).click();

@@ -150,25 +150,6 @@ export const GROUPS: Group[] = [
     ],
   },
   {
-    id: "backups",
-    title: "Backups",
-    summary: "How long to keep safe copies of your clinic's records",
-    settings: [
-      {
-        key: "DB_BACKUP_RETENTION_PERIOD",
-        file: "backend",
-        kind: "int",
-        label: "Keep backups for",
-        help: "Older backups, including ones you started yourself, are deleted automatically. Enter 0 to keep them all.",
-        unit: "days",
-        min: 0,
-        max: 3650,
-        fallback: "0",
-        required: true,
-      },
-    ],
-  },
-  {
     id: "signin",
     title: "Staff access",
     summary: "Protect records when a staff member leaves their computer",

@@ -383,7 +383,8 @@ recursively remove `backupDir` with `os.RemoveAll`. Explicit deletion visits
 only immediate entries, recognizes backup/key/lock and supported intermediate
 names, and keeps unrelated entries and directories. A recognized symbolic
 link can be unlinked, but its target is not recursively removed. This is
-different from scheduled retention, which selects regular files.
+different from the backup cycle's latest-only replacement, which removes only
+regular files and its own `base-<ts>` folders after a new set verifies.
 
 The folder itself is removed only if no unrelated entries were kept and
 recognized removals succeeded. Naming is the ownership convention: a

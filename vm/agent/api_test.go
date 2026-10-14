@@ -100,6 +100,19 @@ func TestFileRoundTripKeepsMtimeAndMode(t *testing.T) {
 	}
 }
 
+func TestUploadedBindDirectoriesRemainTraversable(t *testing.T) {
+	srv, root := testServer(t)
+	q := url.Values{"path": {"/var/lib/care/clinic/keys/backup-cert.pem"}, "mode": {"644"}}
+	response := do(t, http.MethodPut, srv.URL+"/v1/fs/file?"+q.Encode(), strings.NewReader("public certificate"))
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatal(response.Status)
+	}
+	info, err := os.Stat(filepath.Join(root, "var/lib/care/clinic/keys"))
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("container-mounted keys directory must permit PostgreSQL traversal: %v %v", info, err)
+	}
+}
+
 func TestListMissingRootIsEmpty(t *testing.T) {
 	srv, _ := testServer(t)
 	r := do(t, http.MethodGet, srv.URL+"/v1/fs/list?root=/nope", nil)

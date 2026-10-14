@@ -5,7 +5,7 @@
 This guide follows the Wails backend from an installed deployment kit to a
 running clinic. "Backend" has two meanings here:
 
-- The **desktop Go backend** validates requests and runs local tools.
+- The **desktop Go backend** validates requests and sends engine operations.
 - The **CARE backend** is the separate Python application inside Docker. It
   serves clinical API requests and shares its image with the task workers.
 
@@ -42,7 +42,7 @@ not a second installation procedure or evidence of a separately installed
 - [Embedded versus installed material](#2-three-different-copies-of-application-material)
 - [Subprocess environment](#3-one-subprocess-environment-for-the-clinic)
 - [Setup checkpoints](#4-setup-ordered-preparation-not-a-transaction)
-- [Image freshness and release lines](#5-image-builder-freshness-is-local-evidence)
+- [Image freshness](#5-image-builder-freshness-is-local-evidence)
 - [Hostname, buckets, and proxy routes](#6-hostname-buckets-and-proxy-routing-form-one-configuration)
 - [Deployment inventory](#7-deployment-inventory-and-dependency-graph)
 - [Start, migrations, and readiness](#8-start-recovery-migration-safety-then-readiness)
@@ -69,7 +69,8 @@ flowchart TD
     Clinic --> Native["Native completion: local trust"]
     Builder --> Runner
     Backup --> Runner
-    Runner --> Tools["Docker Compose and Docker"]
+    Runner --> Agent["Private operation and file API"]
+    Agent --> Tools["Engine-local Docker Compose and Docker"]
     Tools --> Stack["Clinic services and persistent Docker volumes"]
 ```
 
@@ -100,7 +101,7 @@ remaining teardown files and the residue package.
 | --- | --- |
 | [`clinic.go`](../app/internal/clinic/clinic.go) | `Clinic`, nil-safe logging, effective paths/name, runtime environment, runner helpers, and builder construction. |
 | [`setup.go`](../app/internal/clinic/setup.go) | Ordered first-time preparation: location check, default plugins, secret, domain, directories, encryption keys, and images. |
-| [`secret.go`](../app/internal/clinic/secret.go) | One-time replacement of the Django secret placeholder. |
+| [`secret.go`](../app/internal/clinic/secret.go) | One-time private credential generation through `envconfig`. |
 | [`domain.go`](../app/internal/clinic/domain.go) | Discover managed hostnames, update selected settings and kit files, and construct the clinic host. |
 | [`domain_test.go`](../app/internal/clinic/domain_test.go) | Unmanaged-setting preservation, multiline dotenv handling, mode preservation, idempotence, incomplete setups, and validation before writes. |
 | [`start.go`](../app/internal/clinic/start.go) | Plugin rollback before normal startup; restore recovery, prerequisites, worker safety, phased Compose startup, migrations, health, and native completion. |
@@ -112,10 +113,10 @@ remaining teardown files and the residue package.
 | [`rebuild.go`](../app/internal/clinic/rebuild.go) | Explicit backend and frontend rebuild-and-restart paths. |
 | [`compose/build.go`](../app/internal/compose/build.go) | Published image downloads/relabeling, local customization builds, image fingerprints, and dangling-image cleanup. |
 | [`compose/parallel.go`](../app/internal/compose/parallel.go) | Parallel build groups: shared cancellation, per-job log prefixes, first-error reporting, and deferred prune. |
-| [`lines/lines.go`](../app/internal/lines/lines.go) | Manifest parsing, validation, caching, ordering, and app-version compatibility. |
-| [`compose/channel.go`](../app/internal/compose/channel.go) | The `line.json` current/staged image record and legacy source-checkout removal. |
-| [`compose/update.go`](../app/internal/compose/update.go) | Staging digest-pinned same-line fixes or explicit line upgrades under `-next`, declining, and applying by retag. |
-| [`clinic/update.go`](../app/internal/clinic/update.go) | Release-line status, app-version compatibility, explicit line upgrades, safety backups, and live/startup update application. |
+| [`careversions/versions.go`](../app/internal/careversions/versions.go) | Verified single CARE 3.1 image metadata. |
+| [`compose/channel.go`](../app/internal/compose/channel.go) | The `care-images.json` current/staged image record and legacy source-checkout removal. |
+| [`compose/update.go`](../app/internal/compose/update.go) | Staging digest-pinned CARE 3.1 fixes under `-next`, declining, and applying by retag. |
+| [`clinic/update.go`](../app/internal/clinic/update.go) | CARE version status, safety backups, and live/startup update application. |
 | [`compose/channel_test.go`](../app/internal/compose/channel_test.go) | Lock round-tripping, missing/corrupt lock tolerance, default-line selection, manifest-backed image keys, and stale staged-image recovery. |
 | [`compose/build_test.go`](../app/internal/compose/build_test.go) | Manifest-backed image selection, plugin/compiled-setting invalidation, runtime-setting reuse, image inspection failures, and isolated-context cleanup. |
 | [`compose/deployment_test.go`](../app/internal/compose/deployment_test.go) | Silo bootstrap arguments, configurable Caddy bucket routes, and Compose storage-environment wiring. |
@@ -141,10 +142,11 @@ Do not confuse these locations:
 
 [`ensureInstallDir`](../app/app_installdir.go) belongs to the App layer, not
 `Clinic.Setup`. It copies the embedded kit to the installed location. Existing
-`backend.env` and `frontend.env` are user-maintained files and are preserved;
+`backend.env` and `frontend.env` are generated files;
 other embedded kit files can be refreshed. Placeholder `.gitkeep` files are not
 installation payloads. The App reapplies the saved domain after normal kit
-refresh. It deliberately suppresses that refresh while removal or a pending
+refresh, regenerating effective env from defaults, preserved overrides and
+private secrets. It deliberately suppresses that refresh while removal or a pending
 restore or plugin rollback makes replacement unsafe; see [Wails application](wails-application.md).
 
 `Setup()` therefore assumes its input kit has already been unpacked. It does
@@ -158,7 +160,7 @@ the private recovery file.
 | Desktop control panel | `app/frontend/` becomes embedded Wails web assets. | Development or desktop release packaging. The panel must work without a running clinic. |
 | Desktop Go executable | `app/` plus embedded assets and install kit become the native application. | Development or release packaging. |
 | CARE backend image | Published backend runtime image by digest; optional plugins use its matching builder image. | Setup, startup freshness checks, or explicit backend rebuild. |
-| CARE frontend image | Published frontend image by digest; runtime settings from mounted `frontend.env`, or a builder-image rebuild for changed compiled settings. | Setup, startup freshness checks, or explicit frontend rebuild. This is the clinical browser application. |
+| CARE frontend image | Published frontend image by digest; a builder-image rebuild for any differing compiled setting. Only the API origin is substituted at startup. | Setup, startup freshness checks, or explicit frontend rebuild. This is the clinical browser application. |
 | Caddy and backup images | Optional digest-pinned prebuilt images, or installed Dockerfiles and pinned base/module inputs. | Setup or startup freshness checks. |
 
 Rebuilding the desktop control panel does not rebuild the CARE frontend
@@ -167,43 +169,32 @@ interface.
 
 ## 3. One subprocess environment for the clinic
 
-Each call to [`Runner()`](../app/internal/clinic/clinic.go) creates a
-`proc.Runner{Dir, Env, Log, Ctx}`:
+Each call to [`Runner()`](../app/internal/clinic/clinic.go) creates an
+agent-backed runner with the clinic's directory, selected environment,
+logging callback and cancellation context. Preparation uploads the generated
+kit/configuration before execution. The operation working directory and bind
+paths are engine-local, not guesses derived from a host drive letter.
 
-- `Dir` is `InstallDir` if it currently exists as a directory, otherwise empty.
-  The latter lets label-based inspection run even when installation files are
-  absent. It does not make a missing Compose file usable.
-- `Env` starts with `os.Environ()` and appends the engine's explicit settings.
-  Other host environment values still matter, but not the Docker engine
-  selection: see the next two points.
-- `PATH` uses `proc.AugmentedPath()` so GUI-launched processes can find the
-  required command-line tools.
-- On macOS and Windows, `vm.Env()` directs every `docker` and `docker compose`
-  command to the app-managed CARE engine and its bundled CLI. It does not use
-  the user's Docker contexts. Linux continues to use native Docker Engine.
-  Platform endpoints, folder sharing and synchronization are described in the
-  [CARE engine guide](vm.md).
-- `Log` is the same callback supplied to the engine.
+`dc(args...)` sends the typed `compose` operation. `run` supports per-call
+container environment additions; `capture` returns trimmed stdout separately
+from stderr; `captureLines` returns nonempty trimmed stdout lines. Agent frames
+stream both output channels and report the terminal exit status. A disconnected
+stream or failed input transfer cannot be treated as success. Plugin
+transactions supply an apply/recovery deadline, and readiness inspection has
+its own shorter deadline. Recent network-failure diagnostics retain the
+existing network retry classification.
 
-`dc(args...)` means a runner invocation of `docker compose` with those
-arguments. `run` supports per-call environment additions; `capture` returns
-trimmed stdout without streaming stderr into the returned string;
-`captureLines` returns nonempty trimmed stdout lines. `Run` streams stdout and
-stderr through the callback, potentially concurrently. These runner methods
-do not automatically impose a timeout on an image pull, image build, or
-migration without `Ctx`. Plugin transactions supply an apply/recovery deadline,
-and readiness inspection uses its own shorter deadline.
-
-Executable lookup uses the desktop process's PATH when Go constructs a
-command. The App's process-level PATH repair is therefore important as well
-as the PATH passed into children; a runner environment alone is not a new
-executable-lookup policy. Native process behavior and diagnostics are detailed
-in [native integrations](native-integrations.md).
+Host `PATH`, Docker contexts and unrelated environment values are not sent to
+the engine. Docker and Compose execute in the agent's own environment on every
+platform, including native Linux. The local runner rejects Docker commands.
+The [CARE engine guide](vm.md) describes the protected transport and explicit
+input/output transfers. Host process PATH repair remains relevant only to
+native OS integration and prerequisite tools.
 
 | Environment supplied by the engine | Source |
 | --- | --- |
 | `COMPOSE_PROJECT_NAME` | Always `care-clinic`. |
-| `COMPOSE_FILE` | `InstallDir/docker-compose.yml`. |
+| `COMPOSE_FILE` | The uploaded engine-local `docker-compose.yml`. |
 | `BACKEND_IMAGE`, `FRONTEND_IMAGE`, `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CADDY_WAF_IMAGE`, `BACKUP_IMAGE` | The injected release pins, not arbitrary caller-selected tags. |
 | `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Trimmed `BUCKET_KEY` and `BUCKET_SECRET` from installed `backend.env`. |
 | `FILE_UPLOAD_BUCKET`, `FACILITY_S3_BUCKET` | Trimmed values from the same installed backend environment. |
@@ -211,10 +202,9 @@ in [native integrations](native-integrations.md).
 | `BACKUP_DIR` | The effective engine backup directory. |
 
 Compose translates the storage credentials to the container variables
-`MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`. If a backend storage credential is
-missing or blank, the engine falls back to the implementation's `minioadmin`
-default. That is a default to recognize, not a recommendation or a generated
-secret. Empty bucket values fall back in Compose to `patient-bucket` and
+`MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD`. Missing or blank storage credentials
+fail Compose validation; setup generates independent credentials in private
+`secrets.env`. Empty bucket values fall back in Compose to `patient-bucket` and
 `facility-bucket`.
 
 `backendEnv()` returns no parsed settings on a read or dotenv-parse failure;
@@ -285,9 +275,9 @@ error. There is no implicit rollback of earlier successful steps.
 | Order | Operation | Durable or operational effect |
 | --- | --- | --- |
 | 1 | `backup.CheckLocation(backupDir, InstallDir)` | Reject an unsafe backup location before setup changes the kit. The backup guide explains the path rules. |
-| 2 | `plugins.New(InstallDir).InitializeDefaults()` | For new-clinic setup, persist default catalog entries, including CARE Onboarding, only when `plugins.json` is absent. Preserve existing backend plugins and any saved list, including an empty one. Malformed saved JSON fails setup rather than being overwritten. |
-| 3 | `Backups().InstallCertificate(BackupCertificate)`, then `genSecret()` | Install only the public backup certificate and its ownership copy; replace the Django secret placeholder if present. |
-| 4 | `ApplyDomain()` | Apply the clinic host to managed settings and deployment assets. |
+| 2 | `genSecret()` | Generate private credentials once and initialize empty override files; retain existing secrets on retry. |
+| 3 | `ApplyDomain()` | Generate effective environment files and apply the clinic host to deployment assets. |
+| 4 | `plugins.New(InstallDir).InitializeDefaults()`, then `Backups().InstallCertificate(BackupCertificate)` | Persist initial plugin choices only when absent; install only the public backup certificate and ownership copy. |
 | 5 | Create the backup directory with `MkdirAll(..., 0755)` | The destination may now exist even if later setup fails; its location is logged. |
 | 6 | `Backups().EnsureKeysDir()` | Prepare the keys directory before a Docker bind mount can create a root-owned source directory. |
 | 7 | Start `EnsureBackend` and `EnsureFrontend` as a background build group | Image downloads and any required local customizations run while steps 8–9 continue. |
@@ -327,22 +317,14 @@ exists for that reason.
 
 ### What secret generation actually does
 
-[`genSecret`](../app/internal/clinic/secret.go) reads `backend.env` and looks for
-the literal text `DJANGO_SECRET_KEY=CHANGE_ME`. Only the first occurrence is
-replaced. It obtains 40 cryptographically random bytes and encodes them with
-unpadded URL-safe Base64, producing about 54 characters.
-
-If the literal placeholder is absent, the file is left alone; this is not a
-general secret validator or rotation mechanism. Read, randomness, and write
-errors propagate. The generated key remains in the local environment file.
-This helper currently uses `os.WriteFile`, not the atomic replacement helper
-used by domain/environment editing. It must not be described as part of an
-all-or-nothing setup transaction.
-
-This function does not generate PostgreSQL passwords, storage credentials, a
-new password for an existing CARE administrator, or a replacement backup
-recovery file. The backup keypair and Caddy's local CA are separate key systems
-with different owners and lifetimes.
+[`genSecret`](../app/internal/clinic/secret.go) calls
+`envconfig.EnsureSecrets`. It generates independent Django, PostgreSQL, storage
+and offline email/SNS credentials using cryptographic randomness, then atomically
+publishes `secrets.env` as 0600 with a restricted Windows DACL. Existing secrets
+are retained; an incomplete file fails rather than rotating credentials.
+Effective env generation derives `DATABASE_URL` from the database credentials.
+The editor reads overrides/defaults, never effective files or these secrets.
+Backup keys, Caddy's CA and CARE administrator passwords have separate owners.
 
 ## 5. Image builder: freshness is local evidence
 
@@ -407,39 +389,38 @@ Let `H(bytes)` mean the first 12 lowercase hexadecimal characters of SHA-256.
 | Image | Fingerprint components | Preparation behavior |
 | --- | --- | --- |
 | Backend | Published runtime image digest, plus `+plugs@H(AdditionalPlugs)` when plugins are configured. | Pull/relabel the runtime image; plugins use `backend-plugins.Dockerfile` with the matching published builder and runtime images. |
-| Frontend | Published runtime image digest, plus `+env@H(rendered compiled settings)` only when nonblank compiled settings differ from `build_env`. | Pull/relabel the runtime image, or use `frontend-rebuild.Dockerfile` to recompile on the published builder image. |
+| Frontend | Published runtime image digest, plus `+env@H(JSON compiled settings)` whenever effective compiled settings differ from `build_env`, including empty or removed values. | Pull/relabel the runtime image, or use `frontend-rebuild.Dockerfile` to recompile on the published builder image. |
 | Backup | Prebuilt digest when set; otherwise `PostgresImage + "+dockerfile@" + H(backup.Dockerfile bytes)`. | Pull/relabel or build with an empty context. |
 | Caddy/WAF | Prebuilt digest when set; otherwise `CaddyImage + "+coraza@" + CorazaVersion + "+dockerfile@" + H(caddy.Dockerfile bytes)`. | Pull/relabel or build with an empty context. |
 
 Changing the desktop version no longer invalidates CARE images by itself.
 Backend plugins do; most other backend environment settings are runtime inputs.
-Frontend runtime keys and blank values do not force compilation. Compiled values
-are merged into the image's `build_env` and rendered in stable key order, so
-formatting-only changes are not fingerprint inputs. `care-clinic-configure`
-applies runtime settings from the mounted `frontend.env` at container start.
+All frontend settings except `REACT_CARE_API_URL` are compiled. Effective values
+are serialized as stable JSON, so formatting-only changes are not fingerprint
+inputs and literal dollar signs/quotes are not interpolated. The tiny
+`40-care-api-url.sh` startup script substitutes only the hard-coded API origin
+placeholder, using the hostname-derived value from `frontend.env`.
 
 `Caddyfile`, `scripts/backup.sh`, and `minio/entrypoint.sh` remain runtime mounts.
 These labels are cache keys, not signatures or an audit of external dependencies.
-See [images and release lines](images-and-lines.md) for the publication contract.
+See [CARE images](images.md) for the publication contract.
 
-### Release lines and the image lock
+### CARE version and the image lock
 
-[`internal/lines`](../app/internal/lines) validates the schema-1 `lines.json`
-manifest from `CARE_LINES_URL` and caches it as `InstallDir/lines.json`.
-Initial selection uses `CARE_DEFAULT_LINE`, or the manifest's recommended line.
-The builder checks the chosen line's app-version range before selecting images.
+[`internal/careversions`](../app/internal/careversions) uses the signed update
+manifest from `CARE_UPDATES_URL`. Signature verification and persisted revision
+checks run before any metadata is used. Only CARE 3.1 images are accepted.
 
 [`compose/channel.go`](../app/internal/compose/channel.go) keeps installed state
-in `InstallDir/line.json`, outside the embedded `.env` refresh:
+in `InstallDir/care-images.json`, outside the embedded `.env` refresh:
 
 | Field | Meaning |
 | --- | --- |
-| `line` | The clinic's current release-line id. |
-| `next_line` | A newer line staged by an explicit upgrade. |
+| `version` | The clinic's CARE 3.1 version. |
 | `backend` / `frontend` | Each service's `current`, `next`, and `declined` record. |
-| `current` | The published image entry, including commit, runtime and builder digests; frontend entries also carry runtime keys and compiled defaults. |
+| `current` | The published image entry, including commit, runtime and builder digests; frontend entries also carry compiled `build_env`. |
 | `next` | A published image entry prepared under the local `-next` tag. |
-| `declined` | A commit whose prompt was dismissed; same-line staging remains available. |
+| `declined` | A commit whose prompt was dismissed; the prepared image remains available. |
 
 Starting and manual rebuilds use the recorded current image rather than chasing
 upstream changes. A missing or corrupt lock yields an empty record and triggers
@@ -454,7 +435,7 @@ checkouts and `channel.lock` are removed; no source checkout is needed.
 
 1. The app checks hourly once the clinic is serving. Cadence and skip conditions
    are in [configuration and settings](configuration-and-settings.md).
-2. `PrepareUpdate` fetches the manifest for the current line and compares image
+2. `PrepareUpdate` verifies the manifest for CARE 3.1 and compares image
    digests, skipping the current image and declined commits. It downloads and
    prepares changed services under `-next` tags while the clinic keeps serving.
    Plugins and changed compiled frontend settings require local builder-image
@@ -478,19 +459,10 @@ checkouts and `channel.lock` are removed; no source checkout is needed.
    the commit is offered again by the next check instead of being remembered as
    something already refused.
 
-A newer compatible line is offered, never chosen by a routine same-line check.
-`UpgradeCareLine(id)` runs the `upgrade-line` job: `Clinic.UpgradeLine` stages both
-images, requires backup encryption, then uses the normal pre-update backup and
-apply/migration path. Going back requires restoring a backup. The update panel
-shows line support dates; `LineAllowsApp` checks the cached line's
-`min_app_version`/`max_app_version` before a desktop update.
-
-Changing line explicitly discards earlier pending metadata before downloading;
-the ordinary **Not now** path still keeps a routine update for the next start.
-The builder refuses a line change while any pending update remains, before
-overwriting `-next` tags. Staging and applying share a serialization lock.
-Cross-line metadata is published only after both images succeed, and
-interruption returns an explicit error instead of an empty successful update.
+Only CARE 3.1 ships; no version picker or migration from CARE 3 is exposed.
+The ordinary **Not now** path keeps a routine update for the next start.
+Staging and applying share a serialization lock. An interrupted image download
+returns an explicit error instead of an empty successful update.
 
 CARE updates do not have image-level rollback (plugin application has its own
 [rollback transaction](plugins.md#save-and-apply)). Published digests identify the
@@ -509,7 +481,7 @@ The Caddy and backup builders create an empty `.care-buildctx-*` directory
 under the installed kit and remove it on return. The full install directory, including keys and environment files, is not
 uploaded as their build context. Plugin builds and image relabeling also use
 isolated empty contexts; a frontend customization context contains only the
-generated `clinic.env`, with runtime placeholders and compiled settings.
+generated `clinic.json`, with the API placeholder and exact compiled settings.
 
 After a successful stale-image replacement through `ensure`, the builder
 attempts Docker's dangling-image prune. Inside a parallel build group that
@@ -529,7 +501,7 @@ Recorded image entries and the cached manifest support offline selection.
 Freshness checks use Docker metadata, and already-present digest images need not
 be pulled again. Neither guarantees a complete offline cache:
 
-- Initial selection needs a downloaded or cached release-line manifest.
+- Initial selection needs verified signed update metadata.
 - Missing CARE runtime or builder images require registry access.
 - Plugin packages, frontend build dependencies, or locally built proxy/backup
   dependencies can require downloads.
@@ -541,38 +513,24 @@ of just one required image.
 
 ## 6. Hostname, buckets, and proxy routing form one configuration
 
-[`ApplyDomain`](../app/internal/clinic/domain.go) manages exactly three files:
+[`ApplyDomain`](../app/internal/clinic/domain.go) regenerates effective env and
+updates hostname-bearing deployment assets:
 
 | Installed file | Managed content |
 | --- | --- |
 | `backend.env` | Values assigned to `CSRF_TRUSTED_ORIGINS` and `BUCKET_EXTERNAL_ENDPOINT`. |
 | `frontend.env` | Values assigned to `REACT_CARE_API_URL`. |
 | `Caddyfile` | Tokens for recognized managed hosts, including the clinic TLS site. |
+| `setup/index.html` | The clinic-address link. |
 
-It validates the clinic label, reads all available files, and parses the
-environment files before writing any changes. Missing files are allowed, so a
-partial installation can have its available files updated. Other read errors
-and dotenv parse errors stop the operation before the write phase.
-
-The managed-host set begins with the template's `example.local`. The code also
-recognizes previous `.local` hosts from parseable managed URL values, the
-expected Caddy site-block shape. It then replaces **whole matching host tokens**, not every occurrence
-of `.local`:
-
-- An unrelated device such as `scanner.local` is not automatically renamed.
-- A larger hostname such as `example.local.other` is not a match for the
-  template hostname.
-- Only the named dotenv assignments are edited. Plugin configuration and other
-  settings are preserved even if their values mention the old clinic host.
-- The dotenv-aware line handling preserves comments and unrelated multiline
-  quoted values rather than rewriting the entire file from a parsed map.
-
-Each changed file is atomically replaced with its existing permission bits.
-This is **per-file atomicity**, not a transaction across all three files: a write
-failure partway through can leave some files updated. Idempotence and discovery
-of previous managed hosts make retries possible. Custom Caddy block shapes or
-URL values outside the recognized forms are not a generic configuration
-migration API.
+It validates the clinic label and reads the proxy/setup assets before generating
+private effective files from defaults, overrides, secrets and derived hostname.
+Missing proxy/setup assets are allowed during partial setup, but missing defaults
+or secrets fail. Overrides are never rewritten by a hostname change, even if a
+plugin value mentions an old hostname. Proxy/setup replacements use whole host
+tokens discovered from `example.local` and the managed site/address shapes;
+unrelated device hostnames are preserved. Atomicity is per file; retries are
+idempotent, not a transaction across the whole kit.
 
 Changing the domain has several downstream effects: backend runtime URLs must
 change, the frontend must be recreated to apply runtime URLs, the proxy
@@ -717,7 +675,7 @@ Ports shown as internal are not host-published by this kit.
 | `backend` | `BACKEND_IMAGE`; `bash start.sh`, `backend.env`. | `db` and `redis` healthy. | No application-data volume declared here. | API 9000 internally. |
 | `celery-worker` | `BACKEND_IMAGE`; `bash celery_worker.sh`, `backend.env`. | `db` and `redis` healthy. | No dedicated volume declared here. | No published port. |
 | `celery-beat` | `BACKEND_IMAGE`; `bash celery_beat.sh`, `backend.env`. | `db` and `redis` healthy. | No dedicated volume declared here. | No published port. |
-| `frontend` | `FRONTEND_IMAGE`; nginx with `care-clinic-configure` applying runtime values at container start; other settings are compiled. | `backend` started. | `frontend.env` read-only at `/care-clinic/frontend.env`. | Web server 80 internally. |
+| `frontend` | `FRONTEND_IMAGE`; nginx with the API-origin-only startup sed script; every other setting is compiled. | `backend` started. | No bind mount; `frontend.env` supplies the API origin through `env_file`. | Web server 80 internally. |
 | `caddy` | `CADDY_WAF_IMAGE`; generate WAF mode file and execute Caddy. | `backend`, `frontend`, `minio` started. | `Caddyfile` read-only; `caddy-data` at `/data`; `caddy-config` at `/config`. | Host TCP 80 to 80 and TCP 443 to 443. |
 | `backup` | `BACKUP_IMAGE`; `/bin/sh /backup.sh`, `backend.env`. | `db` healthy. | Backup script read-only; selected backup directory writable at `/backups`; `keys/` read-only; `minio-data` read-only at `/minio-data`. | No published port. |
 
@@ -1053,7 +1011,7 @@ may be reused; this is not an upstream-update or cache-wipe operation.
 | Symptom | Read it as |
 | --- | --- |
 | `Setup done.` followed by failure | Preparation finished; Start or final App persistence still failed. Investigate partial setup, not only the last image build. |
-| Backend input or fingerprint error | Installed inputs, release-line selection, or Docker inspection is unavailable; do not delete a cache just because inspection failed. |
+| Backend input or fingerprint error | Installed inputs, verified image metadata, or Docker inspection is unavailable; do not delete a cache just because inspection failed. |
 | Worker still running or state count mismatch | The migration guard intentionally refused to proceed. Fix process/daemon state before retrying. |
 | Migration/admin startup error | Core services may be up, but workers are intentionally held stopped. Avoid bypassing the engine with a raw all-services startup. |
 | Caddy refresh error | Current mounts/environment could not be applied to the proxy. A prior container/image is not proof that the configuration took effect. |

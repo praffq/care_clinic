@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 )
 
 type client struct{ http *http.Client }
@@ -156,17 +159,16 @@ func Stop(ctx context.Context) error {
 	return errors.New("the CARE engine did not stop in time")
 }
 
-// Sync copies the named host paths (and the folders already being kept in
-// step) into the engine. Only Windows needs it; elsewhere it does nothing.
-func Sync(ctx context.Context, paths []string) error {
-	if !needsSync() {
-		return nil
-	}
-	return newClient().do(ctx, http.MethodPost, "/sync", map[string]any{"paths": paths}, nil)
-}
-
 // WriteDiagnostics copies the engine's logs and the guest journal to w.
 func WriteDiagnostics(ctx context.Context, w io.Writer) {
+	if runtime.GOOS == "linux" {
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if err := engine.Default.Journal(ctx, w); err != nil {
+			_, _ = fmt.Fprintln(w, err)
+		}
+		return
+	}
 	for _, p := range []string{HostLog(), ConsoleLog()} {
 		_, _ = fmt.Fprintf(w, "===== %s =====\n", p)
 		if b, err := os.ReadFile(p); err == nil {
