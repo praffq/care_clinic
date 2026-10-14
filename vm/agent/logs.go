@@ -11,6 +11,9 @@ import (
 
 func (a *api) logs(w http.ResponseWriter, r *http.Request) {
 	args := []string{"--follow", "--output=json", "--no-pager"}
+	if a.native {
+		args = append(args, "-u", "docker.service", "-u", "care-engine-agent.service")
+	}
 	cursor := r.URL.Query().Get("cursor")
 	if len(cursor) > 4096 || strings.ContainsAny(cursor, "\r\n") {
 		http.Error(w, "invalid journal cursor", http.StatusBadRequest)

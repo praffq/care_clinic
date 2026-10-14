@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"regexp"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 // Bootstrap anchors must be replaced with operator-held public keys before the
@@ -92,7 +94,11 @@ func (m Manifest) Validate() error {
 		return err
 	}
 	for name, assets := range map[string]map[string]Asset{"desktop": m.Desktop.Assets, "engine": m.Engine.Assets} {
-		for _, platform := range requiredPlatforms(name) {
+		platforms := requiredPlatforms(name)
+		if name == "engine" && semver.MustParse(m.Engine.Version).GreaterThanEqual(semver.MustParse("0.1.3")) {
+			platforms = append(platforms, "native-linux-arm64", "native-linux-amd64")
+		}
+		for _, platform := range platforms {
 			if _, ok := assets[platform]; !ok {
 				return fmt.Errorf("%s missing %s asset", name, platform)
 			}

@@ -67,7 +67,8 @@ func TestCIRequiredGateRejectsIncompleteChecks(t *testing.T) {
 
 func TestCIIncludesGuestAndQEMUPackagingRegressions(t *testing.T) {
 	requireText(t, workflow(t, "engine.yml"),
-		"cd ../vm/agent && go test -race", "python3 -m unittest discover -s vm",
+		"working-directory: vm/agent", "go build ./...", "go vet ./...", "go test -race -count=1 ./...",
+		"care-engine-agent-linux-$ARCH", "python3 -m unittest discover -s vm",
 		`printf '%s\n' "$VERSION" > vm/VERSION`, "nix build", "inputs.version",
 	)
 	requireText(t, workflow(t, "desktop.yml"),

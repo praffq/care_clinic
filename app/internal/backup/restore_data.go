@@ -3,7 +3,6 @@ package backup
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -59,7 +58,7 @@ func (s *Store) runRestoreSQL(j *restoreJournal, step, script string, extra ...s
 	if err != nil {
 		return err
 	}
-	return s.run.RunWith(env, "docker", args...)
+	return s.run.AgentRunWith(env, "run", args...)
 }
 
 func (s *Store) restoreDatabaseState(j *restoreJournal) (*restoreDatabases, error) {
@@ -68,11 +67,8 @@ func (s *Store) restoreDatabaseState(j *restoreJournal) (*restoreDatabases, erro
 		return nil, err
 	}
 	run := s.run
-	if run.Env == nil {
-		run.Env = os.Environ()
-	}
 	run.Env = append(append([]string(nil), run.Env...), env...)
-	out, err := run.Capture("docker", args...)
+	out, err := run.AgentCapture("run", args...)
 	if err != nil {
 		return nil, fmt.Errorf("cannot inspect restore database identities: %w", err)
 	}
@@ -131,7 +127,7 @@ func (s *Store) snapshotRestoreFiles(j *restoreJournal) error {
 mkdir /previous/files
 cp -a /live/. /previous/files/
 sync -f /previous`)
-	if err := s.run.Run("docker", args...); err != nil {
+	if err := s.run.AgentRun("run", args...); err != nil {
 		return fmt.Errorf("cannot preserve the current uploaded files: %w", err)
 	}
 	return nil
@@ -152,7 +148,7 @@ func (s *Store) replaceRestoreFiles(j *restoreJournal, rollback bool) error {
 		"--mount", restoreMount("volume", source, "/source", true),
 		"--mount", restoreMount("volume", s.Project+"_minio-data", "/live", false))
 	args = append(args, s.Image, "sh", "-c", replaceRestoreFiles)
-	if err := s.run.Run("docker", args...); err != nil {
+	if err := s.run.AgentRun("run", args...); err != nil {
 		return fmt.Errorf("uploaded-files replacement/recovery failed: %w", err)
 	}
 	return nil

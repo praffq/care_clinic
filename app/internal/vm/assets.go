@@ -81,13 +81,9 @@ func readManifest(dir string) (Manifest, error) {
 	return m, nil
 }
 
-// ToolsInstalled reports whether the docker CLI and compose plugin are in place.
+// ToolsInstalled reports whether the engine's remaining host-side dependency,
+// QEMU on Windows, is in place.
 func ToolsInstalled() bool {
-	for _, p := range []string{dockerCLI(), composePlugin()} {
-		if _, err := os.Stat(p); err != nil {
-			return false
-		}
-	}
 	if runtime.GOOS == "windows" {
 		if _, err := os.Stat(qemuBinary()); err != nil {
 			return false
@@ -96,10 +92,6 @@ func ToolsInstalled() bool {
 	return true
 }
 
-func dockerCLI() string { return filepath.Join(BinDir(), exe("docker")) }
-func composePlugin() string {
-	return filepath.Join(dockerConfig(), "cli-plugins", exe("docker-compose"))
-}
 func qemuDir() string    { return filepath.Join(StateDir(), "qemu") }
 func qemuBinary() string { return filepath.Join(qemuDir(), "qemu-system-x86_64.exe") }
 

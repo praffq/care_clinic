@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
@@ -26,6 +29,29 @@ type EngineState struct {
 	// Logs is "connecting", "collecting" or "interrupted" when running; an
 	// empty value while running means an older helper that cannot report it.
 	Logs string `json:"logs"`
+	// Native is a Linux computer running the CARE agent as a system service
+	// beside Docker rather than inside a CARE engine VM. Supported stays false
+	// (there is no VM to stage, log or recover), but agent version changes are
+	// still reported in UpdateNeeded and applied only by the update coordinator.
+	Native bool `json:"native"`
+}
+
+// nativeAgentUpdater is the provisioner's coordinated native agent update on
+// Linux: the pinned agent is downloaded and verified before beforeStop runs,
+// and the previous agent is restored if clinicHealth fails.
+type nativeAgentUpdater interface {
+	UpdateNativeAgentWithHealth(version string, beforeStop, clinicHealth func() error) error
+}
+
+func nativeEngineState(installed, expected string, answering bool) EngineState {
+	st := EngineState{Native: true, ExpectedVersion: expected,
+		InstalledVersion: installed, Running: answering}
+	if answering {
+		st.RunningVersion = installed
+	}
+	// A missing agent is installed by setup; only a version change is an update.
+	st.UpdateNeeded = installed != "" && expected != "" && installed != expected
+	return st
 }
 
 func engineState(installed, expected string, toolsOK bool, s vm.HostStatus, u *vm.EngineUpdate) EngineState {
@@ -51,7 +77,20 @@ func engineState(installed, expected string, toolsOK bool, s vm.HostStatus, u *v
 
 func (a *App) EngineStatus() EngineState {
 	if !vm.Supported() {
-		return EngineState{}
+		if runtime.GOOS != "linux" {
+			return EngineState{}
+		}
+		installed, expected, err := a.provisioner().NativeAgentVersions()
+		if m, _, readErr := release.NewClient(a.installDir()).ReadVerified(); readErr == nil &&
+			updates.Compatible(m.Engine.RequiresDesktop, a.pins.AppVersion) &&
+			updates.Compatible(">="+a.pins.CareVMVersion, m.Engine.Version) {
+			expected = m.Engine.Version
+		}
+		st := nativeEngineState(installed, expected, a.engineAnswers())
+		if err != nil {
+			st.UpdateNeeded, st.UpdateFailed, st.UpdateError = true, true, err.Error()
+		}
+		return st
 	}
 	installed, expected, toolsOK := a.provisioner().EngineVersions()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -68,11 +107,13 @@ func (a *App) EngineStatus() EngineState {
 // recoverEngineUpdate rolls back an engine update that the app was closed or
 // the computer lost power during, before anything else uses the engine.
 func (a *App) recoverEngineUpdate() {
-	if !vm.Supported() {
+	if !vm.Supported() && runtime.GOOS != "linux" {
 		return
 	}
-	if _, ok, _ := vm.PendingEngineUpdate(); !ok {
-		return
+	if runtime.GOOS != "linux" {
+		if _, ok, _ := vm.PendingEngineUpdate(); !ok {
+			return
+		}
 	}
 	if err := a.withJob(a.provisioner().RecoverEngineUpdate); err != nil {
 		a.logln("error: " + err.Error())
@@ -87,7 +128,10 @@ func (a *App) recoverEngineUpdate() {
 // engine is retained until the clinic is healthy on the new engine.
 func (a *App) updateEngine() error {
 	if !vm.Supported() {
-		return errors.New("this computer runs CARE on Docker directly; there is no CARE engine to update")
+		if runtime.GOOS == "linux" {
+			return a.updateNativeAgent()
+		}
+		return errors.New("this computer has no CARE engine to update")
 	}
 	p := a.provisioner()
 	if err := p.RecoverEngineUpdate(); err != nil {
@@ -125,4 +169,47 @@ func (a *App) updateEngine() error {
 		return err
 	}
 	return nil
+}
+
+// updateNativeAgent applies a pinned native agent version on Linux. It only
+// ever runs inside the update coordinator; setup and repair refuse to change
+// an installed agent's version.
+func (a *App) updateNativeAgent() error {
+	st := a.EngineStatus()
+	return a.updateNativeAgentTo(st.ExpectedVersion)
+}
+
+func (a *App) updateNativeAgentTo(version string) error {
+	st := a.EngineStatus()
+	if !st.UpdateNeeded {
+		if st.InstalledVersion != version {
+			return fmt.Errorf("the approved engine version %s does not match the installed CARE agent %s", version, st.InstalledVersion)
+		}
+		a.logln("The CARE agent is already up to date.")
+		return nil
+	}
+	updater, ok := any(a.provisioner()).(nativeAgentUpdater)
+	if !ok {
+		return fmt.Errorf("CARE agent %s is required but this build cannot update the installed agent %s", st.ExpectedVersion, st.InstalledVersion)
+	}
+	a.logln("Updating the CARE agent to " + version + ". The clinic is unavailable until this finishes; its data is kept.")
+	e := a.engine()
+	err := updater.UpdateNativeAgentWithHealth(version, func() error {
+		if !st.Running {
+			return nil
+		}
+		return e.RemoveContainers()
+	}, func() error {
+		if err := e.RemoveContainers(); err != nil {
+			return err
+		}
+		return e.Start()
+	})
+	if err != nil {
+		a.logln("The CARE agent update didn't finish; starting the clinic on the previous agent...")
+		if serr := e.Start(); serr != nil {
+			return fmt.Errorf("%w (the clinic also couldn't start again: %v)", err, serr)
+		}
+	}
+	return err
 }

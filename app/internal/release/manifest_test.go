@@ -29,11 +29,29 @@ func testManifest(t *testing.T) Manifest {
 	}
 }
 
+func TestJobsEngineManifestRequiresPublishedNativeAssets(t *testing.T) {
+	m := testManifest(t)
+	m.Engine.Version = "0.1.3"
+	if err := m.Validate(); err == nil {
+		t.Fatal("new jobs engine accepted without immutable native agent assets")
+	}
+	for _, arch := range []string{"arm64", "amd64"} {
+		m.Engine.Assets["native-linux-"+arch] = Asset{
+			URL:    "https://example.test/care-engine-v0.1.3/care-engine-agent-linux-" + arch,
+			SHA256: strings.Repeat("c", 64), Size: 42,
+		}
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManifestVerification(t *testing.T) {
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	encoded := base64.StdEncoding.EncodeToString(pub)
 	m := testManifest(t)
 	data, err := json.MarshalIndent(m, "", "  ")

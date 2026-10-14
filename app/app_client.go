@@ -10,7 +10,6 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/hosts"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 )
 
@@ -206,7 +205,7 @@ func (a *App) ClientPreflight(address string) (result ClientPreflight, err error
 // that cannot answer is not worth blocking a client connection over, and the
 // hosts entry and old certificates have fields of their own.
 func (a *App) engineLeftovers() string {
-	if !dockerInstalled() {
+	if !a.engineAnswers() {
 		return ""
 	}
 	report, err := a.scanResidue()
@@ -368,6 +367,7 @@ func (a *App) DisconnectClient() error {
 	})
 }
 
-func dockerInstalled() bool {
-	return proc.Command("docker", "--version").Run() == nil
+func (a *App) engineAnswers() bool {
+	_, err := a.engine().Runner().AgentCaptureIn(5*time.Second, nil, "version", "--format", "{{.Server.Version}}")
+	return err == nil
 }

@@ -196,8 +196,11 @@ func (e *Clinic) backupBeforeUpdate() (string, error) {
 	}
 	ts := time.Now().Format("20060102-150405")
 	e.logln("Taking a safety backup before the update changes the database...")
-	if err := e.run(nil, "docker", "compose", "run", "--rm", "-T", "backup", "once", "pre-update-"+ts); err != nil {
+	if err := e.run(nil, "compose", "run", "--rm", "-T", "backup", "once", "pre-update-"+ts); err != nil {
 		return "", fmt.Errorf("couldn't take a safety backup, so the update was not applied: %w", err)
+	}
+	if err := e.ExportBackups(e.Runner().Context()); err != nil {
+		return "", fmt.Errorf("the update safety backup couldn't be copied to %s, so the update was not applied: %w", e.backupDir(), err)
 	}
 	name := "care-pre-update-" + ts + ".dump.enc"
 	if info, err := os.Stat(filepath.Join(e.backupDir(), name)); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {

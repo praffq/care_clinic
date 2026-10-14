@@ -165,21 +165,3 @@ func TestCancelStopsRunningJobsAndWaitsForThem(t *testing.T) {
 		t.Fatalf("want context.Canceled after Cancel, got %v", err)
 	}
 }
-
-func TestRebuildInsideAGroupDefersCleanupToTheLastGroup(t *testing.T) {
-	b, _ := parallelFixture(t)
-	first := b.Start(Job{Label: "a", Run: func(w *Builder) error { w.afterRebuild(); return nil }})
-	second := b.Start(Job{Label: "b", Run: func(*Builder) error { return nil }})
-	if err := first.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if !b.rebuilt.Load() {
-		t.Fatal("cleanup ran while another group was still open")
-	}
-	if err := second.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	if b.rebuilt.Load() {
-		t.Fatal("cleanup was not run once the last group finished")
-	}
-}

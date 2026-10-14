@@ -33,7 +33,7 @@ func TestSupportLogsIncludeUpdatesHealthAndSecretEnvironmentFiles(t *testing.T) 
 	}
 	dest := filepath.Join(t.TempDir(), "diagnostics.zip")
 	if err := writeDiagnostics(logs, updates, install, dest,
-		map[string]string{"app_version": "0.1.12"}, map[string]string{"containers": "healthy"}); err != nil {
+		map[string]string{"app_version": "0.1.12"}, map[string]string{"containers": "healthy"}, []byte("agent journal line\n")); err != nil {
 		t.Fatal(err)
 	}
 	z, err := zip.OpenReader(dest)
@@ -41,7 +41,7 @@ func TestSupportLogsIncludeUpdatesHealthAndSecretEnvironmentFiles(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer func() { _ = z.Close() }()
-	if len(z.File) != 8 {
+	if len(z.File) != 9 {
 		t.Fatalf("unexpected archive entries: %v", z.File)
 	}
 	found := map[string]string{}
@@ -58,10 +58,13 @@ func TestSupportLogsIncludeUpdatesHealthAndSecretEnvironmentFiles(t *testing.T) 
 		found[f.Name] = string(content)
 	}
 	for _, name := range []string{"versions.json", "health.json", "logs/care-log.log", "logs/guest-system.log",
-		"updates/journal.json", "updates/history.json", "env/backend.env", "env/secrets.env"} {
+		"updates/journal.json", "updates/history.json", "env/backend.env", "env/secrets.env", "engine/journal.txt"} {
 		if _, ok := found[name]; !ok {
 			t.Errorf("support bundle is missing %s", name)
 		}
+	}
+	if found["engine/journal.txt"] != "agent journal line\n" {
+		t.Fatalf("engine journal = %q", found["engine/journal.txt"])
 	}
 	if !strings.Contains(found["env/secrets.env"], "clinic-secret") {
 		t.Fatal("secret environment values were not included for support")

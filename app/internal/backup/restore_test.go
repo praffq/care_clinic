@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
@@ -64,7 +65,8 @@ func newRestoreFixture(t *testing.T) (*Store, func() restoreDockerState, func(re
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nexec '" + strings.ReplaceAll(executable, "'", "'\\''") + "' -test.run=^TestRestoreDockerProcess$ -- \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0o700); err != nil {
+	program := filepath.Join(root, "engine-docker")
+	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "docker-state.json")
@@ -97,7 +99,9 @@ func newRestoreFixture(t *testing.T) (*Store, func() restoreDockerState, func(re
 		Databases: restoreDatabases{Live: &restoreDatabase{OID: "100"}},
 		Files:     "original-files",
 	})
-	s := New(proc.Runner{Dir: root, Env: os.Environ()}, &Store{
+	agent := enginetest.New(t, nil).Install(t)
+	agent.SetHandler(agent.Exec(program))
+	s := New(proc.Runner{Dir: root, Env: os.Environ(), Agent: agent.Client}, &Store{
 		Dir: root, BackupDir: root, Project: "care-clinic", Image: "fixture-backup", BackendImage: "fixture-backend",
 		EnsureImage: func() error { return nil }, EnsureRestoreImages: func() error { return nil },
 		Migrate: func(string, string) error { return nil },
@@ -577,8 +581,11 @@ func TestRestoreSecretsAndManualScope(t *testing.T) {
 			if strings.Contains(arg, "_minio-data") {
 				t.Fatal("database-only restore touched uploaded files")
 			}
-			if strings.Contains(arg, "source="+keyPath) && strings.Contains(arg, "readonly") {
+			if strings.Contains(arg, "/recovery-key.pem,target=/restore-key.pem,readonly") {
 				foundKeyMount = true
+			}
+			if strings.Contains(arg, "source="+keyPath+",") {
+				t.Fatal("restore bound the host recovery file instead of its uploaded input")
 			}
 		}
 		if call.Env["BACKUP_PASS"] != "" || slices.Contains(call.Args, "BACKUP_PASS") {

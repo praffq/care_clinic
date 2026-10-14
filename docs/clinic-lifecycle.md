@@ -5,7 +5,7 @@
 This guide follows the Wails backend from an installed deployment kit to a
 running clinic. "Backend" has two meanings here:
 
-- The **desktop Go backend** validates requests and runs local tools.
+- The **desktop Go backend** validates requests and sends engine operations.
 - The **CARE backend** is the separate Python application inside Docker. It
   serves clinical API requests and shares its image with the task workers.
 
@@ -69,7 +69,8 @@ flowchart TD
     Clinic --> Native["Native completion: local trust"]
     Builder --> Runner
     Backup --> Runner
-    Runner --> Tools["Docker Compose and Docker"]
+    Runner --> Agent["Private operation and file API"]
+    Agent --> Tools["Engine-local Docker Compose and Docker"]
     Tools --> Stack["Clinic services and persistent Docker volumes"]
 ```
 
@@ -168,43 +169,32 @@ interface.
 
 ## 3. One subprocess environment for the clinic
 
-Each call to [`Runner()`](../app/internal/clinic/clinic.go) creates a
-`proc.Runner{Dir, Env, Log, Ctx}`:
+Each call to [`Runner()`](../app/internal/clinic/clinic.go) creates an
+agent-backed runner with the clinic's directory, selected environment,
+logging callback and cancellation context. Preparation uploads the generated
+kit/configuration before execution. The operation working directory and bind
+paths are engine-local, not guesses derived from a host drive letter.
 
-- `Dir` is `InstallDir` if it currently exists as a directory, otherwise empty.
-  The latter lets label-based inspection run even when installation files are
-  absent. It does not make a missing Compose file usable.
-- `Env` starts with `os.Environ()` and appends the engine's explicit settings.
-  Other host environment values still matter, but not the Docker engine
-  selection: see the next two points.
-- `PATH` uses `proc.AugmentedPath()` so GUI-launched processes can find the
-  required command-line tools.
-- On macOS and Windows, `vm.Env()` directs every `docker` and `docker compose`
-  command to the app-managed CARE engine and its bundled CLI. It does not use
-  the user's Docker contexts. Linux continues to use native Docker Engine.
-  Platform endpoints, folder sharing and synchronization are described in the
-  [CARE engine guide](vm.md).
-- `Log` is the same callback supplied to the engine.
+`dc(args...)` sends the typed `compose` operation. `run` supports per-call
+container environment additions; `capture` returns trimmed stdout separately
+from stderr; `captureLines` returns nonempty trimmed stdout lines. Agent frames
+stream both output channels and report the terminal exit status. A disconnected
+stream or failed input transfer cannot be treated as success. Plugin
+transactions supply an apply/recovery deadline, and readiness inspection has
+its own shorter deadline. Recent network-failure diagnostics retain the
+existing network retry classification.
 
-`dc(args...)` means a runner invocation of `docker compose` with those
-arguments. `run` supports per-call environment additions; `capture` returns
-trimmed stdout without streaming stderr into the returned string;
-`captureLines` returns nonempty trimmed stdout lines. `Run` streams stdout and
-stderr through the callback, potentially concurrently. These runner methods
-do not automatically impose a timeout on an image pull, image build, or
-migration without `Ctx`. Plugin transactions supply an apply/recovery deadline,
-and readiness inspection uses its own shorter deadline.
-
-Executable lookup uses the desktop process's PATH when Go constructs a
-command. The App's process-level PATH repair is therefore important as well
-as the PATH passed into children; a runner environment alone is not a new
-executable-lookup policy. Native process behavior and diagnostics are detailed
-in [native integrations](native-integrations.md).
+Host `PATH`, Docker contexts and unrelated environment values are not sent to
+the engine. Docker and Compose execute in the agent's own environment on every
+platform, including native Linux. The local runner rejects Docker commands.
+The [CARE engine guide](vm.md) describes the protected transport and explicit
+input/output transfers. Host process PATH repair remains relevant only to
+native OS integration and prerequisite tools.
 
 | Environment supplied by the engine | Source |
 | --- | --- |
 | `COMPOSE_PROJECT_NAME` | Always `care-clinic`. |
-| `COMPOSE_FILE` | `InstallDir/docker-compose.yml`. |
+| `COMPOSE_FILE` | The uploaded engine-local `docker-compose.yml`. |
 | `BACKEND_IMAGE`, `FRONTEND_IMAGE`, `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CADDY_WAF_IMAGE`, `BACKUP_IMAGE` | The injected release pins, not arbitrary caller-selected tags. |
 | `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Trimmed `BUCKET_KEY` and `BUCKET_SECRET` from installed `backend.env`. |
 | `FILE_UPLOAD_BUCKET`, `FACILITY_S3_BUCKET` | Trimmed values from the same installed backend environment. |

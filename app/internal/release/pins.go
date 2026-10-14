@@ -42,33 +42,22 @@ type Pins struct {
 	CaddyWafPrebuilt string
 	BackupPrebuilt   string
 
-	// The CARE engine: the Linux VM that runs Docker on macOS and Windows,
-	// with the docker CLI, compose plugin and (Windows) QEMU it is driven by.
-	CareVMVersion             string
-	CareVMBaseURL             string
-	CareVMAarch64SHA256       string
-	CareVMX8664SHA256         string
-	DockerCLIVersion          string
-	DockerCLIMacAarch64SHA256 string
-	DockerCLIMacX8664SHA256   string
-	DockerCLIWindowsSHA256    string
-	ComposeMacAarch64SHA256   string
-	ComposeMacX8664SHA256     string
-	ComposeWindowsSHA256      string
-	QEMUWindowsVersion        string
-	QEMUWindowsURL            string
-	QEMUWindowsSHA256         string
-	SevenZipWindowsURL        string
-	SevenZipWindowsSHA256     string
-	SevenZipBootstrapURL      string
-	SevenZipBootstrapSHA256   string
+	// The CARE engine is the Linux VM that runs the agent on macOS and Windows.
+	CareVMVersion           string
+	CareVMBaseURL           string
+	CareVMAarch64SHA256     string
+	CareVMX8664SHA256       string
+	QEMUWindowsVersion      string
+	QEMUWindowsURL          string
+	QEMUWindowsSHA256       string
+	SevenZipWindowsURL      string
+	SevenZipWindowsSHA256   string
+	SevenZipBootstrapURL    string
+	SevenZipBootstrapSHA256 string
 
-	DockerLinuxVersion        string
-	DockerLinuxX8664SHA256    string
-	DockerLinuxAarch64SHA256  string
-	ComposeLinuxVersion       string
-	ComposeLinuxX8664SHA256   string
-	ComposeLinuxAarch64SHA256 string
+	DockerLinuxVersion       string
+	DockerLinuxX8664SHA256   string
+	DockerLinuxAarch64SHA256 string
 }
 
 func (p *Pins) envPinMap() []struct {
@@ -95,13 +84,6 @@ func (p *Pins) envPinMap() []struct {
 		{"CARE_VM_BASE_URL", &p.CareVMBaseURL},
 		{"CARE_VM_AARCH64_SHA256", &p.CareVMAarch64SHA256},
 		{"CARE_VM_X86_64_SHA256", &p.CareVMX8664SHA256},
-		{"DOCKER_CLI_VERSION", &p.DockerCLIVersion},
-		{"DOCKER_CLI_MACOS_AARCH64_SHA256", &p.DockerCLIMacAarch64SHA256},
-		{"DOCKER_CLI_MACOS_X86_64_SHA256", &p.DockerCLIMacX8664SHA256},
-		{"DOCKER_CLI_WINDOWS_X86_64_SHA256", &p.DockerCLIWindowsSHA256},
-		{"COMPOSE_MACOS_AARCH64_SHA256", &p.ComposeMacAarch64SHA256},
-		{"COMPOSE_MACOS_X86_64_SHA256", &p.ComposeMacX8664SHA256},
-		{"COMPOSE_WINDOWS_X86_64_SHA256", &p.ComposeWindowsSHA256},
 		{"QEMU_WINDOWS_VERSION", &p.QEMUWindowsVersion},
 		{"QEMU_WINDOWS_URL", &p.QEMUWindowsURL},
 		{"QEMU_WINDOWS_SHA256", &p.QEMUWindowsSHA256},
@@ -112,9 +94,6 @@ func (p *Pins) envPinMap() []struct {
 		{"DOCKER_LINUX_VERSION", &p.DockerLinuxVersion},
 		{"DOCKER_LINUX_X86_64_SHA256", &p.DockerLinuxX8664SHA256},
 		{"DOCKER_LINUX_AARCH64_SHA256", &p.DockerLinuxAarch64SHA256},
-		{"COMPOSE_LINUX_VERSION", &p.ComposeLinuxVersion},
-		{"COMPOSE_LINUX_X86_64_SHA256", &p.ComposeLinuxX8664SHA256},
-		{"COMPOSE_LINUX_AARCH64_SHA256", &p.ComposeLinuxAarch64SHA256},
 	}
 }
 
@@ -160,11 +139,9 @@ func Load(env []byte) (*Pins, error) {
 		return nil, err
 	}
 	for key, version := range map[string]string{
-		"CARE_VM_VERSION":       p.CareVMVersion,
-		"DOCKER_CLI_VERSION":    p.DockerCLIVersion,
-		"QEMU_WINDOWS_VERSION":  p.QEMUWindowsVersion,
-		"DOCKER_LINUX_VERSION":  p.DockerLinuxVersion,
-		"COMPOSE_LINUX_VERSION": p.ComposeLinuxVersion,
+		"CARE_VM_VERSION":      p.CareVMVersion,
+		"QEMU_WINDOWS_VERSION": p.QEMUWindowsVersion,
+		"DOCKER_LINUX_VERSION": p.DockerLinuxVersion,
 	} {
 		if !numericPattern.MatchString(version) {
 			return nil, fmt.Errorf("%s must be X.Y.Z", key)
@@ -191,21 +168,13 @@ func Load(env []byte) (*Pins, error) {
 		*dst = v
 	}
 	for key, sum := range map[string]string{
-		"CARE_VM_AARCH64_SHA256":           p.CareVMAarch64SHA256,
-		"CARE_VM_X86_64_SHA256":            p.CareVMX8664SHA256,
-		"DOCKER_CLI_MACOS_AARCH64_SHA256":  p.DockerCLIMacAarch64SHA256,
-		"DOCKER_CLI_MACOS_X86_64_SHA256":   p.DockerCLIMacX8664SHA256,
-		"DOCKER_CLI_WINDOWS_X86_64_SHA256": p.DockerCLIWindowsSHA256,
-		"COMPOSE_MACOS_AARCH64_SHA256":     p.ComposeMacAarch64SHA256,
-		"COMPOSE_MACOS_X86_64_SHA256":      p.ComposeMacX8664SHA256,
-		"COMPOSE_WINDOWS_X86_64_SHA256":    p.ComposeWindowsSHA256,
-		"QEMU_WINDOWS_SHA256":              p.QEMUWindowsSHA256,
-		"SEVENZIP_WINDOWS_SHA256":          p.SevenZipWindowsSHA256,
-		"SEVENZIP_BOOTSTRAP_SHA256":        p.SevenZipBootstrapSHA256,
-		"DOCKER_LINUX_X86_64_SHA256":       p.DockerLinuxX8664SHA256,
-		"DOCKER_LINUX_AARCH64_SHA256":      p.DockerLinuxAarch64SHA256,
-		"COMPOSE_LINUX_X86_64_SHA256":      p.ComposeLinuxX8664SHA256,
-		"COMPOSE_LINUX_AARCH64_SHA256":     p.ComposeLinuxAarch64SHA256,
+		"CARE_VM_AARCH64_SHA256":      p.CareVMAarch64SHA256,
+		"CARE_VM_X86_64_SHA256":       p.CareVMX8664SHA256,
+		"QEMU_WINDOWS_SHA256":         p.QEMUWindowsSHA256,
+		"SEVENZIP_WINDOWS_SHA256":     p.SevenZipWindowsSHA256,
+		"SEVENZIP_BOOTSTRAP_SHA256":   p.SevenZipBootstrapSHA256,
+		"DOCKER_LINUX_X86_64_SHA256":  p.DockerLinuxX8664SHA256,
+		"DOCKER_LINUX_AARCH64_SHA256": p.DockerLinuxAarch64SHA256,
 	} {
 		if !sha256Pattern.MatchString(sum) {
 			return nil, fmt.Errorf("%s must be 64 lowercase hex characters", key)

@@ -137,8 +137,12 @@ func (a *App) GetBackupHealth() (h storage.BackupHealth, err error) {
 	if err := a.requireSetup(); err != nil {
 		return h, err
 	}
+	running := health.Ping().Active
+	if running {
+		a.exportBackupState()
+	}
 	return a.backupHealth(a.engine().BackupDirPath(), filepath.Join(a.installDir(), backupStateDir),
-		health.Ping().Active, time.Now()), nil
+		running, time.Now()), nil
 }
 
 // SetBackupCopyDir chooses an optional second place (USB drive, second disk
@@ -236,7 +240,7 @@ func (a *App) SetBackupDir(dir string) (target string, err error) {
 		target = filepath.Join(dir, "care-db-backups")
 		previousConfig := a.loadConfig()
 		previous := a.engine()
-		running, err := previous.Runner().Lines("docker", "compose", "ps", "--services", "--filter", "status=running")
+		running, err := previous.Runner().AgentLines("compose", "ps", "--services", "--filter", "status=running")
 		if err != nil {
 			return err
 		}

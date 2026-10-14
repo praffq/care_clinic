@@ -3,6 +3,8 @@ package release
 import (
 	"strings"
 	"testing"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 func TestRepositoryConfigIsValid(t *testing.T) {
@@ -15,6 +17,10 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	}
 	if c.Care.Backend.Repo == "" || c.Care.Frontend.Branch == "" {
 		t.Fatal("CARE sources are missing")
+	}
+	constraint, err := semver.NewConstraint(c.Desktop.RequiresEngine)
+	if err != nil || constraint.Check(semver.MustParse("0.1.2")) {
+		t.Fatal("desktop must exclude engines predating the jobs protocol")
 	}
 }
 
@@ -81,12 +87,9 @@ func TestReadConfigIsStrict(t *testing.T) {
 		{"unused tool version", [2]string{"[tools.sevenzip_windows_x86_64]", "[tools.sevenzip_windows_x86_64]\nversion = \"26.4.0\""}, false},
 		{"missing tool version", [2]string{"[tools.qemu_windows_x86_64]\nversion = ", "[tools.qemu_windows_x86_64]\n#version = "}, false},
 		{"missing tool", [2]string{"[tools.qemu_windows_x86_64]", "[tools.qemu_unused]"}, false},
-		{"mismatched docker", [2]string{"[tools.docker_cli_macos_aarch64]\nversion = \"29.8.1\"\nurl = \"https://download.docker.com/mac/static/stable/aarch64/docker-29.8.1.tgz\"",
-			"[tools.docker_cli_macos_aarch64]\nversion = \"29.8.2\"\nurl = \"https://download.docker.com/mac/static/stable/aarch64/docker-29.8.2.tgz\""}, false},
-		{"engine tool disagrees", [2]string{"version = \"0.1.2\"\nurl = \"https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.2-linux-arm64",
-			"version = \"0.1.3\"\nurl = \"https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.3-linux-arm64"}, false},
-		{"engine name", [2]string{"care-engine-0.1.2-linux-arm64.tar.gz", "care-engine-0.1.2-linux-amd64.tar.gz"}, false},
-		{"engine base", [2]string{"care-engine-v0.1.2/care-engine-0.1.2-linux-arm64", "other/care-engine-0.1.2-linux-arm64"}, false},
+		{"engine tool disagrees", [2]string{"version = \"" + c.Engine.Version + "\"\nurl =", "version = \"9.0.0\"\nurl ="}, false},
+		{"engine name", [2]string{"care-engine-" + c.Engine.Version + "-linux-arm64.tar.gz", "care-engine-" + c.Engine.Version + "-linux-amd64.tar.gz"}, false},
+		{"engine base", [2]string{"care-engine-v" + c.Engine.Version + "/care-engine-" + c.Engine.Version + "-linux-arm64", "other/care-engine-" + c.Engine.Version + "-linux-arm64"}, false},
 		{"qemu not exe", [2]string{"qemu-w64-setup-20250826.exe", "qemu-w64-setup-20250826.msi"}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,7 +111,9 @@ func TestStageEnvRejectsReleaseValuesInDeploymentEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"CARE_CLINIC_VERSION", "POSTGRES_IMAGE", "CORAZA_VERSION", "QEMU_WINDOWS_URL",
-		"CARE_VM_VERSION", "CARE_LINES_URL", "CARE_DEFAULT_LINE", "CADDY_WAF_PREBUILT", "BACKUP_PREBUILT"} {
+		"CARE_VM_VERSION", "CARE_LINES_URL", "CARE_DEFAULT_LINE", "CADDY_WAF_PREBUILT", "BACKUP_PREBUILT",
+		"DOCKER_CLI_VERSION", "DOCKER_CLI_MACOS_AARCH64_SHA256", "COMPOSE_WINDOWS_X86_64_SHA256",
+		"COMPOSE_LINUX_VERSION"} {
 		t.Run(key, func(t *testing.T) {
 			if _, err := StageEnv(config, []byte(base+key+"=x\n")); err == nil || !strings.Contains(err.Error(), key) {
 				t.Fatalf("release value %s in deployments/.env was accepted: %v", key, err)

@@ -10,7 +10,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
 
-func TestPurgeCannotSkipInspectionOfManagedDiskWhenCLIIsMissing(t *testing.T) {
+func TestPurgeCannotSkipInspectionOfManagedDiskWhenAgentIsMissing(t *testing.T) {
 	if !vm.Supported() {
 		t.Skip("managed VM absence policy does not apply to native Linux")
 	}
@@ -26,13 +26,13 @@ func TestPurgeCannotSkipInspectionOfManagedDiskWhenCLIIsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &Clinic{InstallDir: home, Pins: &release.Pins{}}
-	if available, err := e.dockerCLIAvailable(); available || err == nil || !strings.Contains(err.Error(), "retained clinic volumes") {
+	if available, err := e.engineAvailable(); available || err == nil || !strings.Contains(err.Error(), "retained clinic volumes") {
 		t.Fatalf("retained disk treated as safely absent: %v, %v", available, err)
 	}
 	if err := os.Remove(disk); err != nil {
 		t.Fatal(err)
 	}
-	if available, err := e.dockerCLIAvailable(); available || err != nil {
-		t.Fatalf("proved absence still required missing CLI: %v, %v", available, err)
+	if available, err := e.engineAvailable(); available || err != nil {
+		t.Fatalf("proved absence still required an answering agent: %v, %v", available, err)
 	}
 }

@@ -154,7 +154,7 @@ func (e *Clinic) preparePluginRecovery(list []plugins.Plugin) (*pluginRecovery, 
 		return nil, err
 	}
 	if state.ImageID == "" {
-		state.ImageID, err = e.capture("docker", "image", "inspect", "--format", "{{.Id}}", state.BackendImage)
+		state.ImageID, err = e.capture("image", "inspect", "--format", "{{.Id}}", state.BackendImage)
 		if err != nil {
 			return nil, fmt.Errorf("cannot preserve the previous backend image: %w", err)
 		}
@@ -163,7 +163,7 @@ func (e *Clinic) preparePluginRecovery(list []plugins.Plugin) (*pluginRecovery, 
 		return nil, errors.New("cannot identify the previous backend image")
 	}
 	// Pin the image so replacing the normal tag cannot make it dangling.
-	if err := e.run(nil, "docker", "image", "tag", state.ImageID, state.BackendImage+"-plugin-rollback"); err != nil {
+	if err := e.run(nil, "image", "tag", state.ImageID, state.BackendImage+"-plugin-rollback"); err != nil {
 		return nil, err
 	}
 	data, err := json.Marshal(state)
@@ -171,7 +171,7 @@ func (e *Clinic) preparePluginRecovery(list []plugins.Plugin) (*pluginRecovery, 
 		err = atomicfile.WritePrivate(filepath.Join(e.InstallDir, pluginRecoveryFile), data)
 	}
 	if err != nil {
-		cleanupErr := e.run(nil, "docker", "image", "rm", state.BackendImage+"-plugin-rollback")
+		cleanupErr := e.run(nil, "image", "rm", state.BackendImage+"-plugin-rollback")
 		return nil, errors.Join(err, cleanupErr)
 	}
 	return state, nil
@@ -222,7 +222,7 @@ func (e *Clinic) recoverPlugins(state *pluginRecovery) error {
 			restoreErrors = append(restoreErrors, fmt.Errorf("restore %s: %w", name, err))
 		}
 	}
-	if err := e.run(nil, "docker", "image", "tag", state.ImageID, state.BackendImage); err != nil {
+	if err := e.run(nil, "image", "tag", state.ImageID, state.BackendImage); err != nil {
 		restoreErrors = append(restoreErrors, fmt.Errorf("restore backend image: %w", err))
 	}
 	if err := errors.Join(restoreErrors...); err != nil {
@@ -260,7 +260,7 @@ func (e *Clinic) finishPluginRecovery(state *pluginRecovery) error {
 	}
 	// The transaction is committed. A leftover safety tag is harmless, unlike
 	// reporting a failed rollback after removing the journal.
-	if err := e.run(nil, "docker", "image", "rm", state.BackendImage+"-plugin-rollback"); err != nil {
+	if err := e.run(nil, "image", "rm", state.BackendImage+"-plugin-rollback"); err != nil {
 		e.logln("warning: could not remove the plugin safety image tag: " + err.Error())
 	}
 	return nil

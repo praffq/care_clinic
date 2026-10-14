@@ -130,6 +130,12 @@ func (a *App) updateHooks(manifest release.Manifest, desktopApply func(*updates.
 				if err := checkpoint(); err != nil {
 					return "", err
 				}
+				if runtime.GOOS == "linux" {
+					return "restore previous CARE agent", a.updateNativeAgentTo(manifest.Engine.Version)
+				}
+				if manifest.Engine.Version != a.pins.CareVMVersion {
+					return "", errors.New("the approved engine release requires the matching desktop build before activation")
+				}
 				return "restore previous CARE engine", a.updateEngine()
 			case updates.Desktop:
 				if err := desktopApply(plan, checkpoint); err != nil {
@@ -312,6 +318,14 @@ func (a *App) updatePreflight(ctx context.Context, plan *updates.Journal, manife
 			}
 		case updates.Engine:
 			needsContainers = true
+			if runtime.GOOS == "linux" {
+				asset, ok := manifest.Engine.Assets["native-linux-"+runtime.GOARCH]
+				if !ok || asset.Size <= 0 {
+					return errors.New("signed engine release has no native Linux agent for this computer")
+				}
+				required += uint64(asset.Size)
+				continue
+			}
 			info, err := a.provisioner().EngineDownloadInfo()
 			if err != nil {
 				return fmt.Errorf("estimate CARE engine update space: %w", err)
@@ -358,7 +372,7 @@ func (a *App) updatePreflight(ctx context.Context, plan *updates.Journal, manife
 				if image == "" {
 					continue
 				}
-				id, err := a.engine().Runner().Capture("docker", "image", "inspect", "--format", "{{.Id}}", image)
+				id, err := a.engine().Runner().AgentCapture("image", "inspect", "--format", "{{.Id}}", image)
 				if err != nil {
 					return fmt.Errorf("read installed image ID for %s: %w", image, err)
 				}

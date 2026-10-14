@@ -155,7 +155,7 @@ func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) 
 		}
 		previousTag := previousImageTag(s.image)
 		if c.Current.Image != "" {
-			if err := b.run.Run("docker", "image", "tag", s.image, previousTag); err != nil {
+			if err := b.run.AgentRun("image", "tag", s.image, previousTag); err != nil {
 				return fmt.Errorf("could not retain the previous CARE %s image: %w", s.service, err)
 			}
 		}
@@ -165,9 +165,9 @@ func (b *Builder) applyPending(lock *Lock, applied *Update, retagged *[]string) 
 		if err := writeLock(b.dir, *lock); err != nil {
 			return fmt.Errorf("record previous CARE %s image before activation: %w", s.service, err)
 		}
-		if err := b.run.Run("docker", "image", "tag", staged, s.image); err != nil {
+		if err := b.run.AgentRun("image", "tag", staged, s.image); err != nil {
 			if c.Current.Image != "" {
-				if restoreErr := b.run.Run("docker", "image", "tag", previousTag, s.image); restoreErr != nil {
+				if restoreErr := b.run.AgentRun("image", "tag", previousTag, s.image); restoreErr != nil {
 					return fmt.Errorf("could not activate CARE %s: %w; restoring its previous tag failed: %v", s.service, err, restoreErr)
 				}
 			}
@@ -187,7 +187,7 @@ func previousImageTag(image string) string { return image + "-previous" }
 func (b *Builder) restoreStableTags(images []string) error {
 	var failures []error
 	for i := len(images) - 1; i >= 0; i-- {
-		if err := b.run.Run("docker", "image", "tag", previousImageTag(images[i]), images[i]); err != nil {
+		if err := b.run.AgentRun("image", "tag", previousImageTag(images[i]), images[i]); err != nil {
 			failures = append(failures, err)
 			continue
 		}
@@ -232,7 +232,7 @@ func (b *Builder) RollbackApplied() error {
 			if channel.Next != nil {
 				current = *channel.Next
 			}
-			if err := b.run.Run("docker", "image", "tag", previousImageTag(item.image), item.image); err != nil {
+			if err := b.run.AgentRun("image", "tag", previousImageTag(item.image), item.image); err != nil {
 				return fmt.Errorf("could not restore the previous CARE %s image: %w", item.service, err)
 			}
 			channel.Current, channel.Next, channel.Previous, channel.Declined =

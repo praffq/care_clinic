@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/engine"
 )
 
 type projectResource struct {
@@ -23,7 +26,7 @@ func (e *Clinic) inspectProject() ([]projectResource, error) {
 	}
 	var failed []error
 	for i := range resources {
-		ids, err := e.captureLines("docker", resources[i].query...)
+		ids, err := e.captureLines(engine.Operation(resources[i].query[0]), resources[i].query[1:]...)
 		if err != nil {
 			failed = append(failed, fmt.Errorf("could not inspect clinic %s; start Docker and retry: %w", resources[i].kind, err))
 		}
@@ -43,8 +46,8 @@ func (e *Clinic) TeardownProject() error {
 			continue
 		}
 		e.logln("Removing clinic " + resource.kind + "...")
-		removeErr := e.run(nil, "docker", append(resource.remove, resource.ids...)...)
-		left, err := e.captureLines("docker", resource.query...)
+		removeErr := e.run(nil, engine.Operation(resource.remove[0]), append(slices.Clone(resource.remove[1:]), resource.ids...)...)
+		left, err := e.captureLines(engine.Operation(resource.query[0]), resource.query[1:]...)
 		if err != nil {
 			failed = append(failed, errors.Join(removeErr, err))
 		} else if len(left) > 0 {

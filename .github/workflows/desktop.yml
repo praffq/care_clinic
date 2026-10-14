@@ -89,7 +89,6 @@ jobs:
           for tool in gcc git node python3 openssl initdb postgres psql pg_dump pg_restore; do
             command -v "$tool"
           done
-          docker compose version
       - name: Build from a clean checkout
         run: go build ./...
       - name: Vet Linux and Windows engine boundaries

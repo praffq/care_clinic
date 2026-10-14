@@ -21,42 +21,28 @@ import (
 // runs Docker on macOS and Windows.
 const engineName = "CARE engine"
 
-const (
-	dockerMacStatic = "https://download.docker.com/mac/static/stable/"
-	dockerWinStatic = "https://download.docker.com/win/static/stable/x86_64/"
-	engineStopWait  = 2 * time.Minute
-)
+const engineStopWait = 2 * time.Minute
 
-// engineDownloads lists everything the CARE engine needs on this platform:
-// the VM image, the docker CLI, the compose plugin and, on Windows, QEMU.
+// engineDownloads lists the engine bundle and, on Windows, the QEMU files
+// downloaded directly from their publishers.
 func engineDownloads(p *release.Pins, goos, goarch string) ([]Download, error) {
 	if p == nil {
 		return nil, errors.New("this build of CARE Clinic has no download pins")
 	}
-	var vmArch, vmSum, dockerURL, dockerSum, composeName, composeSum string
+	var vmArch, vmSum string
 	switch {
 	case goos == "darwin" && goarch == "arm64":
 		vmArch, vmSum = "arm64", p.CareVMAarch64SHA256
-		dockerURL, dockerSum = dockerMacStatic+"aarch64/docker-"+p.DockerCLIVersion+".tgz", p.DockerCLIMacAarch64SHA256
-		composeName, composeSum = "docker-compose-darwin-aarch64", p.ComposeMacAarch64SHA256
 	case goos == "darwin" && goarch == "amd64":
 		vmArch, vmSum = "amd64", p.CareVMX8664SHA256
-		dockerURL, dockerSum = dockerMacStatic+"x86_64/docker-"+p.DockerCLIVersion+".tgz", p.DockerCLIMacX8664SHA256
-		composeName, composeSum = "docker-compose-darwin-x86_64", p.ComposeMacX8664SHA256
 	case goos == "windows" && goarch == "amd64":
 		vmArch, vmSum = "amd64", p.CareVMX8664SHA256
-		dockerURL, dockerSum = dockerWinStatic+"docker-"+p.DockerCLIVersion+".zip", p.DockerCLIWindowsSHA256
-		composeName, composeSum = "docker-compose-windows-x86_64.exe", p.ComposeWindowsSHA256
 	default:
 		return nil, fmt.Errorf("the %s does not run on %s/%s", engineName, goos, goarch)
 	}
 	base := strings.TrimRight(p.CareVMBaseURL, "/") + "/"
 	vmName := "care-engine-" + p.CareVMVersion + "-linux-" + vmArch + ".tar.gz"
-	all := []Download{
-		{Name: vmName, URL: base + vmName, SHA256: vmSum},
-		{Name: dockerURL[strings.LastIndexByte(dockerURL, '/')+1:], URL: dockerURL, SHA256: dockerSum},
-		{Name: composeName, URL: composeReleases + p.ComposeLinuxVersion + "/" + composeName, SHA256: composeSum},
-	}
+	all := []Download{{Name: vmName, URL: base + vmName, SHA256: vmSum}}
 	if goos == "windows" {
 		for _, d := range []Download{
 			{URL: p.QEMUWindowsURL, SHA256: p.QEMUWindowsSHA256},
@@ -82,6 +68,9 @@ func (pr *Provisioner) EngineDownloadInfo() (DownloadInfo, error) {
 		return DownloadInfo{}, err
 	}
 	total := DownloadInfo{Name: engineName}
+	if err := engineDownloadsPublished(downloads); err != nil {
+		return DownloadInfo{}, err
+	}
 	for _, d := range downloads {
 		info, err := inspectDownload(d)
 		if err != nil {
@@ -96,6 +85,9 @@ func (pr *Provisioner) EngineDownloadInfo() (DownloadInfo, error) {
 // the running clinic or activating any installed files.
 func (pr *Provisioner) PrepareEngineUpdate() error {
 	if err := pr.RecoverEngineUpdate(); err != nil {
+		return err
+	}
+	if err := engineBootstrapPublished(pr.pins); err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" {
@@ -116,6 +108,9 @@ func (pr *Provisioner) PrepareEngineUpdate() error {
 		return err
 	}
 	files := make([]string, 0, len(downloads))
+	if err := engineDownloadsPublished(downloads); err != nil {
+		return err
+	}
 	defer func() {
 		for _, f := range files {
 			_ = os.Remove(f)
@@ -151,7 +146,7 @@ func (pr *Provisioner) engineCurrent() (installed, current bool) {
 	if err != nil {
 		return false, false
 	}
-	return true, vm.ToolsInstalled() && (pr.pins == nil || m.Version == pr.pins.CareVMVersion)
+	return true, vm.ToolsInstalled() && pr.pins != nil && m.Version == pr.pins.CareVMVersion
 }
 
 // EngineVersions reports the installed CARE engine version (empty when none is
@@ -233,6 +228,9 @@ func (pr *Provisioner) installEngineThen(beforeStop func() error, clinicHealth .
 	if err := pr.RecoverEngineUpdate(); err != nil {
 		return err
 	}
+	if err := engineBootstrapPublished(pr.pins); err != nil {
+		return err
+	}
 	if runtime.GOOS == "windows" {
 		if err := vm.HypervisorReady(); err != nil {
 			return fmt.Errorf("%w; finish the Windows step first", err)
@@ -256,11 +254,14 @@ func (pr *Provisioner) installEngineThen(beforeStop func() error, clinicHealth .
 }
 
 func (pr *Provisioner) installEngineDownloads(downloads []Download, beforeStop func() error, clinicHealth ...func() error) error {
-	if len(downloads) != 3 && len(downloads) != 6 {
+	if len(downloads) != 1 && len(downloads) != 4 {
 		return errors.New("this build has an incomplete CARE engine download list")
 	}
-	if len(downloads) == 6 && (pr.pins == nil || pr.pins.QEMUWindowsVersion == "") {
+	if len(downloads) == 4 && (pr.pins == nil || pr.pins.QEMUWindowsVersion == "") {
 		return errors.New("this build has no pinned QEMU version")
+	}
+	if err := engineDownloadsPublished(downloads); err != nil {
+		return err
 	}
 	files := make([]string, 0, len(downloads))
 	defer func() {
@@ -287,17 +288,39 @@ func (pr *Provisioner) installEngineDownloads(downloads []Download, beforeStop f
 	return pr.applyEngine(staged, beforeStop, clinicHealth...)
 }
 
+func engineDownloadsPublished(downloads []Download) error {
+	for _, d := range downloads {
+		if d.SHA256 == strings.Repeat("0", 64) {
+			return fmt.Errorf("%s bootstrap is blocked until its immutable checksum is published", d.Name)
+		}
+
+	}
+	return nil
+}
+
+func engineBootstrapPublished(p *release.Pins) error {
+	if p == nil {
+		return errors.New("this build of CARE Clinic has no download pins")
+	}
+	for _, sum := range []string{p.CareVMAarch64SHA256, p.CareVMX8664SHA256} {
+		if sum == strings.Repeat("0", 64) {
+			return fmt.Errorf("CARE engine %s bootstrap is blocked until its immutable bundle checksums are published", p.CareVMVersion)
+		}
+	}
+	return nil
+}
+
 func engineFilesFromDownloads(files []string, pins *release.Pins) (vm.EngineFiles, error) {
-	if len(files) != 3 && len(files) != 6 {
+	if len(files) != 1 && len(files) != 4 {
 		return vm.EngineFiles{}, errors.New("this build has an incomplete CARE engine download list")
 	}
-	ef := vm.EngineFiles{Engine: files[0], Docker: files[1], Compose: files[2]}
-	if len(files) == 6 {
+	ef := vm.EngineFiles{Engine: files[0]}
+	if len(files) == 4 {
 		if pins == nil || pins.QEMUWindowsVersion == "" {
 			return vm.EngineFiles{}, errors.New("this build has no pinned QEMU version")
 		}
-		ef.QEMU = files[3]
-		ef.QEMUBootstrap, ef.QEMUExtractor = files[4], files[5]
+		ef.QEMU = files[1]
+		ef.QEMUBootstrap, ef.QEMUExtractor = files[2], files[3]
 		ef.QEMUVersion = pins.QEMUWindowsVersion
 	}
 	return ef, nil
@@ -389,6 +412,9 @@ func (pr *Provisioner) restorePreviousEngine(cause string) error {
 // RecoverEngineUpdate rolls back an engine update that was interrupted, for
 // example by the computer losing power, before the engine is started again.
 func (pr *Provisioner) RecoverEngineUpdate() error {
+	if runtime.GOOS == "linux" {
+		return pr.RecoverNativeAgentUpdate()
+	}
 	if !vm.Supported() {
 		return nil
 	}

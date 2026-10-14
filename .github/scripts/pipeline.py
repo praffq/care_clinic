@@ -86,6 +86,8 @@ def release_assets(component, publish):
         "engine": {
             "linux-arm64": f"care-engine-{version}-linux-arm64.tar.gz",
             "linux-amd64": f"care-engine-{version}-linux-amd64.tar.gz",
+            "native-linux-arm64": "care-engine-agent-linux-arm64",
+            "native-linux-amd64": "care-engine-agent-linux-amd64",
         },
     }[component]
     repository = os.environ["GITHUB_REPOSITORY"]

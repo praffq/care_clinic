@@ -152,7 +152,7 @@ func TestPointInTimeRestoreRunsThroughStagedSwap(t *testing.T) {
 			pitr = call.Args
 		}
 	}
-	if !slices.Equal(steps[:1], []string{"pitr"}) || slices.Contains(steps, "preflight") ||
+	if len(steps) == 0 || steps[0] != "pitr" || slices.Contains(steps, "preflight") ||
 		slices.Contains(steps, "replace-files") || !slices.Contains(steps, "stage-db") || !slices.Contains(steps, "swap-db") {
 		t.Fatalf("point-in-time restore skipped the staged swap: %v", steps)
 	}
@@ -165,9 +165,12 @@ func TestPointInTimeRestoreRunsThroughStagedSwap(t *testing.T) {
 	}
 	joined := strings.Join(pitr, " ")
 	for _, want := range []string{"target=/backups,readonly", "target=/scripts,readonly", "target=/keys,readonly",
-		"source=" + key + ",target=/restore-key.pem,readonly", "--network none"} {
+		"/recovery-key.pem,target=/restore-key.pem,readonly", "--network none"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("pitr helper is missing %q: %s", want, joined)
+		}
+		if strings.Contains(joined, "source="+key+",") {
+			t.Fatal("restore bound a desktop recovery path instead of the uploaded key")
 		}
 	}
 	if strings.Contains(joined, "PRIVATE KEY") || strings.Contains(joined, "SyntheticDatabaseSecret") {

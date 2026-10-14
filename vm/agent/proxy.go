@@ -13,16 +13,11 @@ import (
 
 type dialer func() (net.Conn, error)
 
-func unixTarget(path string) dialer {
-	return func() (net.Conn, error) { return net.DialTimeout("unix", path, 5*time.Second) }
-}
-
 func tcpTarget(addr string) dialer {
 	return func() (net.Conn, error) { return net.DialTimeout("tcp", addr, 5*time.Second) }
 }
 
-// serveProxy copies bytes both ways, so streaming Docker calls (logs, attach,
-// exec, builds) work without the agent understanding them.
+// serveProxy forwards the clinic's web ports over the private vsock channel.
 func serveProxy(l net.Listener, target dialer) error {
 	for {
 		c, err := l.Accept()

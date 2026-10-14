@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
@@ -35,10 +34,6 @@ type Builder struct {
 
 	pending bool
 	staged  map[string]Release
-
-	owner   *Builder
-	groups  atomic.Int32
-	rebuilt atomic.Bool
 }
 
 func NewBuilder(run proc.Runner, dir string, set *release.Pins, log func(string)) *Builder {
@@ -175,12 +170,12 @@ func (b *Builder) buildBackendPlugins(rel Release, plugs, tag, key string) error
 	}
 	defer cleanup()
 	b.logln("Adding plugins to the backend image (" + tag + ")... (a few minutes)")
-	return b.run.Run("docker", "build", "-f", filepath.Join(b.dir, backendPluginsDockerfile),
+	return b.run.AgentBuild(filepath.Join(b.dir, backendPluginsDockerfile), ctx,
 		"--build-arg", "BACKEND_BUILDER="+rel.Builder,
 		"--build-arg", "BACKEND_IMAGE="+rel.Image,
 		"--build-arg", "ADDITIONAL_PLUGS="+plugs,
 		"--label", builtFromLabel+"="+key,
-		"-t", tag, ctx)
+		"-t", tag)
 }
 
 func (b *Builder) rebuild(p plan, err error) error {
@@ -289,11 +284,11 @@ func (b *Builder) buildFrontend(rel Release, merged map[string]string, tag, key 
 		return err
 	}
 	b.logln("Rebuilding the frontend with this clinic's build settings (" + tag + ")... (a few minutes)")
-	return b.run.Run("docker", "build", "-f", filepath.Join(b.dir, frontendRebuildDockerfile),
+	return b.run.AgentBuild(filepath.Join(b.dir, frontendRebuildDockerfile), ctx,
 		"--build-arg", "FRONTEND_BUILDER="+rel.Builder,
 		"--build-arg", "FRONTEND_IMAGE="+rel.Image,
 		"--label", builtFromLabel+"="+key,
-		"-t", tag, ctx)
+		"-t", tag)
 }
 
 // BuildFrontend recreates the frontend image even when it looks current.
@@ -328,19 +323,19 @@ func (b *Builder) relabel(src, tag, key, label string) error {
 		return err
 	}
 	b.logln("Preparing the " + label + " image (" + tag + ")...")
-	return b.run.Run("docker", "build", "-f", df,
+	return b.run.AgentBuild(df, ctx,
 		"--build-arg", "IMAGE="+src,
 		"--label", builtFromLabel+"="+key,
-		"-t", tag, ctx)
+		"-t", tag)
 }
 
 // pull downloads a published image unless it is already on this computer.
 func (b *Builder) pull(ref string) error {
-	if _, err := b.run.Capture("docker", "image", "inspect", "--format", "{{.Id}}", ref); err == nil {
+	if _, err := b.run.AgentCapture("image", "inspect", "--format", "{{.Id}}", ref); err == nil {
 		return nil
 	}
 	b.logln("Downloading " + ref + "...")
-	if err := b.run.Run("docker", "pull", ref); err != nil {
+	if err := b.run.AgentRun("pull", ref); err != nil {
 		return fmt.Errorf("couldn't download %s; check the network connection: %w", ref, err)
 	}
 	return nil
@@ -361,10 +356,10 @@ func (b *Builder) BuildBackup() error {
 		return err
 	}
 	defer cleanup()
-	return b.run.Run("docker", "build", "-f", df,
+	return b.run.AgentBuild(df, buildCtx,
 		"--build-arg", "POSTGRES_IMAGE="+b.set.PostgresImage,
 		"--label", builtFromLabel+"="+key,
-		"-t", b.set.BackupImage, buildCtx)
+		"-t", b.set.BackupImage)
 }
 
 func (b *Builder) EnsureBackupImage() error {
@@ -401,11 +396,11 @@ func (b *Builder) BuildCaddy() error {
 		return err
 	}
 	defer cleanup()
-	return b.run.Run("docker", "build", "-f", df,
+	return b.run.AgentBuild(df, buildCtx,
 		"--build-arg", "CADDY_IMAGE="+b.set.CaddyImage,
 		"--build-arg", "CORAZA_VERSION="+b.set.CorazaVersion,
 		"--label", builtFromLabel+"="+key,
-		"-t", b.set.CaddyWafImage, buildCtx)
+		"-t", b.set.CaddyWafImage)
 }
 
 func (b *Builder) caddyBuiltFrom() (string, error) {
@@ -447,38 +442,18 @@ func (b *Builder) ensure(tag, want, label string, build func() error) error {
 	}
 	b.logln("The " + label + " image came from " + quoteOrUnknown(got) +
 		", but this release expects " + want + " - replacing it.")
-	if err := build(); err != nil {
-		return err
-	}
-	b.afterRebuild()
-	return nil
-}
-
-func (b *Builder) afterRebuild() {
-	if b.owner != nil {
-		b.owner.rebuilt.Store(true)
-		return
-	}
-	b.pruneDangling()
-}
-
-func (b *Builder) pruneDangling() {
-	cmd := proc.Command("docker", "image", "prune", "-f")
-	cmd.Env = b.run.Env
-	if err := cmd.Run(); err == nil {
-		b.logln("Cleared out images left behind by the rebuild.")
-	}
+	return build()
 }
 
 func (b *Builder) builtFrom(tag string) (value string, ok bool, err error) {
-	ids, err := b.run.Capture("docker", "image", "ls", "--quiet", "--filter", "reference="+tag)
+	ids, err := b.run.AgentCapture("image", "ls", "--quiet", "--filter", "reference="+tag)
 	if err != nil {
 		return "", false, fmt.Errorf("inspect local images: %w", err)
 	}
 	if ids == "" {
 		return "", false, nil
 	}
-	out, err := b.run.Capture("docker", "image", "inspect", "-f",
+	out, err := b.run.AgentCapture("image", "inspect", "-f",
 		"{{index .Config.Labels \""+builtFromLabel+"\"}}", tag)
 	if err != nil {
 		return "", false, fmt.Errorf("inspect image %s: %w", tag, err)

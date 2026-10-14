@@ -1,6 +1,9 @@
 package clinic
 
 import (
+	"context"
+	"time"
+
 	"github.com/ohcnetwork/care_desktop/app/internal/backup"
 )
 
@@ -16,6 +19,14 @@ func (e *Clinic) Backups() *backup.Store {
 		Project:      composeProject,
 		Log:          e.Log,
 		Migrate:      e.migrateStaged,
+
+		AgentBackupDir: AgentBackupDir,
+		AgentDir:       AgentClinicDir,
+	}
+	s.Refresh = func() error {
+		ctx, cancel := context.WithTimeout(e.Runner().Context(), 30*time.Minute)
+		defer cancel()
+		return e.ExportBackups(ctx)
 	}
 	s.EnsureImage = e.Builder().EnsureBackupImage
 	s.EnsureRestoreImages = func() error {

@@ -10,16 +10,16 @@ import (
 func (e *Clinic) FreeSpace() error {
 	before, _, beforeErr := e.DockerDiskFree()
 
-	if err := e.run(nil, "docker", "image", "prune", "-f"); err != nil {
+	if err := e.run(nil, "image", "prune", "-f"); err != nil {
 		e.logln("Could not clear untagged images: " + err.Error())
 	}
 
-	available, err := e.captureLines("docker", "images", "--format", "{{.Repository}}:{{.Tag}}")
+	available, err := e.captureLines("images", "--format", "{{.Repository}}:{{.Tag}}")
 	if err != nil {
 		e.logln("Could not list images: " + err.Error())
 	}
 	for _, tag := range staleImages(available, e.uninstallImages()) {
-		if _, err := e.capture("docker", "image", "rm", tag); err != nil {
+		if _, err := e.capture("image", "rm", tag); err != nil {
 			e.logln("  kept " + tag + " (still in use)")
 			continue
 		}

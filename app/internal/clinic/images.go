@@ -10,7 +10,7 @@ import (
 
 func (e *Clinic) pruneBuildCache() error {
 	e.logln("Pruning Docker build cache (shared with any other projects on this computer)...")
-	if err := e.run(nil, "docker", "builder", "prune", "-f"); err != nil {
+	if err := e.run(nil, "builder", "prune", "-f"); err != nil {
 		return fmt.Errorf("could not prune the selected build cache: %w", err)
 	}
 	return nil
@@ -51,7 +51,7 @@ func (e *Clinic) publishedImages() []string {
 }
 
 func (e *Clinic) removeImages() error {
-	available, err := e.captureLines("docker", "images", "--format", "{{.Repository}}:{{.Tag}}")
+	available, err := e.captureLines("images", "--format", "{{.Repository}}:{{.Tag}}")
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (e *Clinic) removeImages() error {
 		}
 	}
 	for _, ref := range e.publishedImages() {
-		if _, err := e.capture("docker", "image", "inspect", "--format", "{{.Id}}", ref); err != nil {
+		if _, err := e.capture("image", "inspect", "--format", "{{.Id}}", ref); err != nil {
 			continue
 		}
 		if err := e.removeImage(ref); err != nil {
@@ -78,7 +78,7 @@ func (e *Clinic) removeImages() error {
 }
 
 func (e *Clinic) removeImage(tag string) error {
-	if _, err := e.capture("docker", "image", "rm", tag); err != nil {
+	if _, err := e.capture("image", "rm", tag); err != nil {
 		return fmt.Errorf("could not remove image %s; leave shared images selected for keeping if another application uses them: %w", tag, err)
 	}
 	e.logln("  removed " + tag)

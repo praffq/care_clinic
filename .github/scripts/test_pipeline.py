@@ -74,6 +74,38 @@ class PipelineTests(unittest.TestCase):
                                 pipeline.release_assets("desktop", True)
                         self.assertEqual(run.call_count, 1)
 
+    def test_engine_manifest_ships_native_agents_with_bundles(self):
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            with contextlib.chdir(directory):
+                Path("release-assets").mkdir()
+                names = [
+                    "care-engine-0.1.3-linux-arm64.tar.gz",
+                    "care-engine-0.1.3-linux-amd64.tar.gz",
+                    "care-engine-agent-linux-arm64",
+                    "care-engine-agent-linux-amd64",
+                ]
+                for name in names:
+                    Path("release-assets", name).write_text(name)
+                plan = {"config": {"engine": {"version": "0.1.3"}}}
+                with patch.object(pipeline, "release_plan", return_value=plan):
+                    with patch.dict(os.environ, {"GITHUB_REPOSITORY": "org/repo"}):
+                        pipeline.release_assets("engine", False)
+                assets = pipeline.read("outputs/engine.json")["engine"]["assets"]
+                self.assertEqual(set(assets), {
+                    "linux-arm64", "linux-amd64", "native-linux-arm64", "native-linux-amd64",
+                })
+                for arch in ["arm64", "amd64"]:
+                    asset = assets[f"native-linux-{arch}"]
+                    name = f"care-engine-agent-linux-{arch}"
+                    self.assertEqual(asset["sha256"], pipeline.digest(Path("release-assets", name)))
+                    self.assertEqual(asset["size"], len(name))
+                    self.assertIn(f"/care-engine-v0.1.3/{name}", asset["url"])
+                Path("release-assets/care-engine-agent-linux-amd64").unlink()
+                with patch.object(pipeline, "release_plan", return_value=plan):
+                    with patch.dict(os.environ, {"GITHUB_REPOSITORY": "org/repo"}):
+                        with self.assertRaises(FileNotFoundError):
+                            pipeline.release_assets("engine", False)
+
 
 if __name__ == "__main__":
     unittest.main()

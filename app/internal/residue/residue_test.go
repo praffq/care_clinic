@@ -10,6 +10,7 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 )
@@ -87,7 +88,7 @@ func TestStoppedDockerIsDistinguishedFromAnAbsentOne(t *testing.T) {
 		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"),
 	}, noSystemTraces)
-	if err == nil || report.Clean || !strings.Contains(err.Error(), "start Docker and try again") {
+	if err == nil || report.Clean || (!strings.Contains(err.Error(), "recover the engine") && !strings.Contains(err.Error(), "start the CARE agent")) {
 		t.Fatalf("an installed but stopped Docker was treated as absent: %+v, %v", report, err)
 	}
 }
@@ -129,13 +130,15 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	docker := "#!/bin/sh\ncase \"$1 $2\" in \"images --format\") echo care:clinic ;; esac\n"
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(docker), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(c enginetest.Call) enginetest.Result {
+		if c.Operation == "images" {
+			return enginetest.Result{Stdout: "care:clinic\n"}
+		}
+		return enginetest.Result{}
+	})
 	t.Setenv("PATH", root)
 	report, err := scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"), Images: []string{"care:clinic"},
 	}, noSystemTraces)
 	if err != nil || !report.Clean || len(report.Traces) != 1 || report.Traces[0].ID != "images" {
@@ -145,7 +148,7 @@ func TestCachedImagesDoNotBlockSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err = scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"), Images: []string{"care:clinic"},
 	}, noSystemTraces)
 	if err != nil || report.Clean {

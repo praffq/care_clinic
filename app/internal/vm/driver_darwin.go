@@ -62,25 +62,6 @@ func boot(ctx context.Context, o bootOptions) (machine, error) {
 	}
 	cfg.SetStorageDevicesVirtualMachineConfiguration(disks)
 
-	var shares []vz.DirectorySharingDeviceConfiguration
-	for _, s := range darwinShares() {
-		dir, err := vz.NewSharedDirectory(s.host, false)
-		if err != nil {
-			return nil, err
-		}
-		single, err := vz.NewSingleDirectoryShare(dir)
-		if err != nil {
-			return nil, err
-		}
-		fsd, err := vz.NewVirtioFileSystemDeviceConfiguration(s.tag)
-		if err != nil {
-			return nil, err
-		}
-		fsd.SetDirectoryShare(single)
-		shares = append(shares, fsd)
-	}
-	cfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
-
 	nat, err := vz.NewNATNetworkDeviceAttachment()
 	if err != nil {
 		return nil, err

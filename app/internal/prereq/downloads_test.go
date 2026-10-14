@@ -303,11 +303,11 @@ func pinnedDownloads(t *testing.T, p *release.Pins) []Download {
 		}
 	}
 	for _, goarch := range []string{"amd64", "arm64"} {
-		engine, compose, err := dockerLinuxDownloads(p, goarch)
+		engine, err := dockerLinuxDownloads(p, goarch)
 		if err != nil {
 			t.Fatal(err)
 		}
-		all = append(all, engine, compose)
+		all = append(all, engine)
 	}
 	return all
 }
@@ -322,12 +322,12 @@ func TestWindowsQEMUUsesDeploymentPins(t *testing.T) {
 		Name: "qemu-w64-setup-20250826.exe", URL: p.QEMUWindowsURL,
 		SHA256: p.QEMUWindowsSHA256,
 	}
-	if len(downloads) != 6 || downloads[3] != want ||
-		downloads[4].URL != p.SevenZipBootstrapURL || downloads[4].SHA256 != p.SevenZipBootstrapSHA256 ||
-		downloads[5].URL != p.SevenZipWindowsURL || downloads[5].SHA256 != p.SevenZipWindowsSHA256 {
+	if len(downloads) != 4 || downloads[1] != want ||
+		downloads[2].URL != p.SevenZipBootstrapURL || downloads[2].SHA256 != p.SevenZipBootstrapSHA256 ||
+		downloads[3].URL != p.SevenZipWindowsURL || downloads[3].SHA256 != p.SevenZipWindowsSHA256 {
 		t.Fatalf("Windows provisioning must automatically include pinned QEMU: %+v", downloads)
 	}
-	for _, d := range downloads[3:] {
+	for _, d := range downloads[1:] {
 		if strings.Contains(d.URL, p.CareVMBaseURL) {
 			t.Fatalf("third-party software must download directly from upstream: %+v", d)
 		}
@@ -341,33 +341,23 @@ func TestEngineDownloadsMatchPlatform(t *testing.T) {
 	p := &release.Pins{
 		CareVMVersion: "0.1.0", CareVMBaseURL: "https://example.test/engine/",
 		CareVMAarch64SHA256: "vm-arm", CareVMX8664SHA256: "vm-intel",
-		DockerCLIVersion: "29.8.1", DockerCLIMacAarch64SHA256: "cli-arm", DockerCLIMacX8664SHA256: "cli-intel",
-		DockerCLIWindowsSHA256: "cli-win", ComposeLinuxVersion: "5.5.1",
-		ComposeMacAarch64SHA256: "compose-arm", ComposeMacX8664SHA256: "compose-intel", ComposeWindowsSHA256: "compose-win",
 		QEMUWindowsVersion: "10.1.0", QEMUWindowsSHA256: "qemu", QEMUWindowsURL: "https://qemu.example.test/setup.exe",
 		SevenZipBootstrapURL: "https://7zip.example.test/7zr.exe", SevenZipBootstrapSHA256: "bootstrap",
 		SevenZipWindowsURL: "https://7zip.example.test/7zip.exe", SevenZipWindowsSHA256: "extractor",
 	}
 
-	compose := "https://github.com/docker/compose/releases/download/v5.5.1/"
 	for _, tc := range []struct {
 		goos, goarch string
 		want         []Download
 	}{
 		{"darwin", "arm64", []Download{
 			{"care-engine-0.1.0-linux-arm64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-arm64.tar.gz", "vm-arm"},
-			{"docker-29.8.1.tgz", "https://download.docker.com/mac/static/stable/aarch64/docker-29.8.1.tgz", "cli-arm"},
-			{"docker-compose-darwin-aarch64", compose + "docker-compose-darwin-aarch64", "compose-arm"},
 		}},
 		{"darwin", "amd64", []Download{
 			{"care-engine-0.1.0-linux-amd64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-amd64.tar.gz", "vm-intel"},
-			{"docker-29.8.1.tgz", "https://download.docker.com/mac/static/stable/x86_64/docker-29.8.1.tgz", "cli-intel"},
-			{"docker-compose-darwin-x86_64", compose + "docker-compose-darwin-x86_64", "compose-intel"},
 		}},
 		{"windows", "amd64", []Download{
 			{"care-engine-0.1.0-linux-amd64.tar.gz", "https://example.test/engine/care-engine-0.1.0-linux-amd64.tar.gz", "vm-intel"},
-			{"docker-29.8.1.zip", "https://download.docker.com/win/static/stable/x86_64/docker-29.8.1.zip", "cli-win"},
-			{"docker-compose-windows-x86_64.exe", compose + "docker-compose-windows-x86_64.exe", "compose-win"},
 			{"setup.exe", "https://qemu.example.test/setup.exe", "qemu"},
 			{"7zr.exe", "https://7zip.example.test/7zr.exe", "bootstrap"},
 			{"7zip.exe", "https://7zip.example.test/7zip.exe", "extractor"},
@@ -400,7 +390,7 @@ func TestWindowsUpstreamDownloadsRejectInvalidURLs(t *testing.T) {
 
 func TestIncompleteEngineDownloadsFailBeforeDownloading(t *testing.T) {
 	pr := &Provisioner{}
-	for _, count := range []int{0, 2, 4, 5, 6, 7} {
+	for _, count := range []int{0, 2, 3, 5, 6, 7} {
 		if err := pr.installEngineDownloads(make([]Download, count), nil); err == nil {
 			t.Fatalf("incomplete download configuration accepted: %d", count)
 		}
@@ -410,13 +400,12 @@ func TestIncompleteEngineDownloadsFailBeforeDownloading(t *testing.T) {
 func TestDockerLinuxDownloadsMatchArchitecture(t *testing.T) {
 	p := &release.Pins{
 		DockerLinuxVersion: "29.8.1", DockerLinuxX8664SHA256: "engine-intel", DockerLinuxAarch64SHA256: "engine-arm",
-		ComposeLinuxVersion: "5.5.1", ComposeLinuxX8664SHA256: "compose-intel", ComposeLinuxAarch64SHA256: "compose-arm",
 	}
-	for _, tc := range []struct{ goarch, arch, engineSum, composeSum string }{
-		{"amd64", "x86_64", "engine-intel", "compose-intel"},
-		{"arm64", "aarch64", "engine-arm", "compose-arm"},
+	for _, tc := range []struct{ goarch, arch, engineSum string }{
+		{"amd64", "x86_64", "engine-intel"},
+		{"arm64", "aarch64", "engine-arm"},
 	} {
-		engine, compose, err := dockerLinuxDownloads(p, tc.goarch)
+		engine, err := dockerLinuxDownloads(p, tc.goarch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -425,17 +414,33 @@ func TestDockerLinuxDownloadsMatchArchitecture(t *testing.T) {
 			URL:    "https://download.docker.com/linux/static/stable/" + tc.arch + "/docker-29.8.1.tgz",
 			SHA256: tc.engineSum,
 		}
-		wantCompose := Download{
-			Name:   "docker-compose-linux-" + tc.arch,
-			URL:    "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-" + tc.arch,
-			SHA256: tc.composeSum,
-		}
-		if engine != wantEngine || compose != wantCompose {
-			t.Errorf("%s: got %+v and %+v", tc.goarch, engine, compose)
+		if engine != wantEngine {
+			t.Errorf("%s: got %+v", tc.goarch, engine)
 		}
 	}
-	if _, _, err := dockerLinuxDownloads(p, "riscv64"); err == nil {
+	if _, err := dockerLinuxDownloads(p, "riscv64"); err == nil {
 		t.Error("riscv64: expected no Docker download")
+	}
+}
+
+func TestLinuxAgentDownloadsMatchSignedAssets(t *testing.T) {
+	base := "https://example.test/care-engine-v0.1.3"
+	p := release.EngineUpdate{Version: "0.1.3", Assets: map[string]release.Asset{}}
+	for _, tc := range []struct {
+		goarch, name, sum string
+	}{
+		{"amd64", "care-engine-agent-linux-amd64", strings.Repeat("a", 64)},
+		{"arm64", "care-engine-agent-linux-arm64", strings.Repeat("b", 64)},
+	} {
+		p.Assets["native-linux-"+tc.goarch] = release.Asset{URL: base + "/" + tc.name, SHA256: tc.sum, Size: 42}
+		got, err := linuxAgentDownload(p, tc.goarch)
+		want := Download{Name: tc.name, URL: base + "/" + tc.name, SHA256: tc.sum}
+		if err != nil || got != want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.goarch, got, err, want)
+		}
+	}
+	if _, err := linuxAgentDownload(p, "riscv64"); err == nil {
+		t.Error("riscv64: expected no native agent download")
 	}
 }
 

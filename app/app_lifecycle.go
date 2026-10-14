@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -373,10 +372,11 @@ func (a *App) stopForQuit() error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopDeadline)
 	defer cancel()
 	run := a.engine().Runner()
-	cmd := proc.CommandContext(ctx, "docker", "compose", "stop")
-	cmd.Dir, cmd.Env = run.Dir, run.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Docker did not finish stopping; CARE Clinic was kept open: %w: %s", err, strings.TrimSpace(string(out)))
+	run.Ctx = ctx
+	var output []string
+	run.Log = func(line string) { output = append(output, line) }
+	if err := run.AgentRun("compose", "stop"); err != nil {
+		return fmt.Errorf("the clinic did not finish stopping; CARE Clinic was kept open: %w: %s", err, strings.TrimSpace(strings.Join(output, "\n")))
 	}
 	if err := vm.Stop(ctx); err != nil {
 		return fmt.Errorf("the CARE engine did not finish stopping; CARE Clinic was kept open: %w", err)

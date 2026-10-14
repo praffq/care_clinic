@@ -22,7 +22,6 @@ var (
 )
 
 type Builds struct {
-	owner  *Builder
 	cancel context.CancelFunc
 	done   chan struct{}
 	failed sync.Once
@@ -36,8 +35,7 @@ func (b *Builder) Parallel(jobs ...Job) error {
 
 func (b *Builder) Start(jobs ...Job) *Builds {
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &Builds{owner: b, cancel: cancel, done: make(chan struct{})}
-	b.groups.Add(1)
+	g := &Builds{cancel: cancel, done: make(chan struct{})}
 	var wg sync.WaitGroup
 	for _, job := range jobs {
 		w := b.worker(ctx, job.Label)
@@ -77,9 +75,6 @@ func (g *Builds) Wait() error {
 	g.waited.Do(func() {
 		<-g.done
 		g.cancel()
-		if g.owner.groups.Add(-1) == 0 && g.owner.rebuilt.Swap(false) {
-			g.owner.pruneDangling()
-		}
 	})
 	return g.err
 }
@@ -96,7 +91,6 @@ func (b *Builder) worker(ctx context.Context, label string) *Builder {
 	w.Stop = b.Stop
 	w.pending = b.pending
 	w.staged = b.staged
-	w.owner = b
 	return w
 }
 

@@ -80,8 +80,7 @@ var supportImageEnv = map[string]string{
 }
 
 const (
-	dockerStatic    = "https://download.docker.com/"
-	composeDownload = "https://github.com/docker/compose/releases/download/v"
+	dockerStatic = "https://download.docker.com/"
 )
 
 type toolSpec struct {
@@ -96,16 +95,6 @@ type toolSpec struct {
 var toolSpecs = map[string]toolSpec{
 	"docker_linux_x86_64":  {"DOCKER_LINUX_X86_64_SHA256", "docker_linux", staticDocker("linux", "x86_64", ".tgz")},
 	"docker_linux_aarch64": {"DOCKER_LINUX_AARCH64_SHA256", "docker_linux", staticDocker("linux", "aarch64", ".tgz")},
-
-	"compose_linux_x86_64":   {"COMPOSE_LINUX_X86_64_SHA256", "compose", composeAsset("linux-x86_64")},
-	"compose_linux_aarch64":  {"COMPOSE_LINUX_AARCH64_SHA256", "compose", composeAsset("linux-aarch64")},
-	"compose_macos_aarch64":  {"COMPOSE_MACOS_AARCH64_SHA256", "compose", composeAsset("darwin-aarch64")},
-	"compose_macos_x86_64":   {"COMPOSE_MACOS_X86_64_SHA256", "compose", composeAsset("darwin-x86_64")},
-	"compose_windows_x86_64": {"COMPOSE_WINDOWS_X86_64_SHA256", "compose", composeAsset("windows-x86_64.exe")},
-
-	"docker_cli_macos_aarch64":  {"DOCKER_CLI_MACOS_AARCH64_SHA256", "docker_cli", staticDocker("mac", "aarch64", ".tgz")},
-	"docker_cli_macos_x86_64":   {"DOCKER_CLI_MACOS_X86_64_SHA256", "docker_cli", staticDocker("mac", "x86_64", ".tgz")},
-	"docker_cli_windows_x86_64": {"DOCKER_CLI_WINDOWS_X86_64_SHA256", "docker_cli", staticDocker("win", "x86_64", ".zip")},
 
 	// The engine image URL is checked by stageEngine: its directory becomes
 	// CARE_VM_BASE_URL and its file name is derived from the engine version.
@@ -125,8 +114,6 @@ var toolURLEnv = map[string]string{
 
 var groupVersionEnv = map[string]string{
 	"docker_linux": "DOCKER_LINUX_VERSION",
-	"compose":      "COMPOSE_LINUX_VERSION",
-	"docker_cli":   "DOCKER_CLI_VERSION",
 	"engine":       "CARE_VM_VERSION",
 	"qemu":         "QEMU_WINDOWS_VERSION",
 }
@@ -135,10 +122,6 @@ var engineArch = map[string]string{"care_engine_aarch64": "arm64", "care_engine_
 
 func staticDocker(os, arch, ext string) func(string) string {
 	return func(v string) string { return dockerStatic + os + "/static/stable/" + arch + "/docker-" + v + ext }
-}
-
-func composeAsset(suffix string) func(string) string {
-	return func(v string) string { return composeDownload + v + "/docker-compose-" + suffix }
 }
 
 var (
@@ -408,6 +391,12 @@ func releaseEnvKeys() map[string]bool {
 	out := map[string]bool{
 		"CARE_LINES_URL": true, "CARE_DEFAULT_LINE": true,
 		"CADDY_WAF_PREBUILT": true, "BACKUP_PREBUILT": true,
+		"DOCKER_CLI_VERSION":              true,
+		"DOCKER_CLI_MACOS_AARCH64_SHA256": true, "DOCKER_CLI_MACOS_X86_64_SHA256": true,
+		"DOCKER_CLI_WINDOWS_X86_64_SHA256": true,
+		"COMPOSE_MACOS_AARCH64_SHA256":     true, "COMPOSE_MACOS_X86_64_SHA256": true,
+		"COMPOSE_WINDOWS_X86_64_SHA256": true, "COMPOSE_LINUX_VERSION": true,
+		"COMPOSE_LINUX_X86_64_SHA256": true, "COMPOSE_LINUX_AARCH64_SHA256": true,
 	}
 	for k := range (Config{Tools: map[string]Tool{}, SupportImages: map[string]string{}}).ReleaseEnv() {
 		out[k] = true

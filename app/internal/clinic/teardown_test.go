@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
 
@@ -27,10 +28,13 @@ case "$1 $2" in
   *) exit 99 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte(script), 0o700); err != nil {
+	program := filepath.Join(root, "engine-docker")
+	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e := &Clinic{InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: &release.Pins{}}
+	agent := enginetest.New(t, nil)
+	agent.SetHandler(agent.Exec(program))
+	e := &Clinic{InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: &release.Pins{}, Agent: agent.Client}
 	if err := e.TeardownProject(); err == nil {
 		t.Fatal("teardown ignored a failed resource inspection")
 	}

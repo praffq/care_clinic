@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-// An engine update replaces the engine bundle and the host tools as one
+// An engine update replaces the engine bundle and, on Windows, QEMU as one
 // transaction. Everything is downloaded, unpacked and verified into
 // engine-update/new while the clinic keeps running. Activation moves the
-// previous tools to engine-update/old and the new ones into place; the
+// previous QEMU files to engine-update/old and the new ones into place; the
 // previous engine bundle stays on disk until the update is committed, so
 // a failed or interrupted update can put the previous engine back. The
 // data disk is never copied or reverted.
@@ -46,9 +46,10 @@ func (u EngineUpdate) Interrupted() bool { return u.Phase != UpdateFailed }
 
 // EngineFiles are the verified downloads of one engine update.
 type EngineFiles struct {
-	Engine, Docker, Compose, QEMU string
-	QEMUBootstrap, QEMUExtractor  string
-	QEMUVersion                   string
+	Engine                       string
+	QEMU                         string
+	QEMUBootstrap, QEMUExtractor string
+	QEMUVersion                  string
 }
 
 // StagedUpdate is an update that is unpacked and verified but not active.
@@ -74,11 +75,10 @@ type tool struct {
 }
 
 func updateTools() []tool {
-	t := []tool{{"docker", dockerCLI}, {"docker-compose", composePlugin}}
 	if runtime.GOOS == "windows" {
-		t = append(t, tool{"qemu", qemuDir})
+		return []tool{{"qemu", qemuDir}}
 	}
-	return t
+	return nil
 }
 
 // PendingEngineUpdate returns the update record, if any.
@@ -151,14 +151,6 @@ func StageEngineUpdate(f EngineFiles) (*StagedUpdate, error) {
 		return nil, err
 	}
 	s.Manifest = m
-	if err := stageDockerCLI(f.Docker); err != nil {
-		s.Discard()
-		return nil, fmt.Errorf("docker command: %w", err)
-	}
-	if err := installFile(f.Compose, filepath.Join(newDir(), "docker-compose")); err != nil {
-		s.Discard()
-		return nil, fmt.Errorf("Docker Compose: %w", err)
-	}
 	if runtime.GOOS == "windows" {
 		var err error
 		if f.QEMUExtractor != "" {
@@ -201,10 +193,7 @@ func OpenStagedEngineUpdate() (*StagedUpdate, error) {
 			return nil, fmt.Errorf("staged CARE engine file %s is corrupt", name)
 		}
 	}
-	tools := []string{
-		filepath.Join(newDir(), "docker"),
-		filepath.Join(newDir(), "docker-compose"),
-	}
+	var tools []string
 	if runtime.GOOS == "windows" {
 		tools = append(tools, filepath.Join(newDir(), "qemu", "qemu-system-x86_64.exe"))
 	}
@@ -230,10 +219,7 @@ func OpenStagedEngineUpdate() (*StagedUpdate, error) {
 }
 
 func stagedToolPaths() ([]string, error) {
-	paths := []string{
-		filepath.Join(newDir(), "docker"),
-		filepath.Join(newDir(), "docker-compose"),
-	}
+	var paths []string
 	if runtime.GOOS == "windows" {
 		root := filepath.Join(newDir(), "qemu")
 		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -344,15 +330,6 @@ func unpackEngine(archive, dest string) (Manifest, error) {
 	return m, nil
 }
 
-func stageDockerCLI(archive string) error {
-	tmp := filepath.Join(newDir(), ".docker")
-	defer func() { _ = os.RemoveAll(tmp) }()
-	if err := extract(archive, tmp, 0); err != nil {
-		return err
-	}
-	return installFile(filepath.Join(tmp, "docker", exe("docker")), filepath.Join(newDir(), "docker"))
-}
-
 func stageQEMU(archive, dest string) error {
 	if err := extract(archive, dest, 0); err != nil {
 		return err
@@ -363,7 +340,7 @@ func stageQEMU(archive, dest string) error {
 	return nil
 }
 
-// Activate makes the staged engine and tools the installed ones. The VM must
+// Activate makes the staged engine and QEMU the installed ones. The VM must
 // be stopped. The update record is written first, so an interruption at any
 // point is rolled back on the next launch.
 func (s *StagedUpdate) Activate() error {
@@ -410,7 +387,7 @@ func (s *StagedUpdate) Activate() error {
 }
 
 // CommitEngineUpdate keeps the active engine and deletes the previous
-// engine bundle and tools.
+// engine bundle and QEMU files.
 func CommitEngineUpdate() error {
 	u, ok, err := PendingEngineUpdate()
 	if err != nil {

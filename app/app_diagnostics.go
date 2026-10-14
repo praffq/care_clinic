@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
+	"github.com/ohcnetwork/care_desktop/app/internal/vm"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -52,7 +55,18 @@ func (a *App) ExportDiagnostics(passwordWarningAccepted bool) (err error) {
 	if statusErr != nil {
 		health["clinic_status_error"] = statusErr.Error()
 	}
-	if err := writeDiagnostics(dir, filepath.Join(a.installDir(), "updates"), a.installDir(), path, metadata, health); err != nil {
+	if version, err := a.engine().Runner().AgentCaptureIn(5*time.Second, nil, "version", "--format", "{{.Server.Version}}"); err != nil {
+		health["engine_agent_error"] = err.Error()
+	} else {
+		health["engine_agent_version"] = version
+	}
+	// The engine journal comes from the CARE agent on every platform: the
+	// helper VM on macOS/Windows and the native agent socket on Linux.
+	var journal bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	vm.WriteDiagnostics(ctx, &journal)
+	cancel()
+	if err := writeDiagnostics(dir, filepath.Join(a.installDir(), "updates"), a.installDir(), path, metadata, health, journal.Bytes()); err != nil {
 		return err
 	}
 	a.logln("CARE support log bundle saved locally to " + path)
@@ -72,7 +86,7 @@ type diagnosticFile struct {
 	size int64
 }
 
-func writeDiagnostics(logRoot, updatesRoot, installRoot, dest string, metadata map[string]string, health any) (err error) {
+func writeDiagnostics(logRoot, updatesRoot, installRoot, dest string, metadata map[string]string, health any, engineJournal []byte) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(dest), ".care-diagnostics-*.zip")
 	if err != nil {
 		return err
@@ -95,6 +109,16 @@ func writeDiagnostics(logRoot, updatesRoot, installRoot, dest string, metadata m
 	}
 	if err := json.NewEncoder(healthFile).Encode(health); err != nil {
 		return err
+	}
+	if len(engineJournal) > 0 {
+		journal, err := archive.Create("engine/journal.txt")
+		if err == nil {
+			_, err = journal.Write(engineJournal)
+		}
+		if err != nil {
+			_ = archive.Close()
+			return err
+		}
 	}
 	files, err := collectDiagnosticFiles(logRoot, updatesRoot, installRoot)
 	if err != nil {

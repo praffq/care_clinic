@@ -24,14 +24,16 @@ type Provisioner struct {
 	Log func(string)
 	// DiagnosticsDir receives the CARE engine's logs when it fails to start.
 	DiagnosticsDir string
-	Progress       func(DownloadProgress)
-	run            proc.Runner
-	pins           *release.Pins
-	testEngineOps  *engineOps
+	// ReleaseDir holds the persisted signed-manifest trust state.
+	ReleaseDir    string
+	Progress      func(DownloadProgress)
+	run           proc.Runner
+	pins          *release.Pins
+	testEngineOps *engineOps
 }
 
 func NewProvisioner(run proc.Runner, pins *release.Pins, log func(string)) *Provisioner {
-	return &Provisioner{Log: log, run: run, pins: pins}
+	return &Provisioner{Log: log, run: run, pins: pins, ReleaseDir: run.Dir}
 }
 
 func (pr *Provisioner) logln(s string) {
@@ -86,10 +88,10 @@ func (pr *Provisioner) DockerPlan() ToolPlan {
 	if vm.Supported() {
 		return pr.enginePlan()
 	}
-	if runtime.GOOS == "linux" && !pr.dockerDaemonUp() && hasCommand("docker") && hasCommand("systemctl") {
+	if runtime.GOOS == "linux" && pr.nativeAgentInstalled() && hasCommand("systemctl") {
 		return ToolPlan{
 			Action: ActionOpen, Label: "Start Docker", URL: dockerHelpURL(),
-			Detail: "Starts Docker and waits for it to be ready.",
+			Detail: "Starts the native Docker and CARE agent services, then waits for them to be ready.",
 		}
 	}
 	return pr.dockerInstallPlan()
@@ -101,14 +103,10 @@ func (pr *Provisioner) dockerInstallPlan() ToolPlan {
 	case "linux":
 		if _, ok := linuxArch(runtime.GOARCH); !ok || !hasCommand("systemctl") {
 			p.Action, p.Label = ActionManual, "Get Docker"
-			p.Detail = "Install Docker Engine and the Compose plugin for this system."
+			p.Detail = "Install Docker Engine and systemd for this system."
 			return p
 		}
-		if pr.dockerDaemonUp() {
-			p.Detail = "Downloads the Docker Compose plugin and installs it. You'll be asked for your password."
-			return p
-		}
-		p.Detail = "Downloads Docker Engine and the Compose plugin, installs them, and starts Docker. " +
+		p.Detail = "Installs any missing native Docker Engine, CARE agent, Compose, and Buildx components. " +
 			"You'll be asked for your password. Keep this computer connected to the internet."
 	default:
 		p.Action, p.Label = ActionManual, "Get Docker"
@@ -135,8 +133,7 @@ func (pr *Provisioner) InstallDocker() (string, error) {
 		if err := pr.installDockerLinux(); err != nil {
 			return "", err
 		}
-		return "Docker is installed. If this login session cannot access Docker, log out and back in " +
-			"so your account picks up the docker group, then choose Check again.", nil
+		return "The CARE agent is installed for this desktop account's primary group. Choose Check again.", nil
 	default:
 		return "", fmt.Errorf("installing Docker isn't supported on %s - install it from %s", runtime.GOOS, dockerHelpURL())
 	}
@@ -147,18 +144,14 @@ func (pr *Provisioner) OpenDocker() error {
 		return pr.startEngine()
 	}
 	pr.logln("Starting Docker...")
-	if err := elevate.Run("systemctl start docker", true); err != nil {
-		return fmt.Errorf("could not start the Docker service: %w", err)
+	if err := elevate.Run("systemctl start docker care-engine-agent", true); err != nil {
+		return fmt.Errorf("could not start the Docker and CARE agent services: %w", err)
 	}
 	return pr.waitForDocker(dockerReadyTimeout)
 }
 
 func (pr *Provisioner) waitForDocker(limit time.Duration) error {
 	return waitForDockerReady(limit, func() bool { return DockerCheck(pr.run).OK }, pr.logln)
-}
-
-func (pr *Provisioner) waitForDockerAfterInstall(limit time.Duration) error {
-	return waitForDockerReadyOrLoginRefresh(limit, func() Status { return DockerCheck(pr.run) }, pr.logln)
 }
 
 func waitForDockerReadyOrLoginRefresh(limit time.Duration, check func() Status, log func(string)) error {
@@ -169,7 +162,7 @@ func waitForDockerReadyOrLoginRefresh(limit time.Duration, check func() Status, 
 			log("Docker is ready.")
 			return nil
 		}
-		if dockerNeedsLogin(status.Message) {
+		if dockerNeedsLogin(status.Message) || agentNeedsLogin(status.Message) {
 			log(status.Message)
 			return nil
 		}
@@ -196,13 +189,9 @@ func waitForDockerReady(limit time.Duration, ready func() bool, log func(string)
 	}
 }
 
-func (pr *Provisioner) dockerDaemonUp() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-	cmd := proc.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}")
-	cmd.Env = pr.run.Env
-	_, err := cmd.Output()
-	return err == nil || dockerSocketPermissionDenied(err)
+func (pr *Provisioner) nativeAgentInstalled() bool {
+	info, err := os.Stat(careAgentBinPath)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func hasCommand(name string) bool {

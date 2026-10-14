@@ -3,7 +3,7 @@ package clinic
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/storage"
@@ -27,6 +27,9 @@ func (e *Clinic) BackupNow() error {
 			return roomErr
 		}
 		return fmt.Errorf("the backup did not complete and the previous verified backup was kept - CARE must be running to take one (%w)", err)
+	}
+	if err := e.ExportBackups(e.Runner().Context()); err != nil {
+		return fmt.Errorf("the backup was written inside the CARE engine but couldn't be copied to %s: %w", e.backupDir(), err)
 	}
 	m, found, err := storage.ReadManifest(e.backupDir())
 	if err != nil || !found || !m.Verified() {
@@ -59,7 +62,7 @@ func (e *Clinic) backupRoomFor(need uint64) error {
 }
 
 func (e *Clinic) DockerDiskFree() (free, total uint64, err error) {
-	out, err := e.Runner().CaptureIn(15*time.Second, nil, "docker", "compose", "exec", "-T", "backup", "df", "-Pk", "/")
+	out, err := e.Runner().AgentCaptureIn(15*time.Second, nil, "compose", "exec", "-T", "backup", "df", "-Pk", "/")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -67,11 +70,11 @@ func (e *Clinic) DockerDiskFree() (free, total uint64, err error) {
 }
 
 func (e *Clinic) DockerRootDir() (string, error) {
-	out, err := e.Runner().CaptureIn(5*time.Second, nil, "docker", "info", "--format", "{{.DockerRootDir}}")
+	out, err := e.Runner().AgentCaptureIn(5*time.Second, nil, "info", "--format", "{{.DockerRootDir}}")
 	if err != nil {
 		return "", err
 	}
-	if !filepath.IsAbs(out) {
+	if !path.IsAbs(out) {
 		return "", fmt.Errorf("docker reported an unusable data directory %q", out)
 	}
 	return out, nil

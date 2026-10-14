@@ -5,17 +5,17 @@ schema = 1
 
 [desktop]
 version = "0.1.19"
-requires_engine = ">=0.1.2, <0.2.0"
+requires_engine = ">=0.1.3, <0.2.0"
 updates_url = "https://praffq.github.io/care_clinic/updates.json"
 
 [engine]
-version = "0.1.2"
-requires_desktop = ">=0.1.15"
+version = "0.1.3"
+requires_desktop = ">=0.1.19"
 
 [care]
 version = "3.1.0"
 requires_desktop = ">=0.1.15"
-requires_engine = ">=0.1.2"
+requires_engine = ">=0.1.3"
 
 [care.backend]
 repo = "praffq/care"
@@ -34,7 +34,7 @@ silo = "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z"
 [caddy]
 coraza = "v2.6.1"
 
-# --- Docker for Linux servers -------------------------------------------------
+# --- Docker Engine for native Linux ------------------------------------------
 [tools.docker_linux_x86_64]
 version = "29.8.1"
 url = "https://download.docker.com/linux/static/stable/x86_64/docker-29.8.1.tgz"
@@ -45,58 +45,21 @@ version = "29.8.1"
 url = "https://download.docker.com/linux/static/stable/aarch64/docker-29.8.1.tgz"
 sha256 = "667395fbffab52901b80181dfbb39ea76da2fbd7642c4fbddd24e42146b07b48"
 
-[tools.compose_linux_x86_64]
-version = "5.5.1"
-url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-x86_64"
-sha256 = "db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
-
-[tools.compose_linux_aarch64]
-version = "5.5.1"
-url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-aarch64"
-sha256 = "732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7"
-
 # --- CARE engine (macOS and Windows) -----------------------------------------
-# The Linux VM that runs Docker, built from vm/ (see docs/vm.md). Its version
-# is [engine].version.
+# The Linux VM that runs the agent, built from vm/ (see docs/vm.md). Its
+# version is [engine].version. The engine bundle includes guest Docker/Compose.
 [tools.care_engine_aarch64]
-version = "0.1.2"
-url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.2-linux-arm64.tar.gz"
-sha256 = "8ef6d09d21de40af3f9051045c34d1e2f132655355aa363a07d94d5204ea663c"
+version = "0.1.3"
+url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-arm64.tar.gz"
+# BLOCKED bootstrap: replace with the actual immutable bundle hash after CI
+# publication. All-zero hashes are rejected before any download or activation.
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [tools.care_engine_x86_64]
-version = "0.1.2"
-url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.2/care-engine-0.1.2-linux-amd64.tar.gz"
-sha256 = "9d75fa0fc6b497fb8c0088949140d53690a80fdb68aa2460eb9b92cf2f93346d"
-
-[tools.docker_cli_macos_aarch64]
-version = "29.8.1"
-url = "https://download.docker.com/mac/static/stable/aarch64/docker-29.8.1.tgz"
-sha256 = "5a8f5604d7673202b2af925229d15eb4bbb86f7f542e4ac8cd7aa3f14cfa0f8b"
-
-[tools.docker_cli_macos_x86_64]
-version = "29.8.1"
-url = "https://download.docker.com/mac/static/stable/x86_64/docker-29.8.1.tgz"
-sha256 = "de42b6bb38d0ea08333cdddc18b054d61d4c9f003b3616ae55d85ccea72c47c9"
-
-[tools.docker_cli_windows_x86_64]
-version = "29.8.1"
-url = "https://download.docker.com/win/static/stable/x86_64/docker-29.8.1.zip"
-sha256 = "f99b6e0ac1950e6c47c267b1d7ac53ef973682208523212d03477478c6562aaf"
-
-[tools.compose_macos_aarch64]
-version = "5.5.1"
-url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-darwin-aarch64"
-sha256 = "998735c9b6fe68a4f05895e6ea73d71ad06f9fc7046383ad89e47346781b6af5"
-
-[tools.compose_macos_x86_64]
-version = "5.5.1"
-url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-darwin-x86_64"
-sha256 = "a264d61e824bf08a78867e59cdf32eb09f0aee9ecdf9f6ebfa43f76dc52880f1"
-
-[tools.compose_windows_x86_64]
-version = "5.5.1"
-url = "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-windows-x86_64.exe"
-sha256 = "a3c0c73033eaede90210345d0cc2233edf4fab8fe0282a91dad8fd8436809d2f"
+version = "0.1.3"
+url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-amd64.tar.gz"
+# BLOCKED bootstrap; native Linux uses signed dynamic engine assets instead.
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 # Windows QEMU and the 7-Zip extractors, fetched directly from their publishers.
 # 7zr reads the embedded 7z payload without running either installer.

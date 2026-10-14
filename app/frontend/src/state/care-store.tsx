@@ -640,7 +640,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
     if (!restorePending && !pluginPending) {
       try {
         const engine = await bridge.EngineStatus();
-        if (engine.supported && engine.update_needed) {
+        if ((engine.supported || engine.native) && engine.update_needed) {
           engineUpdateRequired = true;
           log(engine.update_failed
             ? `\nThe CARE engine ${engine.expected_version} update failed earlier and the previous engine was kept: ${engine.update_error}`

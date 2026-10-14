@@ -42,14 +42,15 @@ func TestQEMUArgsUseConservativeWHPXCPU(t *testing.T) {
 		"virtio-blk-pci,drive=care-system,serial=care-system",
 		"virtio-blk-pci,drive=care-data,serial=care-data",
 		"virtio-net-pci,netdev=net0",
-		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(qemuTCPDocker) + "-:" + strconv.Itoa(guestTCPDocker),
 		"hostfwd=tcp:127.0.0.1:" + strconv.Itoa(hostTCPControl) + "-:" + strconv.Itoa(guestTCPControl),
 	} {
 		if !strings.Contains(strings.Join(args, "\n"), want) {
 			t.Errorf("missing %q in %q", want, args)
 		}
-		if strings.Contains(strings.Join(args, "\n"), "hostfwd=tcp:127.0.0.1:"+strconv.Itoa(hostTCPDocker)+"-") {
-			t.Fatal("QEMU must not own the public Docker relay port")
+	}
+	for _, obsolete := range []string{":47375-", ":47376-", "-:2375", "-:2376"} {
+		if strings.Contains(strings.Join(args, "\n"), obsolete) {
+			t.Fatal("QEMU must not expose Docker")
 		}
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/enginetest"
+
 	"github.com/ohcnetwork/care_desktop/app/internal/careversions"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
@@ -92,10 +94,12 @@ func builderFixture(t *testing.T) *Builder {
 	t.Helper()
 	dir := t.TempDir()
 	for name, content := range map[string]string{
-		"backend.env":       "ADDITIONAL_PLUGS='[{\"name\":\"one\",\"package_name\":\"pkg_one\"}]'\nPOSTGRES_HOST=db\n",
-		"frontend.env":      "REACT_CARE_API_URL=https://care.local\nREACT_MFE_REGISTERED_COMPONENTS=UserDashboard\n",
-		"backup.Dockerfile": "ARG POSTGRES_IMAGE\nFROM ${POSTGRES_IMAGE}\nRUN apk add --no-cache openssl\n",
-		"caddy.Dockerfile":  "ARG CADDY_IMAGE\nFROM ${CADDY_IMAGE}\nARG CORAZA_VERSION\n",
+		"backend.env":             "ADDITIONAL_PLUGS='[{\"name\":\"one\",\"package_name\":\"pkg_one\"}]'\nPOSTGRES_HOST=db\n",
+		"frontend.env":            "REACT_CARE_API_URL=https://care.local\nREACT_MFE_REGISTERED_COMPONENTS=UserDashboard\n",
+		"backup.Dockerfile":       "ARG POSTGRES_IMAGE\nFROM ${POSTGRES_IMAGE}\nRUN apk add --no-cache openssl\n",
+		"caddy.Dockerfile":        "ARG CADDY_IMAGE\nFROM ${CADDY_IMAGE}\nARG CORAZA_VERSION\n",
+		backendPluginsDockerfile:  "ARG BACKEND_IMAGE\nFROM ${BACKEND_IMAGE}\n# plugins\n",
+		frontendRebuildDockerfile: "ARG FRONTEND_IMAGE\nFROM ${FRONTEND_IMAGE}\n# rebuild\n",
 	} {
 		writeBuildFile(t, dir, name, content)
 	}
@@ -279,7 +283,6 @@ func dockerFixture(t *testing.T) string {
 	dir := t.TempDir()
 	trace := filepath.Join(dir, "calls")
 	t.Setenv("CARE_BUILD_TRACE", trace)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	script := `#!/bin/sh
 printf '%s\n' "$@" >> "$CARE_BUILD_TRACE"
 printf '%s\n' '--' >> "$CARE_BUILD_TRACE"
@@ -305,14 +308,18 @@ case "$1 $2" in
   build*)
     for arg do context=$arg; done
     [ -d "$context" ] || exit 23
+    [ "$2" = -f ] && cat "$3" >> "$CARE_BUILD_TRACE.dockerfiles"
     [ ! -f "$context/clinic.json" ] || cp "$context/clinic.json" "$CARE_BUILD_TRACE.json"
     ;;
   *) exit 99 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o700); err != nil {
+	program := filepath.Join(dir, "engine-docker")
+	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	agent := enginetest.New(t, nil).Install(t)
+	agent.SetHandler(agent.Exec(program))
 	return trace
 }
 
@@ -432,11 +439,19 @@ func TestBuildLabelsMatchConsumedInputs(t *testing.T) {
 		"BACKEND_IMAGE=" + rel.Backend.Image + "\n",
 		`ADDITIONAL_PLUGS=[{"name":"one","package_name":"pkg_one"}]` + "\n",
 		"FRONTEND_BUILDER=" + rel.Frontend.Builder + "\n",
-		filepath.Join(b.dir, backendPluginsDockerfile) + "\n",
-		filepath.Join(b.dir, frontendRebuildDockerfile) + "\n",
 	} {
 		if !strings.Contains(data, want) {
 			t.Errorf("docker was not called with %q", want)
+		}
+	}
+	dockerfiles := readTrace(t, trace+".dockerfiles")
+	for _, name := range []string{backendPluginsDockerfile, frontendRebuildDockerfile} {
+		want, err := os.ReadFile(filepath.Join(b.dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(dockerfiles, string(want)) {
+			t.Errorf("build did not upload %s", name)
 		}
 	}
 	var env map[string]string

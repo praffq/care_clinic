@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -19,6 +20,11 @@ const PITRLatest = "latest"
 // rebuilt database answers is it dumped and taken through the same journaled
 // staged restore and swap as a normal restore. Uploaded files are not changed.
 func (s *Store) RestorePointInTime(target, recoveryFile string, now time.Time) error {
+	if s.Refresh != nil {
+		if err := s.Refresh(); err != nil {
+			return fmt.Errorf("the latest backup records could not be read from the CARE engine: %w", err)
+		}
+	}
 	m, found, err := storage.ReadManifest(s.BackupDir)
 	if err != nil {
 		return err
@@ -47,16 +53,13 @@ func (s *Store) RestorePointInTime(target, recoveryFile string, now time.Time) e
 	if _, err := ReadRecoveryFile(key); err != nil {
 		return err
 	}
-	src, err := filepath.Abs(s.BackupDir)
-	if err != nil {
-		return err
-	}
-	scripts := filepath.Join(s.Dir, "scripts")
-	if info, err := os.Stat(filepath.Join(scripts, "pitr-stage.sh")); err != nil || !info.Mode().IsRegular() {
+	if info, err := os.Stat(filepath.Join(s.Dir, "scripts", "pitr-stage.sh")); err != nil || !info.Mode().IsRegular() {
 		return errors.New("the restore helper scripts are missing from the install; repair CARE first")
 	}
+	// Replay reads the guest's own backups and change files, and the guest
+	// copy of the scripts and keys sent with the clinic kit.
 	return s.stagedRestore(false, func(j *restoreJournal) error {
-		return s.stagePointInTime(j, src, scripts, key, when)
+		return s.stagePointInTime(j, s.agentBackupDir(), path.Join(s.agentDir(), "scripts"), path.Join(s.agentDir(), "keys"), key, when)
 	})
 }
 
@@ -96,8 +99,17 @@ func PITRTarget(target string, m storage.Manifest, savedThrough int64, now time.
 	return t.UTC().Format("2006-01-02 15:04:05+00"), nil
 }
 
-func (s *Store) stagePointInTime(j *restoreJournal, src, scripts, key, target string) error {
+func (s *Store) stagePointInTime(j *restoreJournal, src, scripts, keys, key, target string) error {
 	settings, err := s.restoreSettings()
+	if err != nil {
+		return err
+	}
+	inputs, err := s.newRestoreInputs()
+	if err != nil {
+		return err
+	}
+	defer inputs.remove()
+	guestKey, err := inputs.addKey(key)
 	if err != nil {
 		return err
 	}
@@ -106,13 +118,13 @@ func (s *Store) stagePointInTime(j *restoreJournal, src, scripts, key, target st
 		"--mount", restoreMount("volume", j.stageVolume(), "/restore", false),
 		"--mount", restoreMount("bind", src, "/backups", true),
 		"--mount", restoreMount("bind", scripts, "/scripts", true),
-		"--mount", restoreMount("bind", filepath.Join(s.Dir, "keys"), "/keys", true),
-		"--mount", restoreMount("bind", key, "/restore-key.pem", true),
+		"--mount", restoreMount("bind", keys, "/keys", true),
+		"--mount", restoreMount("bind", guestKey, "/restore-key.pem", true),
 		"--shm-size", "256m",
 		"-e", "POSTGRES_DB="+settings["POSTGRES_DB"],
 		"-e", "POSTGRES_USER="+settings["POSTGRES_USER"])
 	args = append(args, s.Image, "sh", "/scripts/pitr-stage.sh", target)
-	if err := s.run.Run("docker", args...); err != nil {
+	if err := s.run.AgentRun("run", args...); err != nil {
 		return fmt.Errorf("rebuilding the database from saved changes failed: %w", err)
 	}
 	return nil

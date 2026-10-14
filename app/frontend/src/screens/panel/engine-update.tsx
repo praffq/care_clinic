@@ -30,7 +30,7 @@ export function EngineUpdateNotice({ engine }: { engine: EngineState | null }) {
   const care = useCare();
   const task = usePanelTask();
   const updateLock = usePanelUpdateLock();
-  if (!engine?.supported || !engine.update_needed || care.busy) return null;
+  if (!engine || (!engine.supported && !engine.native) || !engine.update_needed || care.busy) return null;
   const current = engine.running_version || engine.installed_version;
   const locked = care.busy || task.working || updateLock.active;
   return <PanelNotice title="CARE engine update required" tone="warning" actions={<>
@@ -51,7 +51,8 @@ export function EngineUpdateNotice({ engine }: { engine: EngineState | null }) {
 
 export function engineLogStatus(engine: EngineState | null): { label: string; detail: string; tone: "ok" | "warning" | "neutral" } {
   if (!engine) return { label: "Checking", detail: "Checking whether the CARE engine is collecting logs.", tone: "neutral" };
-  if (!engine.supported) return { label: "Docker logs", detail: "This computer runs CARE on Docker directly. Container logs stay in Docker; use docker compose logs.", tone: "neutral" };
+  if (engine.native) return { label: "Native CARE agent", detail: "This computer runs CARE through its protected local agent service. Container logs remain in the native engine.", tone: "neutral" };
+  if (!engine.supported) return { label: "Container logs", detail: "No managed CARE engine is available on this computer.", tone: "neutral" };
   if (engine.update_needed) return { label: "Engine update required", detail: "Engine and container logs are not collected until the CARE engine is updated.", tone: "warning" };
   if (!engine.running) return { label: "Engine stopped", detail: "Engine and container logs are collected while the CARE engine is running.", tone: "neutral" };
   switch (engine.logs) {

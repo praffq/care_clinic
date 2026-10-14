@@ -20,36 +20,28 @@ type Status struct {
 }
 
 func DockerCheck(run proc.Runner) Status {
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-	cmd := proc.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Os}}/{{.Server.Version}}")
-	cmd.Env = run.Env
-	out, err := cmd.Output()
-	switch {
-	case err == nil:
-		serverOS, version, _ := strings.Cut(strings.TrimSpace(string(out)), "/")
+	out, err := run.AgentCaptureIn(cmdTimeout, nil, "version", "--format", "{{.Server.Os}}/{{.Server.Version}}")
+	if err == nil {
+		serverOS, version, _ := strings.Cut(strings.TrimSpace(out), "/")
 		if problem := wrongContainerOS(serverOS); problem != "" {
 			return Status{OK: false, Message: problem}
-		}
-		if !hasCompose(run) {
-			return Status{OK: false, Message: composeAdvice()}
 		}
 		if vm.Supported() {
 			return Status{OK: true, Message: engineName + " (Docker " + version + ")"}
 		}
 		return Status{OK: true, Message: "Docker " + version}
-	case vm.Supported():
-		return engineCheck()
-	case runtime.GOOS == "linux" && dockerSocketPermissionDenied(err):
-		return Status{OK: false, Message: dockerLoginAdvice}
-	case hasCommand("docker"):
-		return Status{OK: false, Message: "Docker is installed but not running."}
-	default:
-		return Status{OK: false, Message: "Docker is not installed."}
 	}
+	if vm.Supported() {
+		return engineCheck()
+	}
+	if runtime.GOOS == "linux" && agentSocketPermissionDenied(err) {
+		return Status{OK: false, Message: agentLoginAdvice}
+	}
+	return Status{OK: false, Message: "The CARE agent is not running."}
 }
 
 const dockerLoginAdvice = "Docker is running, but this login session cannot access it. Log out and back in so your account picks up its new docker group membership, then check again."
+const agentLoginAdvice = "The CARE agent is running, but this desktop process cannot access it. Restart the desktop app or log out and back in to refresh group membership, then check again."
 
 func dockerSocketPermissionDenied(err error) bool {
 	var exit *exec.ExitError
@@ -62,6 +54,15 @@ func dockerSocketPermissionDenied(err error) bool {
 
 func dockerNeedsLogin(message string) bool {
 	return message == dockerLoginAdvice
+}
+
+func agentSocketPermissionDenied(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "permission denied") && strings.Contains(message, "control.sock")
+}
+
+func agentNeedsLogin(message string) bool {
+	return message == agentLoginAdvice
 }
 
 func engineCheck() Status {
@@ -86,24 +87,9 @@ func engineCheck() Status {
 	}
 }
 
-func composeAdvice() string {
-	if runtime.GOOS == "linux" {
-		return "Docker is running, but the Compose plugin is missing. Choose Install Docker to add it."
-	}
-	return "The " + engineName + " is running, but the Compose plugin is missing. Choose Update " + engineName + " to add it."
-}
-
 func wrongContainerOS(serverOS string) string {
 	if serverOS == "" || serverOS == "linux" {
 		return ""
 	}
 	return "Docker is set to " + serverOS + " containers, and CARE needs Linux containers."
-}
-
-func hasCompose(run proc.Runner) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-	cmd := proc.CommandContext(ctx, "docker", "compose", "version")
-	cmd.Env = run.Env
-	return cmd.Run() == nil
 }

@@ -33,6 +33,7 @@ export type ToolPlan = {
 
 export type DownloadInfo = { name: string; size: number };
 export type EngineState = {
+  native?: boolean;
   supported: boolean;
   expected_version: string;
   installed_version: string;

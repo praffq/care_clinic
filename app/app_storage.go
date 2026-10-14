@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -19,6 +20,9 @@ import (
 const (
 	storageFirstCheck = 20 * time.Second
 	storageInterval   = 5 * time.Minute
+
+	backupExportTimeout      = 30 * time.Minute
+	backupStateExportTimeout = 10 * time.Second
 )
 
 type storageWatch struct {
@@ -30,6 +34,8 @@ type storageWatch struct {
 	notifyOK   bool
 	copying    bool
 	copyErr    string
+	exportErr  string
+	stateErr   string
 }
 
 // backupHealth reads the backup state and adds failures the app itself saw
@@ -42,10 +48,19 @@ func (a *App) backupHealth(source, stateDir string, running bool, now time.Time)
 	}
 	a.store.mu.Lock()
 	copyErr := a.store.copyErr
+	exportErr, stateErr := a.store.exportErr, a.store.stateErr
 	a.store.mu.Unlock()
 	if copyErr != "" {
 		h.Alerts = append(h.Alerts, storage.Alert{Code: "copy_status_unwritable", Level: storage.LevelLow,
 			Message: "The backup copy status could not be saved: " + copyErr})
+	}
+	if exportErr != "" || stateErr != "" {
+		msg := exportErr
+		if msg == "" {
+			msg = stateErr
+		}
+		h.Alerts = append(h.Alerts, storage.Alert{Code: "engine_export_failed", Level: storage.LevelLow,
+			Message: "The engine's latest backups or status could not be exported; this computer's backup view may be stale: " + msg})
 	}
 	return h
 }
@@ -61,6 +76,21 @@ func (a *App) startBackupCopy(source, stateDir, dest string) {
 	a.store.copying = true
 	a.store.mu.Unlock()
 	go func() {
+		// The guest backup folder is the source of truth; bring the host's
+		// verified export (new nightly sets and saved changes) up to date
+		// before the copy reads it.
+		ctx, cancel := context.WithTimeout(context.Background(), backupExportTimeout)
+		exportErr := a.engine().ExportBackups(ctx)
+		cancel()
+		if exportErr != nil {
+			a.logln("backup export: " + exportErr.Error())
+			a.store.mu.Lock()
+			a.store.copying = false
+			a.store.exportErr = exportErr.Error()
+			a.store.mu.Unlock()
+			a.emit("care-backup-copy", storage.CopyStatus{State: "failed", Message: "Engine backup export failed: " + exportErr.Error()})
+			return
+		}
 		st, err := backupcopy.Run(source, stateDir, dest, time.Now())
 		if err != nil {
 			a.logln("backup copy: " + err.Error())
@@ -69,6 +99,7 @@ func (a *App) startBackupCopy(source, stateDir, dest string) {
 		a.store.mu.Lock()
 		a.store.copying = false
 		a.store.copyErr = ""
+		a.store.exportErr = ""
 		if err != nil {
 			a.store.copyErr = err.Error()
 		}
@@ -197,8 +228,11 @@ func (a *App) checkStorage() storage.Report {
 			r.Drives = append(r.Drives, d)
 		}
 	}
-	r.Backup, _ = a.backupSpace(e.BackupDirPath())
 	stateDir := filepath.Join(a.installDir(), backupStateDir)
+	if running {
+		a.exportBackupState()
+	}
+	r.Backup, _ = a.backupSpace(e.BackupDirPath())
 	a.startBackupCopy(e.BackupDirPath(), stateDir, cfg.BackupCopyDir)
 	r.Health = a.backupHealth(e.BackupDirPath(), stateDir, running, now)
 	r.LastRun = r.Health.LastRun
@@ -259,4 +293,22 @@ func (a *App) notificationsReady() bool {
 		a.store.notifyOK = err == nil && ok
 	})
 	return a.store.notifyOK
+}
+
+// exportBackupState refreshes the host's copy of the guest backup status
+// files that backup health reads. The exported backups themselves follow in
+// the background copy pass.
+func (a *App) exportBackupState() {
+	ctx, cancel := context.WithTimeout(context.Background(), backupStateExportTimeout)
+	defer cancel()
+	err := a.engine().ExportBackupState(ctx)
+	a.store.mu.Lock()
+	a.store.stateErr = ""
+	if err != nil {
+		a.store.stateErr = err.Error()
+	}
+	a.store.mu.Unlock()
+	if err != nil {
+		a.logln("backup status export: " + err.Error())
+	}
 }

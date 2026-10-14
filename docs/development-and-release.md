@@ -34,7 +34,7 @@ The direct Go dependencies have narrow jobs:
 | Module | Why the backend uses it |
 | --- | --- |
 | `github.com/wailsapp/wails/v2` | Native application runtime, webview binding, events and dialogs at the application boundary. |
-| `github.com/compose-spec/compose-go/v2` | Dotenv parsing. Stack control still goes through the Docker Compose executable, not a programmatic Compose service API. |
+| `github.com/compose-spec/compose-go/v2` | Dotenv parsing and Compose integration tests. Runtime stack operations go through the CARE agent. |
 | `github.com/hashicorp/mdns` | DNS-SD record construction; CARE owns the interface-bound responder transport. |
 | `github.com/miekg/dns` | DNS packet encoding/decoding for the responder and direct hostname probes. |
 | `golang.org/x/net` | Interface-bound IPv4/IPv6 multicast sockets. |
@@ -257,7 +257,11 @@ UI suite because all screens share them.
 
 ## Release identity and pins
 
-[`deployments/.env`](../deployments/.env) is the common release manifest consumed by Compose, Go, and packaging. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
+[`versions.toml`](../versions.toml) is the only human-edited release file.
+Packaging stages its pins together with non-release defaults from
+[`deployments/.env`](../deployments/.env) into the app's generated install
+environment; [`release.Load()`](../app/internal/release/pins.go) parses that
+environment using dotenv.
 
 | Group | Required keys |
 | --- | --- |
@@ -265,14 +269,24 @@ UI suite because all screens share them.
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
 | CARE software | `CARE_VERSION` and `CARE_UPDATES_URL`, staged from `versions.toml`; only CARE 3.1 ships. |
-| Prerequisite downloads | `CARE_VM_*`, `DOCKER_CLI_*`, `COMPOSE_MACOS_*`, `COMPOSE_WINDOWS_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, `DOCKER_LINUX_*`, and `COMPOSE_LINUX_*` version, URL, and checksum pins. |
+| Prerequisite downloads | `CARE_VM_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, and native Linux `DOCKER_LINUX_*` pins. Native agents use signed engine-manifest assets. |
 
-`CARE_CLINIC_VERSION` is `X.Y.Z` or `X.Y.Z-dev`. Engine and tool versions
-(`CARE_VM_VERSION`, `DOCKER_CLI_VERSION`, `QEMU_WINDOWS_VERSION`,
-`DOCKER_LINUX_VERSION`, and `COMPOSE_LINUX_VERSION`) are `X.Y.Z`; each
-`*_SHA256` is 64 lowercase hex characters. The CARE engine and host-side tools
-are documented in the [CARE engine guide](vm.md); Linux Docker provisioning is
-covered in [native integrations](native-integrations.md#docker-prerequisites).
+Desktop, engine and CARE versions are strict `X.Y.Z` pins (desktop development
+builds may use `X.Y.Z-dev`). Agent assets share the engine version and release.
+Engine `0.1.3` introduces the jobs protocol; desktop requirements exclude older
+engine bundles. CI ships both VM bundles and `care-engine-agent-linux-{arch}`
+binaries in that immutable release, recording actual hashes and sizes in the
+engine assets consumed by the unchanged manifest-signing flow.
+Native installation and updates require those verified signed assets; there
+are no static agent hashes. All-zero VM bootstrap checksums in `versions.toml`
+are explicit publication blockers, never trusted download hashes. Replace them
+only with the actual immutable bundle hashes after CI publication. Until then,
+VM bootstrap/download/activation remains blocked rather than using old assets.
+Each `*_SHA256` is 64 lowercase hex characters. The CARE engine and native
+agent assets are documented in the [CARE engine guide](vm.md); native Linux
+Docker provisioning is covered in
+[native integrations](native-integrations.md#docker-prerequisites). Host Docker
+CLI and Compose downloads are not pinned or installed.
 Windows QEMU and its temporary extraction tools download directly from upstream;
 `QEMU_WINDOWS_SHA256` identifies the distributor installer, not a repackaged ZIP.
 Both `SEVENZIP_*_URL` and `SEVENZIP_*_SHA256` pairs are required. No upstream

@@ -41,7 +41,7 @@ case "$1 $2" in
 esac
 exit 99
 `
-			if err := os.WriteFile(filepath.Join(e.InstallDir, "docker"), []byte(script), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(e.InstallDir, "engine-docker"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			dir := filepath.Join(e.InstallDir, "updates")

@@ -1,7 +1,5 @@
 // Command care-engine-agent runs inside the CARE engine VM. It gives the host
-// a private channel to the guest's Docker daemon, forwards the clinic's web
-// ports, and answers a small control API (status, folder shares, clock,
-// shutdown, and a file API the Windows host uses to keep folders in sync).
+// an operation API and file transfers, and forwards the clinic's web ports.
 //
 // On macOS the host reaches it over vsock. On Windows, QEMU forwards loopback
 // TCP ports to it and both ends prove themselves with a certificate the host
@@ -22,12 +20,10 @@ import (
 
 // Ports are shared with app/internal/vm/protocol.go; keep them in step.
 const (
-	VsockDocker  = 2375
 	VsockControl = 2377
 	VsockHTTP    = 80
 	VsockHTTPS   = 443
 
-	TCPDocker  = 2376
 	TCPControl = 2377
 
 	dockerSocket = "/run/docker.sock"
@@ -36,9 +32,16 @@ const (
 
 func main() {
 	creds := flag.String("tls", credsPath, "PEM certificate and key for TCP mode")
+	socket := flag.String("socket", "", "protected Unix socket for native Linux mode")
 	flag.Parse()
 	log.SetFlags(0)
-	if err := run(*creds); err != nil {
+	var err error
+	if *socket != "" {
+		err = runNative(*socket)
+	} else {
+		err = run(*creds)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -56,23 +59,14 @@ func run(credsFile string) error {
 		if err != nil {
 			return err
 		}
-		docker, err := tls.Listen("tcp", fmt.Sprintf(":%d", TCPDocker), cfg)
-		if err != nil {
-			return err
-		}
 		control, err := tls.Listen("tcp", fmt.Sprintf(":%d", TCPControl), cfg)
 		if err != nil {
 			return err
 		}
-		log.Printf("agent: TCP mode, docker :%d control :%d", TCPDocker, TCPControl)
-		go func() { errs <- serveProxy(docker, unixTarget(dockerSocket)) }()
+		log.Printf("agent: TLS control :%d", TCPControl)
 		go func() { errs <- srv.Serve(control) }()
 	case errors.Is(err, os.ErrNotExist):
 		listen := func(port uint32) (net.Listener, error) { return listenVsock(port) }
-		docker, err := listen(VsockDocker)
-		if err != nil {
-			return fmt.Errorf("vsock: %w", err)
-		}
 		control, err := listen(VsockControl)
 		if err != nil {
 			return err
@@ -86,7 +80,6 @@ func run(credsFile string) error {
 			return err
 		}
 		log.Printf("agent: vsock mode")
-		go func() { errs <- serveProxy(docker, unixTarget(dockerSocket)) }()
 		go func() { errs <- srv.Serve(control) }()
 		go func() { errs <- serveProxy(web, tcpTarget("127.0.0.1:80")) }()
 		go func() { errs <- serveProxy(secure, tcpTarget("127.0.0.1:443")) }()

@@ -134,6 +134,11 @@ func backupLabel(ts string, manual, preUpdate, withFiles, encrypted bool) string
 }
 
 func (s *Store) Restore(dbDump, filesArchive, recoveryFile string) error {
+	if s.Refresh != nil {
+		if err := s.Refresh(); err != nil {
+			return fmt.Errorf("the latest backups could not be read from the CARE engine: %w", err)
+		}
+	}
 	return s.RestoreFrom(s.BackupDir, dbDump, filesArchive, recoveryFile)
 }
 
@@ -279,21 +284,41 @@ func (s *Store) stageDump(j *restoreJournal, srcDir, dump, archive, key string) 
 		script += stageBackupFile(archive, "files.tar.gz")
 	}
 	script += "pg_restore --exit-on-error --file=/dev/null /restore/database.dump\nsync\n"
+	// The selected files and recovery key are sent to a unique guest folder
+	// for this step only, and removed whatever the outcome.
+	inputs, err := s.newRestoreInputs()
+	if err != nil {
+		return err
+	}
+	defer inputs.remove()
+	s.logln("Sending the selected backup to the CARE engine...")
+	for _, name := range []string{dump, archive} {
+		if name == "" {
+			continue
+		}
+		if _, err := inputs.add(filepath.Join(srcDir, name), name); err != nil {
+			return err
+		}
+	}
 	mounts := []string{"--mount", restoreMount("volume", j.stageVolume(), "/restore", false),
-		"--mount", restoreMount("bind", srcDir, "/backups", true)}
+		"--mount", restoreMount("bind", inputs.dir, "/backups", true)}
 	if key != "" {
-		mounts = append(mounts, "--mount", restoreMount("bind", key, "/restore-key.pem", true))
+		guestKey, err := inputs.addKey(key)
+		if err != nil {
+			return err
+		}
+		mounts = append(mounts, "--mount", restoreMount("bind", guestKey, "/restore-key.pem", true))
 	}
 	args := s.restoreHelperArgs(j, "preflight", "none", mounts...)
 	args = append(args, s.Image, "sh", "-c", script)
-	if err := s.run.Run("docker", args...); err != nil {
+	if err := s.run.AgentRun("run", args...); err != nil {
 		return fmt.Errorf("backup copy, decryption or full dump validation failed: %w", err)
 	}
 	if j.WithFiles {
 		args := s.restoreHelperArgs(j, "extract", "none",
 			"--mount", restoreMount("volume", j.stageVolume(), "/restore", false))
 		args = append(args, "--read-only", "--user", "0:0", "--entrypoint", "python", s.BackendImage, "-B", "-c", validateRestoreFiles)
-		if err := s.run.Run("docker", args...); err != nil {
+		if err := s.run.AgentRun("run", args...); err != nil {
 			return fmt.Errorf("files archive validation or staged extraction failed: %w", err)
 		}
 	}

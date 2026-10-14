@@ -19,6 +19,7 @@ import (
 )
 
 type api struct {
+	native  bool
 	docker  string
 	started time.Time
 	// root confines the file API; "/" in the guest, a temp dir in tests.
@@ -61,17 +62,42 @@ type Status struct {
 func (a *api) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", a.status)
-	mux.HandleFunc("POST /v1/mount", a.mount)
-	mux.HandleFunc("POST /v1/time", a.setTime)
-	mux.HandleFunc("POST /v1/shutdown", a.shutdown)
+	mux.HandleFunc("POST /v1/jobs", a.job)
+	if !a.native {
+		mux.HandleFunc("POST /v1/time", a.setTime)
+		mux.HandleFunc("POST /v1/shutdown", a.shutdown)
+	}
 	mux.HandleFunc("GET /v1/df", a.df)
 	mux.HandleFunc("GET /v1/journal", a.journal)
 	mux.HandleFunc("GET /v1/logs", a.logs)
 	mux.HandleFunc("GET /v1/fs/list", a.list)
 	mux.HandleFunc("GET /v1/fs/file", a.getFile)
 	mux.HandleFunc("PUT /v1/fs/file", a.putFile)
+	mux.HandleFunc("PUT /v1/fs/dir", a.mkdir)
 	mux.HandleFunc("DELETE /v1/fs/file", a.deleteFile)
 	return mux
+}
+
+func (a *api) mkdir(w http.ResponseWriter, r *http.Request) {
+	p, err := a.resolve(r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mode, err := strconv.ParseUint(r.URL.Query().Get("mode"), 8, 32)
+	if err != nil || mode == 0 || mode & ^uint64(0o777) != 0 {
+		http.Error(w, "invalid directory mode", http.StatusBadRequest)
+		return
+	}
+	if err := os.MkdirAll(p, os.FileMode(mode)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := os.Chmod(p, os.FileMode(mode)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -89,19 +115,6 @@ func (a *api) status(w http.ResponseWriter, r *http.Request) {
 		s.Version = v.Version
 	}
 	writeJSON(w, s)
-}
-
-func (a *api) mount(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Tag, Path string }
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in); err != nil || in.Tag == "" || !path.IsAbs(in.Path) {
-		http.Error(w, "tag and absolute path required", http.StatusBadRequest)
-		return
-	}
-	if err := mountShare(in.Tag, path.Clean(in.Path)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *api) setTime(w http.ResponseWriter, r *http.Request) {
@@ -149,10 +162,16 @@ func (a *api) df(w http.ResponseWriter, r *http.Request) {
 func (a *api) journal(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "journalctl", "-b", "--no-pager", "-n", "3000")
+	args := []string{"-b", "--no-pager", "-n", "3000"}
+	if a.native {
+		args = append(args, "-u", "docker.service", "-u", "care-engine-agent.service")
+	}
+	cmd := exec.CommandContext(ctx, "journalctl", args...)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	cmd.Stdout, cmd.Stderr = w, w
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(w, "\nagent journal collection failed: %v\n", err)
+	}
 }
 
 // resolve maps a guest path from the request into the file API root and
@@ -261,7 +280,7 @@ func (a *api) putFile(w http.ResponseWriter, r *http.Request) {
 		mirrorWriteError(w, err)
 		return
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".care-sync-*")
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".care-upload-*")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -486,13 +486,8 @@ CARE_VM_VERSION=0.1.0
 CARE_VM_BASE_URL=https://example.test/care-engine
 CARE_VM_AARCH64_SHA256=` + strings.Repeat("a", 64) + `
 CARE_VM_X86_64_SHA256=` + strings.Repeat("b", 64) + `
-DOCKER_CLI_VERSION=29.8.1
-DOCKER_CLI_MACOS_AARCH64_SHA256=` + strings.Repeat("c", 64) + `
-DOCKER_CLI_MACOS_X86_64_SHA256=` + strings.Repeat("3", 64) + `
-DOCKER_CLI_WINDOWS_X86_64_SHA256=` + strings.Repeat("4", 64) + `
-COMPOSE_MACOS_AARCH64_SHA256=` + strings.Repeat("5", 64) + `
-COMPOSE_MACOS_X86_64_SHA256=` + strings.Repeat("6", 64) + `
-COMPOSE_WINDOWS_X86_64_SHA256=` + strings.Repeat("7", 64) + `
+CARE_ENGINE_AGENT_LINUX_AARCH64_SHA256=` + strings.Repeat("c", 64) + `
+CARE_ENGINE_AGENT_LINUX_X86_64_SHA256=` + strings.Repeat("3", 64) + `
 QEMU_WINDOWS_VERSION=10.1.0
 QEMU_WINDOWS_URL=https://example.test/qemu.exe
 QEMU_WINDOWS_SHA256=` + strings.Repeat("8", 64) + `
@@ -503,9 +498,6 @@ SEVENZIP_BOOTSTRAP_SHA256=` + strings.Repeat("0", 64) + `
 DOCKER_LINUX_VERSION=29.8.1
 DOCKER_LINUX_X86_64_SHA256=` + strings.Repeat("e", 64) + `
 DOCKER_LINUX_AARCH64_SHA256=` + strings.Repeat("f", 64) + `
-COMPOSE_LINUX_VERSION=5.5.1
-COMPOSE_LINUX_X86_64_SHA256=` + strings.Repeat("1", 64) + `
-COMPOSE_LINUX_AARCH64_SHA256=` + strings.Repeat("2", 64) + `
 `)},
 		"install/docker-compose.yml": {Data: []byte("must not be installed\n")},
 	}
