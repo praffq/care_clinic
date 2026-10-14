@@ -1187,7 +1187,17 @@ func TestBackupScriptWritersSerialize(t *testing.T) {
 		if err := d.Start(); err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = d.Process.Kill(); _ = d.Wait() }()
+		defer func() {
+			_ = os.WriteFile(filepath.Join(f.root, "wake"), nil, 0o600)
+			done := make(chan error, 1)
+			go func() { done <- d.Wait() }()
+			select {
+			case <-time.After(5 * time.Second):
+				_ = d.Process.Kill()
+				<-done
+			case <-done:
+			}
+		}()
 		for i := 0; ; i++ {
 			if _, err := os.Stat(filepath.Join(f.root, "sleeping")); err == nil {
 				break
@@ -1202,6 +1212,9 @@ func TestBackupScriptWritersSerialize(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(f.backups, "care-20260102-030405.dump.enc")); err != nil {
 			t.Fatalf("scheduled set missing:\n%s", dOut.String())
+		}
+		if err := os.WriteFile(filepath.Join(f.root, "wake"), nil, 0o600); err != nil {
+			t.Fatal(err)
 		}
 	})
 }
