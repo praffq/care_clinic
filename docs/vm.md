@@ -46,7 +46,10 @@ advertising. It no longer owns file replication or Docker command execution.
 
 Native Linux uses `/run/care-engine-agent/control.sock`, accessible only to
 root and the configured clinic group. The system service runs the same agent
-with `--socket`, alongside system dockerd. Native mode does not expose the VM
+with `--socket`, alongside system dockerd. Residue checks do not treat a missing
+agent socket as an empty installation: retained engine data, agent installation
+records or Docker configuration require agent recovery before volumes can be
+declared clean. Native mode does not expose the VM
 mount, clock or shutdown endpoints, so it cannot power off the host through the
 VM shutdown API.
 

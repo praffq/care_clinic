@@ -16,17 +16,14 @@ import (
 )
 
 func TestUnavailableDockerIsNotClean(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(enginetest.Call) enginetest.Result {
+		return enginetest.Result{Error: "engine inspection unavailable"}
+	})
 	t.Setenv("PATH", root)
-	run := proc.Runner{Env: os.Environ()}
+	run := proc.Runner{Env: os.Environ(), Agent: agent.Client}
 	report, err := scan(Options{
 		Runner: run, Project: "care-clinic", InstallDir: filepath.Join(root, "install"),
 	}, noSystemTraces)
@@ -38,9 +35,9 @@ func TestUnavailableDockerIsNotClean(t *testing.T) {
 	}
 }
 
-func TestMissingDockerIsNotDockerResidue(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
+func TestMissingManagedEngineIsNotDockerResidue(t *testing.T) {
+	if !vm.Supported() || runtime.GOOS == "windows" {
+		t.Skip("uses isolated macOS managed-engine absence; native absence is covered separately")
 	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
@@ -74,18 +71,15 @@ func TestMissingDockerIsNotDockerResidue(t *testing.T) {
 }
 
 func TestStoppedDockerIsDistinguishedFromAnAbsentOne(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses POSIX command fixtures")
-	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	markManagedDisk(t)
-	if err := os.WriteFile(filepath.Join(root, "docker"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	agent := enginetest.New(t, func(enginetest.Call) enginetest.Result {
+		return enginetest.Result{Stderr: "Cannot connect to the Docker daemon\n", Exit: 1}
+	})
 	t.Setenv("PATH", root)
 	report, err := scan(Options{
-		Runner: proc.Runner{Env: os.Environ()}, Project: "care-clinic",
+		Runner: proc.Runner{Env: os.Environ(), Agent: agent.Client}, Project: "care-clinic",
 		InstallDir: filepath.Join(root, "install"),
 	}, noSystemTraces)
 	if err == nil || report.Clean || (!strings.Contains(err.Error(), "recover the engine") && !strings.Contains(err.Error(), "start the CARE agent")) {
