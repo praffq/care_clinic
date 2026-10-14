@@ -16,7 +16,16 @@ on:
       - .github/**
   schedule:
     - cron: "17 3 * * *"
+  # Pushes to main and the nightly schedule only validate and build. Signed
+  # component releases and the updates.json feed are published only by an
+  # explicit manual run from main with publish=true (then gated again by the
+  # release-signing environment's reviewers).
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish signed component releases and the signed updates.json feed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,7 +52,7 @@ jobs:
       changed: ${{ steps.plan.outputs.changed }}
       desktop_version: ${{ steps.plan.outputs.desktop_version }}
       engine_version: ${{ steps.plan.outputs.engine_version }}
-      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' }}
+      publish: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

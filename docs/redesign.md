@@ -44,12 +44,14 @@ phases below are requirements, not claims that the first PR implements them.
 8. Requirements are copied from `versions.toml`; CI never decides requirements.
 9. Serialize publishing with a concurrency group and no cancellation. Publish
    nothing half-done. Clinics reject any revision below the highest seen.
-10. Exactly four workflows: `care-images.yml` (backend/frontend runtime and
+10. Exactly four release workflows: `care-images.yml` (backend/frontend runtime and
     builder), `engine.yml`, `desktop.yml`, `publish.yml` (manifest/sign/deploy).
     A shared script or Go tool generates the manifest from TOML and build
-    outputs.
+    outputs. A separate manual `desktop-dev.yml` creates unsigned Windows dev
+    prereleases (`desktop-dev-v*` tags) and never touches the manifest.
 11. Check CARE branches daily by cron, on `workflow_dispatch`, and on pushes
-    changing `versions.toml` or `env-defaults.yml`.
+    changing `versions.toml` or `env-defaults.yml`. Only a manual run from
+    `main` with `publish` enabled publishes; other runs validate and build.
 12. Changing the `fe` section in `env-defaults.yml` rebuilds the published frontend
     image, because these settings are compiled in.
 13. Seed current pins from `deployments/.env`, moving versions and pins into

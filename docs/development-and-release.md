@@ -456,9 +456,10 @@ For another change, select the package/test covering that behavior first. The fu
 
 ## Packaging and publication
 
-The release workflow runs when a push to `main` changes `CARE_CLINIC_VERSION`
-in `deployments/.env`, or when started by hand, and reuses the native artifacts
-built by CI in the same workflow run:
+The release workflow builds and validates on pushes to `main`, but publishes
+only when started by hand from `main` with `publish` enabled, and reuses the
+native artifacts built in the same workflow run. Unsigned Windows dev
+prereleases use a separate workflow; see [Releasing CARE Clinic](releases.md#unsigned-dev-prereleases).
 
 | Platform | Wails target | Artifact |
 | --- | --- | --- |
