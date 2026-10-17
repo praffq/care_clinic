@@ -88,8 +88,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   release:
-    name: Publish immutable engine assets
-    if: inputs.build && inputs.publish
+    name: Measure engine assets and publish on main
+    if: inputs.build
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -111,7 +111,11 @@ jobs:
       - name: Hash every asset and publish without replacement
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/pipeline.py assets --component engine --publish
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          publish=()
+          if [ "$PUBLISH" = true ]; then publish+=(--publish); fi
+          python3 .github/scripts/pipeline.py assets --component engine "${publish[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: output-engine

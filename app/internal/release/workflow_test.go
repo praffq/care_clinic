@@ -1,12 +1,15 @@
 package release
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 var workflowNames = []string{"care-images.yml", "engine.yml", "desktop.yml", "publish.yml"}
@@ -42,13 +45,19 @@ func TestReleaseWorkflowValidatesIdentity(t *testing.T) {
 		"versions.toml", "env-defaults.yml", "schedule:", "workflow_dispatch:",
 		"cancel-in-progress: false", "name: CI", "if: always()",
 		"ci/releasectl plan --root .", "--plan plan.json",
-		"ci/releasectl verify --manifest previous.json --signature previous.json.sig",
-		"environment: release-signing", "secrets.UPDATES_SIGNING_KEY",
-		"public/updates.json", "public/updates.json.sig", "path: public",
+		"ci/releasectl verify --manifest previous.json", "--signature previous.json.sig",
+		"secrets.UPDATES_SIGNING_KEY", "--unsigned-development",
+		"vars.UPDATES_SIGNING_ENABLED",
+		"environment: ${{ needs.plan.outputs.update_trust == 'signed' && 'release-signing' || 'unsigned-development' }}",
+		"pipeline.py publication", "path: public",
 		"needs: [plan, required]",
 	)
 	if strings.Contains(publish, "pull_request_target") {
 		t.Fatal("untrusted PR code must not run in a privileged event")
+	}
+	planJob := strings.Split(publish, "\n  care:\n")[0]
+	if strings.Contains(planJob, "secrets.UPDATES_SIGNING_KEY") || strings.Contains(planJob, "environment:") {
+		t.Fatal("planning must select trust without accessing the protected key or requiring approval")
 	}
 	requireText(t, publish, "github.event_name != 'pull_request'", "github.event_name != 'merge_group'",
 		"github.ref == 'refs/heads/main'")
@@ -127,7 +136,7 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		"secrets.MACOS_CERT_P12", "secrets.MACOS_CERT_PASSWORD", "secrets.MACOS_SIGN_IDENTITY",
 		"secrets.APPSTORE_PRIVATE_KEY", "secrets.APPSTORE_KEY_ID", "secrets.APPSTORE_ISSUER_ID",
 		"secrets.SIGNPATH_API_TOKEN", "Get-AuthenticodeSignature", "SIGNED_UNINSTALLER=",
-		"SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}",
+		"SIGN_MACOS: ${{ needs.signing.outputs.macos }}",
 		"wait-for-completion-timeout-in-seconds: \"3600\"",
 		"output-artifact-directory: signed-app",
 		"output-artifact-directory: signed-installer",
@@ -158,8 +167,134 @@ func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {
 		"needs.signing.result == 'success'",
 		"needs.sign-windows-installer.result == 'success'",
 		"needs.sign-windows-installer.result == 'skipped'",
-		"SignPath is partially configured",
+		"pipeline.py signing",
 	)
+	data := workflow(t, "desktop.yml")
+	release := strings.Split(data, "\n  release:\n")[1]
+	requireText(t, release, "if: ${{ !cancelled() && needs.package.result == 'success' }}")
+	requireText(t, data, "release.updateTrust=$UPDATE_TRUST", "signed|unsigned-development")
+	requireText(t, workflow(t, "publish.yml"), "update_trust: ${{ needs.plan.outputs.update_trust }}",
+		"pipeline.py reuse-engine", "name: output-engine-reused", "needs: [plan, engine, desktop]",
+		"if: ${{ !cancelled() && needs.plan.result == 'success' && needs.engine.result == 'success' && needs.desktop.result == 'success' }}")
+	requireText(t, workflow(t, "engine.yml"), "if: inputs.build", "PUBLISH: ${{ inputs.publish }}",
+		`if [ "$PUBLISH" = true ]; then publish+=(--publish); fi`, "name: output-engine")
+	if strings.Count(data, "run: python3 .github/scripts/pipeline.py bootstrap") != 1 {
+		t.Fatal("native build staging must resolve measured bootstrap hashes")
+	}
+	requireText(t, data, "name: desktop-bootstrap-config", "pattern: output-engine*")
+	packageJob := strings.Split(strings.Split(data, "\n  package:\n")[1], "\n  release:\n")[0]
+	requireText(t, packageJob, "name: desktop-bootstrap-config", "cp versions.toml release-assets/versions.toml")
+}
+
+func TestDesktopChecksStartAlongsideEngineWithoutArtifactPolling(t *testing.T) {
+	type job struct {
+		Needs any              `yaml:"needs"`
+		If    string           `yaml:"if"`
+		With  map[string]any   `yaml:"with"`
+		Steps []map[string]any `yaml:"steps"`
+	}
+	parse := func(name string) map[string]job {
+		t.Helper()
+		var data struct {
+			Jobs map[string]job `yaml:"jobs"`
+		}
+		if err := yaml.Unmarshal([]byte(workflow(t, name)), &data); err != nil {
+			t.Fatal(err)
+		}
+		return data.Jobs
+	}
+	publish := parse("publish.yml")
+	for _, name := range []string{"care", "engine", "desktop"} {
+		if publish[name].Needs != "plan" {
+			t.Fatalf("%s must start immediately after planning, got needs=%v", name, publish[name].Needs)
+		}
+	}
+	if publish["desktop"].With["phase"] != "checks" || publish["desktop-package"].With["phase"] != "package" {
+		t.Fatal("desktop checks and installer packaging must use separate workflow calls")
+	}
+	packagingNeeds, _ := json.Marshal(publish["desktop-package"].Needs)
+	if string(packagingNeeds) != `["plan","engine","desktop"]` {
+		t.Fatalf("packaging must wait for engine measurements and desktop checks: %s", packagingNeeds)
+	}
+	requireText(t, workflow(t, "publish.yml"), "needs: [plan, care, engine, desktop, desktop-package]")
+	desktop := parse("desktop.yml")
+	for _, name := range []string{"lint", "go", "frontend"} {
+		if desktop[name].Needs != nil || desktop[name].If != "inputs.phase == 'checks'" {
+			t.Fatalf("%s must run independently in checks phase", name)
+		}
+		for _, step := range desktop[name].Steps {
+			serialized, _ := json.Marshal(step)
+			if strings.Contains(string(serialized), "download-artifact") || strings.Contains(string(serialized), "pipeline.py bootstrap") {
+				t.Fatalf("%s must not wait for engine artifacts", name)
+			}
+		}
+	}
+	if desktop["native"].Needs != nil || desktop["native"].If != "inputs.phase == 'package' && inputs.build" {
+		t.Fatal("native build must run only in the dependency-gated package call")
+	}
+	if desktop["signing"].Needs != "native" {
+		t.Fatal("signing must wait for native build success without skipped check ancestors")
+	}
+	requireText(t, workflow(t, "desktop.yml"), "npm run build:frontend", "pattern: output-engine*",
+		"name: desktop-frontend", "needs: [lint, go, frontend]")
+	data := repoFile(t, "app/frontend/package.json")
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, pkg.Scripts["build"], "stage-install.mjs", "npm run build:frontend")
+	requireText(t, pkg.Scripts["build:frontend"], "check-bindings.mjs", "tsc", "vite build", "prune-fonts.mjs")
+	if strings.Contains(pkg.Scripts["build:frontend"], "stage-install") {
+		t.Fatal("frontend-only validation must not stage unresolved engine pins")
+	}
+	gate, ok := desktop["required"].Steps[0]["run"].(string)
+	if !ok || desktop["required"].If != "always()" {
+		t.Fatal("both desktop phases need an always-run status gate, including no-build runs")
+	}
+	for _, tc := range []struct {
+		phase, build string
+		expected     map[string]map[string]string
+	}{
+		{"checks", "false", map[string]map[string]string{
+			"lint": {"result": "success"}, "go": {"result": "success"},
+			"frontend": {"result": "success"},
+		}},
+		{"package", "true", map[string]map[string]string{
+			"lint": {"result": "skipped"}, "go": {"result": "skipped"},
+			"frontend": {"result": "skipped"},
+		}},
+		{"package", "false", map[string]map[string]string{
+			"lint": {"result": "skipped"}, "go": {"result": "skipped"},
+			"frontend": {"result": "skipped"},
+		}},
+	} {
+		run := func(wantSuccess bool) {
+			t.Helper()
+			results, err := json.Marshal(tc.expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", gate)
+			cmd.Env = append(os.Environ(), "PHASE="+tc.phase, "BUILD="+tc.build, "RESULTS="+string(results))
+			if output, err := cmd.CombinedOutput(); (err == nil) != wantSuccess {
+				t.Fatalf("phase=%s build=%s results=%s error=%v output=%s", tc.phase, tc.build, results, err, output)
+			}
+		}
+		run(true)
+		for _, status := range tc.expected {
+			old := status["result"]
+			for _, invalid := range []string{"success", "failure", "cancelled", "skipped"} {
+				if invalid == old {
+					continue
+				}
+				status["result"] = invalid
+				run(false)
+			}
+			status["result"] = old
+		}
+	}
 }
 
 func TestWindowsInstallerRejectsDamagedDownloads(t *testing.T) {

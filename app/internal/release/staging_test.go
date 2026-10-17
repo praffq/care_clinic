@@ -15,7 +15,7 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 	if !proc.Exists("node") {
 		t.Skip("Node.js is not installed")
 	}
-	toml := string(repoFile(t, ConfigFile))
+	toml := string(fixtureEngineConfig(repoFile(t, ConfigFile)))
 	base := string(repoFile(t, "deployments/.env"))
 	current, err := ReadConfig([]byte(toml))
 	if err != nil {

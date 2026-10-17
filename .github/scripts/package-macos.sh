@@ -72,7 +72,7 @@ if [ "$SIGN_MACOS" = "true" ]; then
   xcrun stapler staple "$app"
   xcrun stapler validate "$app"
 else
-  echo "::warning::MACOS_CERT_P12 is absent; macOS retains its ad-hoc signature only."
+  echo "macOS signing is not configured; retaining the development ad-hoc signature."
 fi
 ditto "$app" "staging/CARE Clinic.app"
 ln -s /Applications staging/Applications

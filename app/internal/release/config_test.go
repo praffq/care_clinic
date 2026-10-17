@@ -27,6 +27,23 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	}
 }
 
+func TestUnresolvedEngineSourceCannotBeEmbedded(t *testing.T) {
+	config := repoFile(t, ConfigFile)
+	c, err := ReadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"care_engine_aarch64", "care_engine_x86_64"} {
+		if c.Tools[tool].SHA256 != "" {
+			t.Fatal("reset source must not contain stale or invented engine hashes")
+		}
+	}
+	if _, err := LoadSource(config, repoFile(t, "deployments/.env")); err == nil ||
+		!strings.Contains(err.Error(), "engine bootstrap hashes are unresolved") {
+		t.Fatalf("unresolved bootstrap source was accepted: %v", err)
+	}
+}
+
 func TestReadConfigIsStrict(t *testing.T) {
 	data := string(repoFile(t, ConfigFile))
 	c, err := ReadConfig([]byte(data))

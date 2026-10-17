@@ -279,6 +279,10 @@ func deploymentPins(t *testing.T) *release.Pins {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"care_engine_aarch64", "care_engine_x86_64"} {
+		section := "[tools." + name + "]"
+		config = []byte(strings.Replace(string(config), section, section+"\nsha256 = \""+strings.Repeat("a", 64)+"\"", 1))
+	}
 	pins, err := release.LoadSource(config, data)
 	if err != nil {
 		t.Fatal(err)
@@ -457,7 +461,11 @@ func TestVersionsTOMLPinsTheDownloadsTheAppUses(t *testing.T) {
 	}
 	pinned := map[string]string{}
 	for _, tool := range config.Tools {
-		pinned[tool.URL] = tool.SHA256
+		sum := tool.SHA256
+		if sum == "" {
+			sum = strings.Repeat("a", 64) // Resolved engine fixture, not a published checksum.
+		}
+		pinned[tool.URL] = sum
 	}
 	used := map[string]bool{}
 	for _, d := range pinnedDownloads(t, deploymentPins(t)) {
@@ -469,6 +477,27 @@ func TestVersionsTOMLPinsTheDownloadsTheAppUses(t *testing.T) {
 	for url := range pinned {
 		if !used[url] {
 			t.Errorf("%s pins %s, which the app never downloads", release.ConfigFile, url)
+		}
+	}
+}
+
+func TestResolvedEngineBootstrapIsDownloadableOnEveryDesktopTarget(t *testing.T) {
+	pins := deploymentPins(t)
+	if err := engineBootstrapPublished(pins); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range [][2]string{{"darwin", "arm64"}, {"darwin", "amd64"}, {"windows", "amd64"}} {
+		downloads, err := engineDownloads(pins, target[0], target[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engineDownloadsPublished(downloads); err != nil {
+			t.Fatalf("%s/%s bootstrap blocked: %v", target[0], target[1], err)
+		}
+		want := strings.Repeat("a", 64)
+		if downloads[0].SHA256 != want || !strings.HasPrefix(downloads[0].URL,
+			"https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/") {
+			t.Fatalf("bootstrap differs from resolved engine fixture: %+v", downloads[0])
 		}
 	}
 }
