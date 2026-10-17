@@ -1,10 +1,9 @@
 name: Release CARE Clinic
 
+# Fork (praffq/care_clinic): automatic releases are disabled while the v2
+# engine redesign is in progress. Run manually only.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [deployments/.env]
 
 permissions:
   contents: read
