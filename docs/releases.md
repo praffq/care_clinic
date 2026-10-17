@@ -21,28 +21,6 @@ Manifest publication requires an operator-held signing key matching an embedded
 public trust anchor. Never commit a signing key. Unsigned publication is not an
 acceptable fallback.
 
-Pull requests, merge groups, pushes to `main` and the nightly schedule only
-validate and build. Component releases and the signed `updates.json` feed are
-published only when a maintainer runs **Publish** manually from `main` with
-`publish` enabled; the `release-signing` environment's reviewers then approve
-the signing job. Merging a version bump therefore never publishes by itself.
-
-## Unsigned dev prereleases
-
-**Desktop dev prerelease (UNSIGNED)** (`.github/workflows/desktop-dev.yml`) is
-a manual, `main`-only workflow for development testing. It requires the
-`acknowledge_unsigned` input, builds the Windows NSIS installer through the same
-unsigned Wails path as CI, verifies it is truthfully unsigned, and creates a
-GitHub prerelease tagged `desktop-dev-vX.Y.Z-dev.N` (`N` is the run number) with
-`CARE-Clinic-X.Y.Z-dev.N-UNSIGNED-windows-amd64-setup.exe` and `SHA256SUMS`.
-
-It never creates a stable `vX.Y.Z` tag, replaces an existing tag, loads signing
-secrets or the `release-signing` environment, or deploys Pages/`updates.json`;
-the desktop updater never offers these builds. The embedded application version
-stays the `versions.toml` pin because a `-dev` application version is rejected
-by engine compatibility checks. Windows SmartScreen warns before running the
-installer. Dev prereleases are not for clinics.
-
 ## Runtime verification
 
 `app/internal/release` verifies exact manifest bytes before decoding or using

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var workflowNames = []string{"care-images.yml", "engine.yml", "desktop.yml", "desktop-dev.yml", "publish.yml"}
+var workflowNames = []string{"care-images.yml", "engine.yml", "desktop.yml", "publish.yml"}
 
 func workflow(t *testing.T, name string) string {
 	t.Helper()
@@ -35,7 +35,7 @@ func TestReleaseWorkflowValidatesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(files) != len(workflowNames) {
-		t.Fatalf("expected exactly %d release workflows, found %v", len(workflowNames), files)
+		t.Fatalf("expected exactly four release workflows, found %v", files)
 	}
 	publish := workflow(t, "publish.yml")
 	requireText(t, publish,
@@ -50,53 +50,8 @@ func TestReleaseWorkflowValidatesIdentity(t *testing.T) {
 	if strings.Contains(publish, "pull_request_target") {
 		t.Fatal("untrusted PR code must not run in a privileged event")
 	}
-}
-
-func TestPublishingRequiresExplicitManualRunFromMain(t *testing.T) {
-	publish := workflow(t, "publish.yml")
-	requireText(t, publish,
-		"publish: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true && github.ref == 'refs/heads/main' }}",
-		"default: false",
-		"if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true'",
-		"publish: ${{ needs.plan.outputs.publish == 'true' }}",
-	)
-	if strings.Contains(publish, "github.event_name != 'pull_request' && github.event_name != 'merge_group'") {
-		t.Fatal("pushes to main and scheduled runs must only validate, never publish")
-	}
-}
-
-func TestDevPrereleaseIsUnsignedAndIsolatedFromStablePublication(t *testing.T) {
-	data := workflow(t, "desktop-dev.yml")
-	requireText(t, data,
-		"workflow_dispatch:", "acknowledge_unsigned:", "permissions: {}",
-		`"$GITHUB_REF" != refs/heads/main`, "ohcnetwork/care_clinic",
-		`tag="desktop-dev-v$dev_version"`, `^desktop-dev-v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$`,
-		"uses: ./.github/actions/install-nsis", "node app/frontend/scripts/stage-install.mjs",
-		"wails build -platform windows/amd64 -clean -s -skipbindings -m -nosyncgomod -nsis",
-		"-UNSIGNED-windows-amd64-setup.exe", "$signature.Status -ne 'NotSigned'",
-		"SHA256SUMS", "sha256sum -c SHA256SUMS", "--prerelease --latest=false", "UNSIGNED DEVELOPMENT BUILD",
-		"already exists",
-	)
-	if strings.Count(data, "contents: write") != 1 {
-		t.Fatal("only the dev prerelease job may write repository contents")
-	}
-	for _, forbidden := range []string{
-		"push:", "pull_request", "schedule:", "workflow_call", "secrets.", "secrets: inherit", "environment:",
-		"release-signing", "signpath", "SIGNPATH", "pages:", "public/updates.json", "id-token",
-		"pipeline.py", "releasectl", "--clobber", "upload-pages-artifact", "deploy-pages",
-	} {
-		if strings.Contains(data, forbidden) {
-			t.Errorf("dev prerelease workflow must not contain %q", forbidden)
-		}
-	}
-	if regexp.MustCompile(`(?m)tag="?v\$`).MatchString(data) {
-		t.Fatal("dev prereleases must never create a stable vX.Y.Z tag")
-	}
-	// The dev build must use the same unsigned Windows build path as desktop.yml.
-	requireText(t, workflow(t, "desktop.yml"),
-		"wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }}",
-		`platform: windows/amd64, extra: "-nsis"`, "uses: ./.github/actions/install-nsis",
-	)
+	requireText(t, publish, "github.event_name != 'pull_request'", "github.event_name != 'merge_group'",
+		"github.ref == 'refs/heads/main'")
 }
 
 func TestCIRequiredGateRejectsIncompleteChecks(t *testing.T) {
