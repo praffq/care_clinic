@@ -1,0 +1,28 @@
+# Release pins for CARE Clinic. See docs/versions.md.
+schema: 1
+
+desktop:
+  version: "0.2.0"
+  requires: { engine: ">=0.1.0 <0.2.0" }
+
+engine:
+  version: "0.1.0"
+  requires: { desktop: ">=0.2.0" }
+
+care:
+  version: "3.1.0"
+  requires: { desktop: ">=0.2.0", engine: ">=0.1.0" }
+  backend: { repo: "ohcnetwork/care", ref: "develop" }
+  frontend: { repo: "ohcnetwork/care_fe", ref: "develop" }
+
+images:
+  postgres: "postgres:17.10-alpine"
+  redis: "redis:8.8.0-alpine"
+  caddy: "caddy:2.11.4"
+  silo: "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z"
+
+tools:
+  qemu_windows_x86_64:
+    version: "10.1.0"
+    url: "https://qemu.weilnetz.de/w64/2025/qemu-w64-setup-20250826.exe"
+    sha256: "c7592db7716029e814d71c9a7dfc9b76dc72019753ee9afc2fa70b14c9d28b4f"
