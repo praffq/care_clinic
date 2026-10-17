@@ -65,7 +65,7 @@ func checkIdents(s string, prerelease bool) error {
 			return fmt.Errorf("empty identifier")
 		}
 		for _, c := range id {
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-') {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '-' {
 				return fmt.Errorf("invalid character %q", c)
 			}
 		}
