@@ -118,6 +118,76 @@ func TestThirdPartyActionsUseImmutableSHAs(t *testing.T) {
 	}
 }
 
+func TestReusableWorkflowPermissionCeilingsIncludeSkippedJobs(t *testing.T) {
+	type job struct {
+		Uses        string            `yaml:"uses"`
+		Permissions map[string]string `yaml:"permissions"`
+	}
+	type definition struct {
+		Permissions map[string]string `yaml:"permissions"`
+		Jobs        map[string]job    `yaml:"jobs"`
+	}
+	definitions := map[string]definition{}
+	for _, name := range workflowNames {
+		var d definition
+		if err := yaml.Unmarshal([]byte(workflow(t, name)), &d); err != nil {
+			t.Fatal(err)
+		}
+		definitions[name] = d
+	}
+	rank := map[string]int{"none": 0, "read": 1, "write": 2}
+	seen := map[string]bool{}
+	var visit func(string, map[string]bool, int)
+	visit = func(name string, ancestors map[string]bool, depth int) {
+		t.Helper()
+		if depth > 10 || ancestors[name] {
+			t.Fatalf("reusable workflow nesting exceeds ten levels or contains a cycle at %s", name)
+		}
+		ancestors[name] = true
+		defer delete(ancestors, name)
+		for _, call := range definitions[name].Jobs {
+			if strings.HasPrefix(call.Uses, "./.github/workflows/") {
+				target := strings.TrimPrefix(call.Uses, "./.github/workflows/")
+				seen[target] = true
+				visit(target, ancestors, depth+1)
+			}
+		}
+	}
+	visit("publish.yml", map[string]bool{}, 1)
+	if len(seen) > 50 {
+		t.Fatal("publication exceeds GitHub's fifty unique reusable workflow limit")
+	}
+	for name, caller := range definitions {
+		for id, call := range caller.Jobs {
+			if !strings.HasPrefix(call.Uses, "./.github/workflows/") {
+				continue
+			}
+			target := strings.TrimPrefix(call.Uses, "./.github/workflows/")
+			callee, ok := definitions[target]
+			if !ok {
+				t.Fatalf("%s/%s calls an untested local workflow %s", name, id, target)
+			}
+			ceiling := call.Permissions
+			if ceiling == nil {
+				ceiling = caller.Permissions
+			}
+			for nestedID, nested := range callee.Jobs {
+				requested := nested.Permissions
+				if requested == nil {
+					requested = callee.Permissions
+				}
+				// GitHub validates declarations regardless of if/phase.
+				for scope, permission := range requested {
+					if rank[permission] > rank[ceiling[scope]] {
+						t.Errorf("%s/%s allows %s:%s but nested %s/%s requests %s:%s",
+							name, id, scope, ceiling[scope], target, nestedID, scope, permission)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestReleaseManifestChecksumsEveryAsset(t *testing.T) {
 	data, err := os.ReadFile("../../../.github/scripts/pipeline.py")
 	if err != nil {

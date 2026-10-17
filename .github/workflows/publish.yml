@@ -120,6 +120,11 @@ jobs:
     name: Desktop checks
     needs: plan
     uses: ./.github/workflows/desktop.yml
+    # GitHub validates every nested job's permission ceiling, even when the
+    # checks phase skips signing and publication. No secrets enter this call.
+    permissions:
+      contents: write
+      actions: read
     with:
       phase: checks
       build: false
