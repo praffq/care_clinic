@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "published_at": "2026-10-17T20:34:32Z",
+  "desktop": {
+    "version": "0.0.1",
+    "requires_engine": ">=0.1.3, <0.2.0",
+    "assets": {
+      "darwin-universal": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/v0.0.1/CARE-Clinic-0.0.1-macos.dmg",
+        "sha256": "b4b4ef2bf60d16826b5eae87a2033fdeb9e5becbc6aed2f108e3940857c2a32e",
+        "size": 14545388
+      },
+      "windows-amd64": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/v0.0.1/CARE-Clinic-0.0.1-windows-amd64-setup.exe",
+        "sha256": "d86d7f65d7028bb95890f969db37fea4b4be6d236c20cc9c121369404c74df91",
+        "size": 8822689
+      }
+    }
+  },
+  "engine": {
+    "version": "0.1.3",
+    "requires_desktop": ">=0.0.1",
+    "assets": {
+      "linux-amd64": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-amd64.tar.gz",
+        "sha256": "24c9b77cd98a8f9f140e3b7ea4653e09681056357aa5f8b69e1736a51995625c",
+        "size": 661249788
+      },
+      "linux-arm64": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-arm64.tar.gz",
+        "sha256": "93d1aa16f92a5d22edb312484f3630b178f525978cab2a2a1ee6ab97ffd36530",
+        "size": 650697066
+      },
+      "native-linux-amd64": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-agent-linux-amd64",
+        "sha256": "c0a2ac9c6e2c671c1777fd43de4c8e9a47669a2464e12880a68da10ceec860c6",
+        "size": 7008440
+      },
+      "native-linux-arm64": {
+        "url": "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-agent-linux-arm64",
+        "sha256": "b1ffadfdce13e7bfffc39fecaef70594dc43b7a2f591ebeccd752ed2e03c2ea9",
+        "size": 6553784
+      }
+    }
+  },
+  "care": {
+    "version": "3.1.0",
+    "requires_desktop": ">=0.0.1",
+    "requires_engine": ">=0.1.3",
+    "backend": {
+      "commit": "7c9ed0809e8ba07e12099d2877c2d558b85999b1",
+      "image": "ghcr.io/praffq/care_clinic/care-backend@sha256:3da6a41a792782bb110e242664a8ee7338c074815b2530e13cfe61eb02092e66",
+      "builder": "ghcr.io/praffq/care_clinic/care-backend-builder@sha256:908f39fb0ec4953da3fe07d4f6d9ada4a0aa14a8de620f05aa75bf3858d6d7fc",
+      "source_hash": "9f23de4b532ecaeab9f64e0bcc7e475cc68e27ed4f72b8d418c8c3d2c6706d57"
+    },
+    "frontend": {
+      "commit": "a129f14ca26427f906bf5dbc88f9117210a6bbad",
+      "image": "ghcr.io/praffq/care_clinic/care-frontend@sha256:399b39d35bf8c3c38232b62132878e2e7e7328f6c7a8e58281c08d0d7e950c39",
+      "builder": "ghcr.io/praffq/care_clinic/care-frontend-builder@sha256:efd83faa076beb24702324acabeeccdcde82bd811f3a450f6e5c53cd1672220f",
+      "build_env": {
+        "REACT_DEFAULT_ENCOUNTER_TYPE": "",
+        "REACT_DISABLE_PATIENT_LOGIN": "true",
+        "REACT_MFE_REGISTERED_COMPONENTS": "UserDashboard",
+        "REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED": "0",
+        "REACT_RECAPTCHA_SITE_KEY": ""
+      },
+      "source_hash": "83eb2b520a36650d86ef28083b9d2e7132f7a6b3cf006db1413064919a2acd64"
+    }
+  },
+  "support_images": {
+    "backup": "ghcr.io/praffq/care_clinic/care-backup@sha256:bd869813f44a69a897788f4f295ffa5f838ab7696406de2a030e7a89f31f1e1b",
+    "caddy": "ghcr.io/praffq/care_clinic/care-caddy@sha256:4659957a44d98d2f96266a0f8d0d408cb57a86d080a0e055cb66d855135b1f22",
+    "postgres": "postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193",
+    "redis": "redis:8.8.0-alpine@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005",
+    "silo": "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z@sha256:b616a0cf8cb281e7e6bb3c9b1fb53875b4016a2878223925541c18f82d6c5ca3"
+  },
+  "blocked": [],
+  "source_hashes": {
+    "desktop": "b49748e25d76ab2778aeb5892fb58c8bfc25b7145483bab4063423e779d1a7a9",
+    "engine": "bf66f7e9009ef6b28ed0b705cb3689f02966e11f99d65646041ed08d8a8f2078",
+    "support": "2422f2cf1eaa93e6f1eb6552ff30d4aae154f6153381fd5d16db9be918aa699c"
+  }
+}

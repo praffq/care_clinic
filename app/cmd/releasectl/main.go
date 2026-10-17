@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/ohcnetwork/care_desktop/app/internal/envconfig"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
@@ -60,6 +62,7 @@ func run(args []string) error {
 	file := flags.String("file", "", "asset path")
 	url := flags.String("url", "", "immutable release base URL")
 	planPath := flags.String("plan", "", "resolved run-start plan")
+	desktopOnly := flags.Bool("desktop-only", false, "retain verified CARE snapshots and require unchanged engine/images")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -127,7 +130,7 @@ func run(args []string) error {
 			if *trust != "signed" && *trust != "unsigned-development" {
 				return fmt.Errorf("invalid update trust mode")
 			}
-			p, err := makePlan(*root, config, old, *trust)
+			p, err := makePlan(*root, config, old, *trust, *desktopOnly)
 			if err != nil {
 				return err
 			}
@@ -161,6 +164,7 @@ func run(args []string) error {
 		if m.Blocked == nil {
 			m.Blocked = []string{}
 		}
+		m.CanonicalizeImageReferences()
 		if err := m.Validate(); err != nil {
 			return err
 		}
@@ -211,7 +215,7 @@ func resolve(source release.Source) (string, error) {
 	return fields[0], nil
 }
 
-func makePlan(root string, c release.Config, old release.Manifest, trust string) (plan, error) {
+func makePlan(root string, c release.Config, old release.Manifest, trust string, desktopOnly bool) (plan, error) {
 	p := plan{
 		DesktopVersion: c.Desktop.Version, EngineVersion: c.Engine.Version, CareVersion: c.Care.Version,
 		BackendRepo: c.Care.Backend.Repo, BackendBranch: c.Care.Backend.Branch,
@@ -219,13 +223,23 @@ func makePlan(root string, c release.Config, old release.Manifest, trust string)
 		Hashes: map[string]string{},
 	}
 	var err error
-	p.BackendCommit, err = resolve(c.Care.Backend)
-	if err != nil {
-		return p, err
-	}
-	p.FrontendCommit, err = resolve(c.Care.Frontend)
-	if err != nil {
-		return p, err
+	if desktopOnly {
+		if err := old.Validate(); err != nil {
+			return p, fmt.Errorf("desktop-only publication requires a verified previous feed: %w", err)
+		}
+		if !semver.MustParse(c.Desktop.Version).GreaterThan(semver.MustParse(old.Desktop.Version)) {
+			return p, fmt.Errorf("desktop-only publication requires a new desktop version")
+		}
+		p.BackendCommit, p.FrontendCommit = old.Care.Backend.Commit, old.Care.Frontend.Commit
+	} else {
+		p.BackendCommit, err = resolve(c.Care.Backend)
+		if err != nil {
+			return p, err
+		}
+		p.FrontendCommit, err = resolve(c.Care.Frontend)
+		if err != nil {
+			return p, err
+		}
 	}
 	p.BuildEnv, err = frontendEnv(root)
 	if err != nil {
@@ -267,6 +281,12 @@ func makePlan(root string, c release.Config, old release.Manifest, trust string)
 	p.Backend = old.Care.Version != c.Care.Version || old.Care.Backend.Commit != p.BackendCommit || old.Care.Backend.SourceHash != p.Hashes["backend"]
 	p.Frontend = old.Care.Version != c.Care.Version || old.Care.Frontend.Commit != p.FrontendCommit || old.Care.Frontend.SourceHash != p.Hashes["frontend"]
 	p.Support = old.SourceHashes["support"] != p.Hashes["support"]
+	if desktopOnly && (p.Engine || p.Backend || p.Frontend || p.Support ||
+		!reflect.DeepEqual(p.BuildEnv, old.Care.Frontend.BuildEnv) ||
+		c.Engine.RequiresDesktop != old.Engine.RequiresDesktop ||
+		c.Care.RequiresDesktop != old.Care.RequiresDesktop || c.Care.RequiresEngine != old.Care.RequiresEngine) {
+		return p, fmt.Errorf("desktop-only publication requires unchanged engine, CARE, support images and compatibility constraints")
+	}
 	return p, nil
 }
 

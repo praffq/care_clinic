@@ -124,3 +124,35 @@ func TestLoadSourceMatchesConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestDigestRefPattern(t *testing.T) {
+	digest := "@sha256:b616a0cf8cb281e7e6bb3c9b1fb53875b4016a2878223925541c18f82d6c5ca3"
+	for _, ref := range []string{
+		"docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z" + digest,
+		"postgres:17.10-alpine" + digest,
+		"ghcr.io/praffq/care_clinic/care-backend" + digest,
+		"localhost:5000/team/app__name:v1" + digest,
+	} {
+		if !digestRefPattern.MatchString(ref) {
+			t.Errorf("valid reference rejected: %s", ref)
+		}
+	}
+	for _, ref := range []string{
+		"docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z",
+		"docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z@sha256:B616A0CF8CB281E7E6BB3C9B1FB53875B4016A2878223925541C18F82D6C5CA3",
+		"docker.io/pgsty/silo@sha256:b616a0cf",
+		"docker.io/pgsty/silo@sha512:" + strings.Repeat("a", 128),
+		"docker.io/PGSTY/silo:latest" + digest,
+		"docker.io/pgsty/silo:-bad" + digest,
+		"docker.io/pgsty/silo:" + strings.Repeat("a", 129) + digest,
+		"docker.io//silo" + digest,
+		"-docker.io/silo" + digest,
+		"docker.io/silo." + digest,
+		" docker.io/silo" + digest,
+		"docker.io/silo" + digest + "\n",
+	} {
+		if digestRefPattern.MatchString(ref) {
+			t.Errorf("invalid reference accepted: %q", ref)
+		}
+	}
+}

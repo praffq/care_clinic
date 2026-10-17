@@ -29,6 +29,25 @@ func testManifest(t *testing.T) Manifest {
 	}
 }
 
+func TestCanonicalDigestReferencesRetainRepositoryPortsAndDigests(t *testing.T) {
+	m := testManifest(t)
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	m.SupportImages["silo"] = "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z" + digest
+	m.Care.Backend.Image = "localhost:5000/team/app:RC1" + digest
+	m.Care.Backend.Builder = "localhost:5000/team/builder" + digest
+	m.CanonicalizeImageReferences()
+	if m.SupportImages["silo"] != "docker.io/pgsty/silo"+digest ||
+		m.Care.Backend.Image != "localhost:5000/team/app"+digest ||
+		m.Care.Backend.Builder != "localhost:5000/team/builder"+digest {
+		t.Fatal("canonicalization changed repository, registry port or digest")
+	}
+	m.SupportImages["silo"] = "docker.io/pgsty/silo:RELEASE"
+	m.CanonicalizeImageReferences()
+	if err := m.Validate(); err == nil {
+		t.Fatal("canonicalization must not make an unpinned image valid")
+	}
+}
+
 func TestJobsEngineManifestRequiresPublishedNativeAssets(t *testing.T) {
 	m := testManifest(t)
 	m.Engine.Version = "0.1.3"

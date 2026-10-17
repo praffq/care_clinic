@@ -24,7 +24,7 @@ Signing is optional **only when no settings are configured**:
 | Settings | Present and complete | Absent |
 | --- | --- | --- |
 | Windows: secret `SIGNPATH_API_TOKEN`; variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG` | Sign application, uninstaller, then rebuilt NSIS installer. | Publish unsigned Windows installer (SmartScreen may warn). |
-| macOS secrets: `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPSTORE_PRIVATE_KEY`, `APPSTORE_KEY_ID`, `APPSTORE_ISSUER_ID` | Developer ID sign and notarize application and DMG. | Retain Wails' ad-hoc signature (not trusted by Gatekeeper). |
+| macOS secrets: `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPSTORE_PRIVATE_KEY`, `APPSTORE_KEY_ID`, `APPSTORE_ISSUER_ID` | Developer ID sign and notarize application and DMG with virtualization entitlement. | Apply an ad-hoc signature with virtualization entitlement (not trusted by Gatekeeper). |
 | Repository variable `UPDATES_SIGNING_ENABLED=true`; protected `release-signing` environment secret `UPDATES_SIGNING_KEY` | Build signed-feed clients; after existing environment approval, publish `updates.json` and `updates.json.sig`. | With the variable absent or `false`, build explicit `unsigned-development` clients; publish only `updates-unsigned-development.json`. |
 
 Partially configured installer signing fails, matching the original Windows
@@ -125,6 +125,74 @@ keeps version 0.0.1, download/reinstall it manually rather than relying on a
 same-version automatic update. Neither merging nor local
 tests prove successful native installation/activation; check macOS and Windows
 on isolated machines before deploying to a real clinic.
+
+## Recovering a failed feed publication
+
+If a `main` Publish run built and released every component but failed in
+"Prepare atomic update publication", rerunning that job keeps the old workflow
+and code. Instead, dispatch only the final two jobs from a fixed ref:
+
+```sh
+gh workflow run publish.yml --repo praffq/care_clinic --ref <fixed-ref> \
+  -f recover_run_id=<failed-run-id>
+```
+
+With `recover_run_id` set, planning, every build and the CI gate are skipped.
+`pipeline.py recover` accepts the source only if it is a failed `push` Publish
+run on `main` in this repository; `CI` and every build job succeeded or were
+skipped; only preparation failed and deployment was skipped. The source
+preparation job's deployment record must match the trust selected by
+`UPDATES_SIGNING_ENABLED`. The fixed ref must descend from the source commit
+with an unchanged `versions.toml`. The live feed must still equal the source
+run's `previous.json`.
+
+It reuses the source `release-plan` and only the final `output-images`,
+`output-desktop` and `output-engine`/`output-engine-reused` artifacts.
+Per-architecture `images-native-*` fragments are never merged. Desktop and
+engine outputs must match published release source hashes, GitHub asset
+digests and sizes. Recovery then runs the normal manifest, signing or
+unsigned-development verification and Pages deployment. It never rebuilds,
+deletes or overwrites releases. The `github-pages` environment allows only
+`main`, so deploying from any other ref requires a temporary deployment-branch
+policy for that ref.
+
+For the already published revision 1 whose uppercase Silo tag was rejected
+by the shipped 0.0.1 validator, add `-f normalize_digest_refs=true` to that
+recovery dispatch. This narrowly scoped repair requires unsigned-development
+mode and the original first-publication run. It verifies the current feed
+against the original run's plan and final outputs, ignoring only publication
+time and redundant image tags. It retains every repository, digest, asset,
+source hash and provenance field, then publishes revision 2 with digest-only
+image references. It tests the exact candidate using the original source
+commit's client before uploading Pages, and checks the live revision 1 byte
+hash again immediately before deployment. Changed metadata fails closed;
+this is not a general-purpose feed editing path. Future manifests also omit
+redundant image tags for compatibility with older clients. No reinstall is
+needed for the rebuilt unsigned-development 0.0.1 installer; older signed-only
+installations still require the replacement installer.
+
+## Desktop-only entitlement correction (0.0.2)
+
+The macOS 0.0.1 installer had a valid ad-hoc signature but no virtualization
+entitlement in either architecture. The existing plist was never passed to
+Wails' signing command, and final certificate signing also omitted it. Version
+0.0.2 fixes local Wails builds/rebuilds and both final signing paths. CI verifies
+each executable slice before upload and again from the final mounted DMG, and
+runs a signed Virtualization framework configuration-validation smoke test.
+The old installer assets are not replaced.
+
+An explicit `workflow_dispatch` with `desktop_only=true` can publish the new
+desktop from a reviewed fork branch without rebuilding the engine or CARE
+images. Planning retains the verified feed's CARE commits instead of resolving
+new branch heads, requires a strictly newer desktop version and unchanged
+non-desktop source hashes, versions, frontend settings and compatibility
+constraints. The branch must descend from current `main`; the engine asset
+digests/sizes are checked against its published release before reuse. Native
+checks still run. The final feed increments its revision and deployment
+compares the previous feed's exact byte hash before replacing it. Non-main
+Pages publication needs the temporary exact-branch policy described above.
+This path never rebuilds an existing release tag and is not an automatic
+fallback for a failed full release.
 
 ## Validation
 

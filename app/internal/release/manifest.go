@@ -70,6 +70,28 @@ type Manifest struct {
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// CanonicalizeImageReferences drops redundant tags, retaining the exact
+// repository and digest identity understood by older desktop clients.
+func (m *Manifest) CanonicalizeImageReferences() {
+	canonical := func(ref string) string {
+		name, digest, ok := strings.Cut(ref, "@")
+		if !ok || !digestRefPattern.MatchString(ref) {
+			return ref
+		}
+		if strings.Contains(name[strings.LastIndex(name, "/")+1:], ":") {
+			name = name[:strings.LastIndex(name, ":")]
+		}
+		return name + "@" + digest
+	}
+	for name, ref := range m.SupportImages {
+		m.SupportImages[name] = canonical(ref)
+	}
+	for _, image := range []*ImageBuild{&m.Care.Backend, &m.Care.Frontend} {
+		image.Image = canonical(image.Image)
+		image.Builder = canonical(image.Builder)
+	}
+}
+
 func DecodeManifest(data []byte) (Manifest, error) {
 	var m Manifest
 	d := json.NewDecoder(bytes.NewReader(data))

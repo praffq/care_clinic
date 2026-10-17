@@ -43,12 +43,12 @@ func TestReleaseWorkflowValidatesIdentity(t *testing.T) {
 	publish := workflow(t, "publish.yml")
 	requireText(t, publish,
 		"versions.toml", "env-defaults.yml", "schedule:", "workflow_dispatch:",
-		"cancel-in-progress: false", "name: CI", "if: always()",
+		"cancel-in-progress: false", "name: CI", "if: ${{ always() && !inputs.recover_run_id }}",
 		"ci/releasectl plan --root .", "--plan plan.json",
 		"ci/releasectl verify --manifest previous.json", "--signature previous.json.sig",
 		"secrets.UPDATES_SIGNING_KEY", "--unsigned-development",
 		"vars.UPDATES_SIGNING_ENABLED",
-		"environment: ${{ needs.plan.outputs.update_trust == 'signed' && 'release-signing' || 'unsigned-development' }}",
+		"environment: ${{ (needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development')) == 'signed' && 'release-signing' || 'unsigned-development' }}",
 		"pipeline.py publication", "path: public",
 		"needs: [plan, required]",
 	)
@@ -95,7 +95,7 @@ func TestCAREImagesBuildBothArchitecturesNatively(t *testing.T) {
 	requireText(t, data, "arch: amd64", "runner: ubuntu-24.04",
 		"arch: arm64", "runner: ubuntu-24.04-arm", "runs-on: ${{ matrix.runner }}",
 		"IMAGE_ARCH: ${{ matrix.arch }}", "fail-fast: false",
-		"name: output-images-amd64", "name: output-images-arm64",
+		"name: images-native-amd64", "name: images-native-arm64",
 		"build-images.py --assemble", "name: output-images", "needs: build")
 	if strings.Contains(data, "setup-qemu-action") {
 		t.Fatal("CARE's native bundler must not execute under QEMU in image CI")
@@ -225,10 +225,42 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		`if [ "$SIGN_MACOS" = "true" ]`, "--no-wait --output-format json",
 		"for attempt in 1 2 3 4 5 6", `notarytool wait "$id" "${notary[@]}" --timeout 2h`,
 		`notarytool info "$id"`, `notarytool log "$id"`,
+		"--entitlements app/build/darwin/entitlements.plist",
+		`codesign --force --sign - --entitlements`,
+		`verify-macos-entitlements.sh "$app"`,
+		`verify-macos-entitlements.sh "$mount_dir/CARE Clinic.app"`,
 	)
-	if strings.Contains(string(data), "--entitlements") || strings.Contains(string(data), "--wait --timeout") {
-		t.Fatal("native macOS signing arguments must not change during pipeline redesign")
+	requireText(t, workflow(t, "desktop.yml"),
+		`codesign --force --sign - --entitlements app/build/darwin/entitlements.plist`,
+		`bash .github/scripts/verify-macos-entitlements.sh "${apps[0]}"`,
+		"swiftc .github/scripts/virtualization-smoke.swift")
+	verifier, err := os.ReadFile("../../../.github/scripts/verify-macos-entitlements.sh")
+	if err != nil {
+		t.Fatal(err)
 	}
+	requireText(t, string(verifier), "lipo -archs", `--arch "$arch" --entitlements`,
+		`com.apple.security.virtualization`, `codesign --verify --deep --strict`)
+	if strings.Contains(string(data), "--wait --timeout") {
+		t.Fatal("notarization submission must not block without bounded polling")
+	}
+	wails, err := os.ReadFile("../../wails.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, string(wails), `"darwin/*": "bash ../darwin/sign.sh ${bin}"`)
+	hook, err := os.ReadFile("../../build/darwin/sign.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, string(hook), `--force --sign - --entitlements "$directory/entitlements.plist"`)
+}
+
+func TestDesktopOnlyPublicationRemainsExplicitAndFeedGuarded(t *testing.T) {
+	requireText(t, workflow(t, "publish.yml"),
+		"desktop_only:", `github.event_name == 'workflow_dispatch' && inputs.desktop_only`,
+		`options+=(--desktop-only)`, "pipeline.py desktop-only",
+		"pipeline.py publication-baseline",
+		"if: ${{ inputs.normalize_digest_refs || inputs.desktop_only }}")
 }
 
 func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {
@@ -380,5 +412,58 @@ func TestWindowsInstallerRejectsDamagedDownloads(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0] != "CRCCheck force" {
 		t.Fatalf("installer must verify itself (CRCCheck force), found %q", checks)
+	}
+}
+
+func TestPublicationRecoveryReusesFinalOutputsOnly(t *testing.T) {
+	type job struct {
+		If    string           `yaml:"if"`
+		Steps []map[string]any `yaml:"steps"`
+	}
+	var data struct {
+		Jobs map[string]job `yaml:"jobs"`
+	}
+	publish := workflow(t, "publish.yml")
+	if err := yaml.Unmarshal([]byte(publish), &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Jobs["plan"].If != "${{ !inputs.recover_run_id }}" ||
+		data.Jobs["required"].If != "${{ always() && !inputs.recover_run_id }}" {
+		t.Fatal("recovery dispatch must skip planning, every build and the CI gate")
+	}
+	if data.Jobs["publish"].If != "${{ !cancelled() && needs.sign.result == 'success' }}" {
+		t.Fatal("feed deployment must not be skipped by transitively skipped planning/build jobs")
+	}
+	sign := data.Jobs["sign"].If
+	for _, required := range []string{"!cancelled()", "inputs.recover_run_id", "needs.plan.result == 'skipped'",
+		"needs.required.result == 'success'", "needs.plan.outputs.publish == 'true'"} {
+		if !strings.Contains(sign, required) {
+			t.Fatalf("sign condition missing %q: %s", required, sign)
+		}
+	}
+	requireText(t, publish, "run: python3 .github/scripts/pipeline.py recover",
+		"RECOVER_RUN_ID: ${{ inputs.recover_run_id }}", "actions: read", "deployments: read")
+	requireText(t, publish, "python3 .github/scripts/pipeline.py normalize-metadata",
+		"git archive \"$(cat recovery-source-sha.txt)\" app",
+		"COMPAT_FEED_PATH=\"$PWD/manifest.json\"",
+		"feed_sha256: ${{ steps.normalize.outputs.feed_sha256 || steps.baseline.outputs.feed_sha256 }}",
+		"sha256sum --check --strict",
+		"normalize_digest_refs requires recover_run_id")
+	normalDownloads := 0
+	for _, step := range data.Jobs["sign"].Steps {
+		if uses, _ := step["uses"].(string); strings.HasPrefix(uses, "actions/download-artifact@") {
+			normalDownloads++
+			if step["if"] != "${{ !inputs.recover_run_id }}" {
+				t.Fatal("current-run artifact downloads must be skipped during recovery")
+			}
+		}
+	}
+	if normalDownloads != 2 {
+		t.Fatalf("expected plan and output downloads, got %d", normalDownloads)
+	}
+	// Per-architecture image fragments must never match publication's output-* download.
+	images := workflow(t, "care-images.yml")
+	if strings.Contains(images, "name: output-images-") {
+		t.Fatal("per-architecture image fragments must not use the output-* prefix")
 	}
 }

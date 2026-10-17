@@ -9,13 +9,16 @@
   "preBuildHooks": {
     "*/*": "node ../../frontend/scripts/stage-install.mjs"
   },
+  "postBuildHooks": {
+    "darwin/*": "bash ../darwin/sign.sh ${bin}"
+  },
   "author": {
     "name": "Open Healthcare Network Foundation"
   },
   "info": {
     "companyName": "Open Healthcare Network Foundation",
     "productName": "CARE Clinic",
-    "productVersion": "0.0.1",
+    "productVersion": "0.0.2",
     "copyright": "Copyright (c) 2026 Open Healthcare Network Foundation",
     "comments": "Self-contained, offline CARE for a small clinic."
   }

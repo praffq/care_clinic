@@ -13,10 +13,18 @@ import (
 const EnvFile = ".env"
 
 var (
-	versionPattern   = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$`)
-	numericPattern   = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-	sha256Pattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	digestRefPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
+	versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$`)
+	numericPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	sha256Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// digestRefPattern follows the OCI distribution reference grammar: a
+	// lowercase repository (optionally with a registry host and port), an
+	// optional tag (which may contain uppercase letters) and a mandatory
+	// sha256 digest.
+	digestRefPattern = regexp.MustCompile(`^` +
+		`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]+)?` +
+		`(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*` +
+		`(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?` +
+		`@sha256:[0-9a-f]{64}$`)
 )
 
 type Pins struct {

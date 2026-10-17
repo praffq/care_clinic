@@ -17,6 +17,24 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      recover_run_id:
+        description: >-
+          Recovery only: ID of a failed main Publish run whose builds and
+          releases succeeded. Reruns only update publication from its outputs.
+        required: false
+        default: ""
+        type: string
+      normalize_digest_refs:
+        description: Reissue matching revision 1 metadata with tag-free digest references (recovery only)
+        required: false
+        default: false
+        type: boolean
+      desktop_only:
+        description: Publish a new desktop version only, retaining verified engine and CARE images
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -34,6 +52,7 @@ defaults:
 jobs:
   plan:
     name: Resolve release sources once
+    if: ${{ !inputs.recover_run_id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -43,12 +62,18 @@ jobs:
       changed: ${{ steps.plan.outputs.changed }}
       desktop_version: ${{ steps.plan.outputs.desktop_version }}
       engine_version: ${{ steps.plan.outputs.engine_version }}
-      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' }}
+      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.desktop_only) }}
       update_trust: ${{ steps.trust.outputs.mode }}
     steps:
+      - name: Require recovery source for metadata normalization
+        if: ${{ inputs.normalize_digest_refs }}
+        run: |
+          echo "::error::normalize_digest_refs requires recover_run_id; no builds were started"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.desktop_only && '0' || '1' }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
@@ -74,11 +99,18 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
         run: |
           previous=()
           if [ -f previous.json ]; then previous+=(--previous previous.json); fi
-          ci/releasectl plan --root . "${previous[@]}" --update-trust "$UPDATE_TRUST" --out plan.json
-          python3 .github/scripts/pipeline.py reuse-engine
+          options=()
+          if [ "$DESKTOP_ONLY" = true ]; then options+=(--desktop-only); fi
+          ci/releasectl plan --root . "${previous[@]}" "${options[@]}" --update-trust "$UPDATE_TRUST" --out plan.json
+          if [ "$DESKTOP_ONLY" = true ]; then
+            python3 .github/scripts/pipeline.py desktop-only
+          else
+            python3 .github/scripts/pipeline.py reuse-engine
+          fi
           python3 .github/scripts/pipeline.py plan-outputs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -148,7 +180,7 @@ jobs:
       update_trust: ${{ needs.plan.outputs.update_trust }}
   required:
     name: CI
-    if: always()
+    if: ${{ always() && !inputs.recover_run_id }}
     needs: [plan, care, engine, desktop, desktop-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -163,31 +195,59 @@ jobs:
   sign:
     name: Prepare atomic update publication
     needs: [plan, required]
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true'
+    # Recovery dispatches skip planning and every build; they reuse the
+    # verified outputs of an earlier main run instead.
+    if: >-
+      ${{ !cancelled() && (inputs.recover_run_id
+      && needs.plan.result == 'skipped' && needs.required.result == 'skipped'
+      || needs.required.result == 'success'
+      && needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    outputs:
+      feed_url: ${{ steps.normalize.outputs.feed_url || steps.baseline.outputs.feed_url }}
+      feed_sha256: ${{ steps.normalize.outputs.feed_sha256 || steps.baseline.outputs.feed_sha256 }}
     env:
-      UPDATE_TRUST: ${{ needs.plan.outputs.update_trust }}
+      UPDATE_TRUST: ${{ needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development') }}
     # Only signed publication may access the protected private key. The
     # development environment has no signing secrets or approval gate.
-    environment: ${{ needs.plan.outputs.update_trust == 'signed' && 'release-signing' || 'unsigned-development' }}
+    environment: ${{ (needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development')) == 'signed' && 'release-signing' || 'unsigned-development' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.recover_run_id && '0' || '1' }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ !inputs.recover_run_id }}
         with:
           name: release-plan
           path: .
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ !inputs.recover_run_id }}
         with:
           pattern: output-*
           merge-multiple: true
           path: outputs
+      - name: Reuse verified plan and final outputs of the recovery source run
+        if: ${{ inputs.recover_run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
+          UPDATES_SIGNING_ENABLED: ${{ vars.UPDATES_SIGNING_ENABLED }}
+          NORMALIZE_DIGEST_REFS: ${{ inputs.normalize_digest_refs }}
+        run: python3 .github/scripts/pipeline.py recover
+      - name: Record verified desktop-only feed baseline
+        id: baseline
+        if: ${{ inputs.desktop_only }}
+        run: python3 .github/scripts/pipeline.py publication-baseline
       - name: Generate manifest using sole release configuration
         run: |
           mkdir -p ci public
@@ -196,6 +256,17 @@ jobs:
           previous=()
           if [ -f previous.json ]; then previous+=(--previous previous.json); fi
           ci/releasectl manifest --root . --plan plan.json "${previous[@]}" --outputs outputs.json --out manifest.json
+      - name: Reissue source-identical metadata with canonical digest references
+        id: normalize
+        if: ${{ inputs.normalize_digest_refs }}
+        run: |
+          python3 .github/scripts/pipeline.py normalize-metadata
+          mkdir -p compat
+          git archive "$(cat recovery-source-sha.txt)" app | tar -x -C compat
+          cp app/internal/release/compatibility_test.go compat/app/internal/release/
+          mkdir -p compat/app/internal/release/testdata
+          cp app/internal/release/testdata/published-revision1.json compat/app/internal/release/testdata/
+          COMPAT_FEED_PATH="$PWD/manifest.json" go -C compat/app test ./internal/release -run '^TestShippedDevelopmentClientCompatibility$'
       - name: Publish matching signed or unsigned-development metadata
         env:
           UPDATES_SIGNING_KEY: ${{ secrets.UPDATES_SIGNING_KEY }}
@@ -208,6 +279,9 @@ jobs:
   publish:
     name: Deploy update feed
     needs: sign
+    # Explicit: implicit success() also fails on transitively skipped jobs,
+    # which recovery dispatches skip by design.
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -217,6 +291,14 @@ jobs:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
     steps:
+      - name: Require unchanged live metadata before targeted publication
+        if: ${{ inputs.normalize_digest_refs || inputs.desktop_only }}
+        env:
+          FEED_URL: ${{ needs.sign.outputs.feed_url }}
+          FEED_SHA256: ${{ needs.sign.outputs.feed_sha256 }}
+        run: |
+          curl --fail --silent --show-error "$FEED_URL" --output current-feed.json
+          printf '%s  current-feed.json\n' "$FEED_SHA256" | sha256sum --check --strict
       - name: Atomically deploy matching update metadata
         id: pages
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

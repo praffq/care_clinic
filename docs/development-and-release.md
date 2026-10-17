@@ -108,6 +108,14 @@ is a standalone local executable, not a signed release installer.
 
 `wails dev` is not a fake bridge. It can find the current user's saved clinic configuration, refresh installed files, advertise the name, and ask the backend to start the stack. Use an isolated machine/user and Docker environment for destructive end-to-end work.
 
+On macOS, the `darwin/*` Wails post-build hook applies the existing
+`com.apple.security.virtualization` entitlement after every native build,
+including `wails dev` rebuilds. Run `cd app && wails dev` after resolving the
+measured engine bootstrap as documented in [Releases](releases.md). Vite alone
+(`cd app/frontend && npm run dev`) provides the UI, not a native VM host.
+No certificate is needed for local ad-hoc signing; it does not grant Gatekeeper
+trust or bypass OS security.
+
 If the dev runner has stopped but its Desktop window remains open, that window
 can still be running an older Go backend. Frontend refreshes do not replace it.
 Fully quit that Desktop process (hiding the macOS window is not quitting), then
@@ -495,7 +503,10 @@ development releases). Published assets are never replaced. Only publication
 jobs have write permission.
 
 macOS preserves the existing optional Developer ID signing/notarization flow and
-secret names; without credentials it retains Wails' ad-hoc signature. Windows
+secret names; both Developer ID and development ad-hoc signatures explicitly
+include the virtualization entitlement. Every architecture in the final DMG is
+checked after packaging; a valid signature without this entitlement is rejected.
+Windows
 application, uninstaller and installer are signed through SignPath when its configuration is
 complete, otherwise left unsigned when all settings are absent. Partial
 configuration or failed signing fails the release. Update metadata uses the

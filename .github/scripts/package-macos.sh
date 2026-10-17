@@ -65,6 +65,7 @@ if [ "$SIGN_MACOS" = "true" ]; then
     fi
   }
   codesign --force --timestamp --options runtime \
+    --entitlements app/build/darwin/entitlements.plist \
     --keychain "$SIGNING_KEYCHAIN" --sign "$SIGN_IDENTITY" "$app"
   codesign --verify --strict "$app"
   ditto -c -k --keepParent "$app" incoming/notarize.zip
@@ -72,9 +73,12 @@ if [ "$SIGN_MACOS" = "true" ]; then
   xcrun stapler staple "$app"
   xcrun stapler validate "$app"
 else
-  echo "macOS signing is not configured; retaining the development ad-hoc signature."
+  echo "macOS certificate signing is not configured; applying development ad-hoc signature with VM entitlement."
+  codesign --force --sign - --entitlements app/build/darwin/entitlements.plist "$app"
 fi
+bash .github/scripts/verify-macos-entitlements.sh "$app"
 ditto "$app" "staging/CARE Clinic.app"
+bash .github/scripts/verify-macos-entitlements.sh "staging/CARE Clinic.app"
 ln -s /Applications staging/Applications
 dmg="release-assets/CARE-Clinic-$VERSION-macos.dmg"
 hdiutil create -volname "CARE Clinic" -srcfolder staging -ov -format UDZO \
@@ -87,3 +91,10 @@ if [ "$SIGN_MACOS" = "true" ]; then
   xcrun stapler validate "$dmg"
   spctl -a -vvv -t open --context context:primary-signature "$dmg"
 fi
+mount_dir=$(mktemp -d "$RUNNER_TEMP/care-dmg.XXXXXX")
+hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg"
+result=0
+bash .github/scripts/verify-macos-entitlements.sh "$mount_dir/CARE Clinic.app" || result=$?
+hdiutil detach "$mount_dir"
+rmdir "$mount_dir"
+exit "$result"
