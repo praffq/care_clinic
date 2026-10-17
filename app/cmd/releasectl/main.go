@@ -161,6 +161,7 @@ func run(args []string) error {
 		if m.Blocked == nil {
 			m.Blocked = []string{}
 		}
+		m.CanonicalizeImageReferences()
 		if err := m.Validate(); err != nil {
 			return err
 		}

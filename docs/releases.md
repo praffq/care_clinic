@@ -156,6 +156,21 @@ deletes or overwrites releases. The `github-pages` environment allows only
 `main`, so deploying from any other ref requires a temporary deployment-branch
 policy for that ref.
 
+For the already published revision 1 whose uppercase Silo tag was rejected
+by the shipped 0.0.1 validator, add `-f normalize_digest_refs=true` to that
+recovery dispatch. This narrowly scoped repair requires unsigned-development
+mode and the original first-publication run. It verifies the current feed
+against the original run's plan and final outputs, ignoring only publication
+time and redundant image tags. It retains every repository, digest, asset,
+source hash and provenance field, then publishes revision 2 with digest-only
+image references. It tests the exact candidate using the original source
+commit's client before uploading Pages, and checks the live revision 1 byte
+hash again immediately before deployment. Changed metadata fails closed;
+this is not a general-purpose feed editing path. Future manifests also omit
+redundant image tags for compatibility with older clients. No reinstall is
+needed for the rebuilt unsigned-development 0.0.1 installer; older signed-only
+installations still require the replacement installer.
+
 ## Validation
 
 From `app/`, run `go test ./internal/release ./internal/compose`.

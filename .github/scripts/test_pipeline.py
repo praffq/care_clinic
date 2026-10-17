@@ -13,6 +13,48 @@ import pipeline
 
 
 class PipelineTests(unittest.TestCase):
+    def test_normalization_preserves_exact_source_identity_and_increments_revision(self):
+        fixture = json.loads(Path("app/internal/release/testdata/published-revision1.json").read_text())
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            Path("versions.toml").write_text('[desktop]\nupdates_url = "https://example.test/updates.json"\n')
+            pipeline.write("normalization-source.json", fixture)
+            source_bytes = Path("normalization-source.json").read_bytes()
+            candidate = copy.deepcopy(fixture)
+            candidate["published_at"] = "2026-10-17T22:00:00Z"
+            pipeline.write("manifest.json", candidate)
+            with patch.dict(os.environ, {"UPDATE_TRUST": "unsigned-development", "GITHUB_OUTPUT": "job-output"}):
+                with patch.object(pipeline, "run") as run:
+                    pipeline.normalize_metadata()
+                    self.assertEqual(run.call_count, 2)
+                normalized = pipeline.read("manifest.json")
+                self.assertEqual(normalized["revision"], 2)
+                self.assertEqual(Path("normalization-source.json").read_bytes(), source_bytes)
+                self.assertEqual(normalized["desktop"], fixture["desktop"])
+                self.assertEqual(normalized["engine"], fixture["engine"])
+                self.assertEqual(normalized["source_hashes"], fixture["source_hashes"])
+                for key, ref in normalized["support_images"].items():
+                    self.assertEqual(ref.split("@")[1], fixture["support_images"][key].split("@")[1])
+                    self.assertNotIn(":", ref.split("@")[0].rsplit("/", 1)[-1])
+                self.assertIn("feed_sha256=" + pipeline.digest("normalization-source.json"),
+                              Path("job-output").read_text())
+                for path, value in [
+                    (["desktop", "assets", "darwin-universal", "sha256"], "f" * 64),
+                    (["engine", "assets", "linux-arm64", "url"], "https://other.test/file"),
+                    (["source_hashes", "desktop"], "f" * 64),
+                    (["support_images", "silo"], "other/repo@sha256:" + "f" * 64),
+                    (["revision"], 2),
+                ]:
+                    bad = copy.deepcopy(candidate)
+                    target = bad
+                    for key in path[:-1]:
+                        target = target[key]
+                    target[path[-1]] = value
+                    pipeline.write("manifest.json", bad)
+                    with patch.object(pipeline, "run"), self.assertRaises(ValueError):
+                        pipeline.normalize_metadata()
+                with patch.dict(os.environ, {"UPDATE_TRUST": "signed"}), self.assertRaises(ValueError):
+                    pipeline.normalize_metadata()
+
     def test_nonsecret_selector_determines_build_trust_before_protected_signing(self):
         for value, mode in [("", "unsigned-development"), ("false", "unsigned-development"),
                             ("true", "signed"), ("typo", None)]:
@@ -298,6 +340,19 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(pipeline.read("outputs/desktop.json"), desktop)
             self.assertEqual(pipeline.read("outputs/engine.json"), engine)
             self.assertFalse(Path("recover").exists())
+
+    def test_normalizing_recovery_keeps_live_feed_separate_from_source_plan(self):
+        state, fake_run, fake_previous, env, _ = self.recovery_fixture()
+        state["feed"] = '{"revision": 1}'
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            with contextlib.chdir(directory):
+                with patch.dict(os.environ, {**env, "NORMALIZE_DIGEST_REFS": "true"}), \
+                        patch.object(pipeline, "run", side_effect=fake_run), \
+                        patch.object(pipeline, "previous", side_effect=fake_previous):
+                    pipeline.recover()
+                self.assertEqual(Path("normalization-source.json").read_text(), state["feed"])
+                self.assertFalse(Path("previous.json").exists())
+                self.assertEqual(pipeline.read("plan.json"), state["plan"])
 
     def test_recovery_rejects_untrusted_incomplete_or_changed_sources(self):
         def mutate(path, value):

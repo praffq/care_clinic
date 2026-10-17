@@ -25,6 +25,11 @@ on:
         required: false
         default: ""
         type: string
+      normalize_digest_refs:
+        description: Reissue matching revision 1 metadata with tag-free digest references (recovery only)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -55,6 +60,11 @@ jobs:
       publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' }}
       update_trust: ${{ steps.trust.outputs.mode }}
     steps:
+      - name: Require recovery source for metadata normalization
+        if: ${{ inputs.normalize_digest_refs }}
+        run: |
+          echo "::error::normalize_digest_refs requires recover_run_id; no builds were started"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -185,6 +195,9 @@ jobs:
       contents: read
       actions: read
       deployments: read
+    outputs:
+      feed_url: ${{ steps.normalize.outputs.feed_url }}
+      feed_sha256: ${{ steps.normalize.outputs.feed_sha256 }}
     env:
       UPDATE_TRUST: ${{ needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development') }}
     # Only signed publication may access the protected private key. The
@@ -216,6 +229,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
           UPDATES_SIGNING_ENABLED: ${{ vars.UPDATES_SIGNING_ENABLED }}
+          NORMALIZE_DIGEST_REFS: ${{ inputs.normalize_digest_refs }}
         run: python3 .github/scripts/pipeline.py recover
       - name: Generate manifest using sole release configuration
         run: |
@@ -225,6 +239,17 @@ jobs:
           previous=()
           if [ -f previous.json ]; then previous+=(--previous previous.json); fi
           ci/releasectl manifest --root . --plan plan.json "${previous[@]}" --outputs outputs.json --out manifest.json
+      - name: Reissue source-identical metadata with canonical digest references
+        id: normalize
+        if: ${{ inputs.normalize_digest_refs }}
+        run: |
+          python3 .github/scripts/pipeline.py normalize-metadata
+          mkdir -p compat
+          git archive "$(cat recovery-source-sha.txt)" app | tar -x -C compat
+          cp app/internal/release/compatibility_test.go compat/app/internal/release/
+          mkdir -p compat/app/internal/release/testdata
+          cp app/internal/release/testdata/published-revision1.json compat/app/internal/release/testdata/
+          COMPAT_FEED_PATH="$PWD/manifest.json" go -C compat/app test ./internal/release -run '^TestShippedDevelopmentClientCompatibility$'
       - name: Publish matching signed or unsigned-development metadata
         env:
           UPDATES_SIGNING_KEY: ${{ secrets.UPDATES_SIGNING_KEY }}
@@ -249,6 +274,14 @@ jobs:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
     steps:
+      - name: Require unchanged live metadata before deploying normalization
+        if: ${{ inputs.normalize_digest_refs }}
+        env:
+          FEED_URL: ${{ needs.sign.outputs.feed_url }}
+          FEED_SHA256: ${{ needs.sign.outputs.feed_sha256 }}
+        run: |
+          curl --fail --silent --show-error "$FEED_URL" --output current-feed.json
+          printf '%s  current-feed.json\n' "$FEED_SHA256" | sha256sum --check --strict
       - name: Atomically deploy matching update metadata
         id: pages
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

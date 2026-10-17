@@ -411,6 +411,12 @@ func TestPublicationRecoveryReusesFinalOutputsOnly(t *testing.T) {
 	}
 	requireText(t, publish, "run: python3 .github/scripts/pipeline.py recover",
 		"RECOVER_RUN_ID: ${{ inputs.recover_run_id }}", "actions: read", "deployments: read")
+	requireText(t, publish, "python3 .github/scripts/pipeline.py normalize-metadata",
+		"git archive \"$(cat recovery-source-sha.txt)\" app",
+		"COMPAT_FEED_PATH=\"$PWD/manifest.json\"",
+		"feed_sha256: ${{ steps.normalize.outputs.feed_sha256 }}",
+		"sha256sum --check --strict",
+		"normalize_digest_refs requires recover_run_id")
 	normalDownloads := 0
 	for _, step := range data.Jobs["sign"].Steps {
 		if uses, _ := step["uses"].(string); strings.HasPrefix(uses, "actions/download-artifact@") {

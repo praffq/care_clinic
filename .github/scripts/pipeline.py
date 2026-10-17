@@ -381,6 +381,7 @@ def recover():
     run("git", "merge-base", "--is-ancestor", sha, "HEAD")
     if run("git", "diff", "--name-only", sha, "HEAD", "--", "versions.toml"):
         raise ValueError("versions.toml changed since the recovery source run; run the full pipeline")
+    Path("recovery-source-sha.txt").write_text(sha + "\n")
 
     previous()
     current = {name: Path(name).read_bytes() for name in ("previous.json", "previous.json.sig") if Path(name).exists()}
@@ -394,7 +395,12 @@ def recover():
 
     download("release-plan", ".")
     original = {name: Path(name).read_bytes() for name in ("previous.json", "previous.json.sig") if Path(name).exists()}
-    if original != current:
+    normalize = os.environ.get("NORMALIZE_DIGEST_REFS", "false") == "true"
+    if normalize:
+        if mode != "unsigned-development" or original or set(current) != {"previous.json"}:
+            raise ValueError("normalization requires an existing unsigned first-publication feed")
+        Path("normalization-source.json").write_bytes(current["previous.json"])
+    elif original != current:
         raise ValueError("the update feed changed since the recovery source run; run the full pipeline")
     plan = read("plan.json")
     wanted = {"images": plan["backend"] or plan["frontend"] or plan["support"],
@@ -420,6 +426,46 @@ def recover():
     shutil.rmtree("recover", ignore_errors=True)
 
 
+def canonical_digest_refs(manifest):
+    refs = [(manifest["support_images"], name) for name in manifest["support_images"]]
+    refs += [(manifest["care"][component], field)
+             for component in ("backend", "frontend") for field in ("image", "builder")]
+    for container, key in refs:
+        reference, digest_value = container[key].split("@")
+        # A colon after the last slash is a tag, not a registry port.
+        if ":" in reference.rsplit("/", 1)[-1]:
+            reference = reference.rsplit(":", 1)[0]
+        container[key] = reference + "@" + digest_value
+
+
+def normalize_metadata():
+    """Reissue the same measured publication using tag-free digest references."""
+    if update_trust() != "unsigned-development":
+        raise ValueError("metadata normalization is only supported for unsigned development")
+    run("ci/releasectl", "verify", "--manifest", "normalization-source.json", "--unsigned-development")
+    current = read("normalization-source.json")
+    candidate = read("manifest.json")
+    if current["revision"] != 1 or candidate["revision"] != 1:
+        raise ValueError("normalization requires source and live first-publication revision 1")
+    canonical_digest_refs(candidate)
+    canonical_digest_refs(current)
+    candidate_at = candidate["published_at"]
+    candidate["published_at"] = current["published_at"]
+    if candidate != current:
+        raise ValueError("live metadata does not match the verified source-run plan and final outputs")
+    if read("normalization-source.json") == current:
+        raise ValueError("live metadata is already canonical")
+    candidate["revision"] += 1
+    candidate["published_at"] = candidate_at
+    write("manifest.json", candidate)
+    run("ci/releasectl", "verify", "--manifest", "manifest.json", "--unsigned-development")
+    config = tomllib.loads(Path("versions.toml").read_text())
+    endpoint = development_endpoint(config["desktop"]["updates_url"])
+    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+        output.write(f"feed_url={endpoint}\n")
+        output.write(f"feed_sha256={digest('normalization-source.json')}\n")
+
+
 def required():
     jobs = json.loads(os.environ["RESULTS"])
     if not jobs or any(job["result"] != "success" for job in jobs.values()):
@@ -430,7 +476,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["previous", "plan-outputs", "assets", "merge", "required",
                                           "signing", "publication", "reuse-engine", "trust", "bootstrap",
-                                          "recover"])
+                                          "recover", "normalize-metadata"])
     parser.add_argument("--component", choices=["desktop", "engine"])
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
@@ -441,7 +487,7 @@ def main():
          "merge": merge, "required": required, "signing": signing,
          "publication": publication, "reuse-engine": reuse_engine,
          "trust": configure_update_trust, "bootstrap": bootstrap,
-         "recover": recover}[args.command]()
+         "recover": recover, "normalize-metadata": normalize_metadata}[args.command]()
 
 
 if __name__ == "__main__":
