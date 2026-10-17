@@ -1,4 +1,4 @@
-// releasectl is the shared build-planning and signed-publication entrypoint.
+// releasectl is the shared build-planning and update-publication entrypoint.
 package main
 
 import (
@@ -55,6 +55,8 @@ func run(args []string) error {
 	outputs := flags.String("outputs", "", "complete collected build outputs")
 	manifest := flags.String("manifest", "", "manifest to authenticate")
 	signature := flags.String("signature", "", "detached signature")
+	unsigned := flags.Bool("unsigned-development", false, "validate explicitly unsigned development metadata")
+	trust := flags.String("update-trust", "signed", "desktop build-time update trust")
 	file := flags.String("file", "", "asset path")
 	url := flags.String("url", "", "immutable release base URL")
 	planPath := flags.String("plan", "", "resolved run-start plan")
@@ -66,11 +68,18 @@ func run(args []string) error {
 	}
 	switch args[0] {
 	case "sign", "verify":
+		if args[0] == "sign" && *unsigned {
+			return fmt.Errorf("sign does not accept --unsigned-development")
+		}
 		data, err := os.ReadFile(*manifest)
 		if err != nil {
 			return err
 		}
 		if args[0] == "verify" {
+			if *unsigned {
+				_, err = release.VerifyDevelopmentManifest(data, 0)
+				return err
+			}
 			sig, err := os.ReadFile(*signature)
 			if err != nil {
 				return err
@@ -115,7 +124,10 @@ func run(args []string) error {
 			}
 		}
 		if args[0] == "plan" {
-			p, err := makePlan(*root, config, old)
+			if *trust != "signed" && *trust != "unsigned-development" {
+				return fmt.Errorf("invalid update trust mode")
+			}
+			p, err := makePlan(*root, config, old, *trust)
 			if err != nil {
 				return err
 			}
@@ -199,7 +211,7 @@ func resolve(source release.Source) (string, error) {
 	return fields[0], nil
 }
 
-func makePlan(root string, c release.Config, old release.Manifest) (plan, error) {
+func makePlan(root string, c release.Config, old release.Manifest, trust string) (plan, error) {
 	p := plan{
 		DesktopVersion: c.Desktop.Version, EngineVersion: c.Engine.Version, CareVersion: c.Care.Version,
 		BackendRepo: c.Care.Backend.Repo, BackendBranch: c.Care.Backend.Branch,
@@ -224,7 +236,10 @@ func makePlan(root string, c release.Config, old release.Manifest) (plan, error)
 		paths  []string
 		config any
 	}{
-		{"desktop", []string{"app", "deployments"}, c},
+		{"desktop", []string{"app", "deployments"}, struct {
+			Config      release.Config
+			UpdateTrust string
+		}{c, trust}},
 		{"engine", []string{"vm"}, struct{ Version string }{c.Engine.Version}},
 		{"backend", []string{"images/backend"}, c.Care.Backend},
 		{"frontend", []string{"images/frontend", "images/scripts/frontend-env.mjs"}, struct {

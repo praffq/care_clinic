@@ -95,7 +95,7 @@ func linuxAgentDownload(engine release.EngineUpdate, goarch string) (Download, e
 	}
 	asset, ok := engine.Assets["native-linux-"+goarch]
 	if !ok {
-		return Download{}, fmt.Errorf("signed engine %s has no native Linux %s agent", engine.Version, goarch)
+		return Download{}, fmt.Errorf("published engine %s has no native Linux %s agent", engine.Version, goarch)
 	}
 	name := "care-engine-agent-linux-" + goarch
 	u, err := url.Parse(asset.URL)
@@ -103,7 +103,7 @@ func linuxAgentDownload(engine release.EngineUpdate, goarch string) (Download, e
 		u.Fragment != "" || path.Base(u.Path) != name ||
 		path.Base(path.Dir(u.Path)) != "care-engine-v"+engine.Version ||
 		asset.Size <= 0 || !validPublishedChecksum(asset.SHA256) {
-		return Download{}, fmt.Errorf("signed engine %s has an invalid native agent asset", engine.Version)
+		return Download{}, fmt.Errorf("published engine %s has an invalid native agent asset", engine.Version)
 	}
 	return Download{Name: name, URL: asset.URL, SHA256: asset.SHA256}, nil
 }
@@ -132,16 +132,16 @@ func (pr *Provisioner) signedNativeEngine(version string, fetch bool) (release.E
 		m, err = client.Fetch(ctx, pr.pins.UpdatesURL)
 	}
 	if err != nil {
-		return release.EngineUpdate{}, fmt.Errorf("native agent requires a published signed engine manifest: %w", err)
+		return release.EngineUpdate{}, fmt.Errorf("native agent requires a verified engine manifest: %w", err)
 	}
 	if m.Engine.Version != version || !updates.Compatible(m.Engine.RequiresDesktop, pr.pins.AppVersion) ||
 		!updates.Compatible(">= "+pr.pins.CareVMVersion, version) {
-		return release.EngineUpdate{}, fmt.Errorf("signed engine %s is not compatible with required engine %s and desktop %s",
+		return release.EngineUpdate{}, fmt.Errorf("published engine %s is not compatible with required engine %s and desktop %s",
 			m.Engine.Version, version, pr.pins.AppVersion)
 	}
 	for _, blocked := range m.Blocked {
 		if blocked == "engine" || blocked == "engine:"+version || blocked == version {
-			return release.EngineUpdate{}, fmt.Errorf("signed engine %s is blocked", version)
+			return release.EngineUpdate{}, fmt.Errorf("published engine %s is blocked", version)
 		}
 	}
 	return m.Engine, nil

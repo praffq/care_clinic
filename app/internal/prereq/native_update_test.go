@@ -93,7 +93,7 @@ func TestNativeDownloadFailsClosedOnMissingOrUnpublishedAssets(t *testing.T) {
 
 func TestNativeUpdateRequiresVerifiedManifest(t *testing.T) {
 	pr := NewProvisioner(proc.Runner{Dir: t.TempDir()}, &release.Pins{CareVMVersion: "0.1.3", AppVersion: "0.1.19"}, nil)
-	if _, err := pr.signedNativeEngine("0.1.3", false); err == nil || !strings.Contains(err.Error(), "signed engine manifest") {
+	if _, err := pr.signedNativeEngine("0.1.3", false); err == nil || !strings.Contains(err.Error(), "verified engine manifest") {
 		t.Fatalf("missing manifest trusted: %v", err)
 	}
 	client := release.NewClient(pr.ReleaseDir)

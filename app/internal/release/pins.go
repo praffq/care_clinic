@@ -104,6 +104,7 @@ func (p *Pins) Summary() []string {
 	}
 	return []string{
 		"pins: care     " + p.BackendImage + " + " + p.FrontendImage + " <- CARE " + p.CAREVersion + " (" + p.UpdatesURL + ")",
+		"      updates  " + updateTrust + " (build-time trust mode)",
 		"      base     " + strings.Join([]string{p.PostgresImage, p.RedisImage, p.MinioImage}, " · "),
 		"      proxy    " + p.CaddyImage + " + coraza " + p.CorazaVersion,
 	}

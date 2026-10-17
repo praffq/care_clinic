@@ -10,6 +10,128 @@ import pipeline
 
 
 class PipelineTests(unittest.TestCase):
+    def test_nonsecret_selector_determines_build_trust_before_protected_signing(self):
+        for value, mode in [("", "unsigned-development"), ("false", "unsigned-development"),
+                            ("true", "signed"), ("typo", None)]:
+            with tempfile.TemporaryDirectory(dir=".") as directory:
+                output, env = Path(directory) / "output", Path(directory) / "env"
+                with patch.dict(os.environ, {"UPDATES_SIGNING_ENABLED": value,
+                                            "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(env)}, clear=True):
+                    if mode is None:
+                        with self.assertRaises(ValueError):
+                            pipeline.configure_update_trust()
+                    else:
+                        pipeline.configure_update_trust()
+                        self.assertEqual(output.read_text(), f"mode={mode}\n")
+                        self.assertEqual(env.read_text(), f"UPDATE_TRUST={mode}\n")
+
+    def test_installer_signing_all_or_none_like_original_windows_release(self):
+        groups = {
+            "windows": ["TOKEN", "ORGANIZATION", "PROJECT", "POLICY"],
+            "macos": ["CERT_P12", "CERT_PASSWORD", "SIGN_IDENTITY",
+                      "NOTARY_KEY", "NOTARY_KEY_ID", "NOTARY_ISSUER"],
+        }
+        with tempfile.TemporaryDirectory(dir=".") as directory:
+            output = Path(directory) / "output"
+            for platform, keys in groups.items():
+                for count in range(len(keys) + 1):
+                    output.write_text("")
+                    env = {key: "configured" for key in keys[:count]}
+                    env["GITHUB_OUTPUT"] = str(output)
+                    with patch.dict(os.environ, env, clear=True):
+                        if count in (0, len(keys)):
+                            pipeline.signing()
+                            self.assertIn(f"{platform}={str(count > 0).lower()}", output.read_text())
+                        else:
+                            with self.assertRaisesRegex(ValueError, "partially configured"):
+                                pipeline.signing()
+                            self.assertEqual(output.read_text(), "")
+
+    def test_publication_matches_build_trust_and_never_falls_back_after_signing_failure(self):
+        for mode, key in [("signed", "key"), ("unsigned-development", "")]:
+            with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+                Path("manifest.json").write_text("manifest bytes")
+                with patch.dict(os.environ, {"UPDATE_TRUST": mode, "UPDATES_SIGNING_KEY": key}):
+                    with patch.object(pipeline, "run") as run:
+                        pipeline.publication()
+                        calls = [call.args for call in run.call_args_list]
+                        if key:
+                            self.assertEqual([call[1] for call in calls], ["sign", "verify"])
+                            self.assertIn("--signature", calls[1])
+                            self.assertEqual(Path("public/updates.json").read_text(), "manifest bytes")
+                        else:
+                            self.assertEqual(len(calls), 1)
+                            self.assertIn("--unsigned-development", calls[0])
+                            self.assertEqual([p.name for p in Path("public").iterdir()],
+                                             ["updates-unsigned-development.json"])
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            Path("manifest.json").write_text("manifest bytes")
+            with patch.dict(os.environ, {"UPDATE_TRUST": "signed", "UPDATES_SIGNING_KEY": "key"}):
+                with patch.object(pipeline, "run", side_effect=ValueError("untrusted key")):
+                    with self.assertRaisesRegex(ValueError, "untrusted key"):
+                        pipeline.publication()
+                    self.assertFalse(Path("public/updates-unsigned-development.json").exists())
+        for mode, key in [("signed", ""), ("unsigned-development", "key"), ("invalid", "")]:
+            with patch.dict(os.environ, {"UPDATE_TRUST": mode, "UPDATES_SIGNING_KEY": key}):
+                with self.assertRaises(ValueError):
+                    pipeline.publication()
+
+    def test_previous_feed_has_explicit_matching_trust(self):
+        for mode in ["signed", "unsigned-development"]:
+            with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+                Path("versions.toml").write_text('[desktop]\nupdates_url = "https://example.test/updates.json"\n')
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.read.return_value = b"manifest"
+                with patch.dict(os.environ, {"UPDATE_TRUST": mode}):
+                    with patch.object(pipeline.urllib.request, "urlopen", return_value=response) as fetch:
+                        pipeline.previous()
+                urls = [call.args[0] for call in fetch.call_args_list]
+                expected = ["https://example.test/updates.json", "https://example.test/updates.json.sig"]
+                if mode == "unsigned-development":
+                    expected = ["https://example.test/updates-unsigned-development.json"]
+                self.assertEqual(urls, expected)
+
+    def test_reuse_engine_requires_exact_provenance_digests_and_bootstrap_pins(self):
+        version, source_hash = "0.1.3", "a" * 64
+        base = f"https://github.com/org/repo/releases/download/care-engine-v{version}/"
+        names = [f"care-engine-{version}-linux-{arch}.tar.gz" for arch in ["arm64", "amd64"]]
+        names += [f"care-engine-agent-linux-{arch}" for arch in ["arm64", "amd64"]]
+        assets = [{"name": name, "digest": "sha256:" + "b" * 64, "size": 42,
+                   "browser_download_url": base + name} for name in names]
+        release = {"tag_name": f"care-engine-v{version}", "body": f"Source hash: {source_hash}",
+                   "draft": False, "prerelease": False, "assets": assets}
+        plan = {"changed": {"engine": True}, "source_hashes": {"engine": source_hash},
+                "config": {"engine": {"version": version}, "tools": {
+                    "care_engine_aarch64": {"url": base + names[0], "sha256": "b" * 64},
+                    "care_engine_x86_64": {"url": base + names[1], "sha256": "b" * 64},
+                }}}
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            with patch.object(pipeline, "release_plan", return_value=plan):
+                with patch.dict(os.environ, {"GITHUB_REPOSITORY": "org/repo"}):
+                    with patch.object(pipeline, "run", return_value=json.dumps([[release]])) as run:
+                        pipeline.reuse_engine()
+                        self.assertEqual(run.call_count, 1)  # read-only API only
+                    self.assertEqual(len(pipeline.read("outputs/engine.json")["engine"]["assets"]), 4)
+                    for field, bad in [("body", "Source hash: wrong"), ("draft", True), ("prerelease", True),
+                                       ("assets", []), ("assets", [dict(a, digest="sha256:" + "0" * 64) for a in assets])]:
+                        invalid = dict(release, **{field: bad})
+                        with patch.object(pipeline, "run", return_value=json.dumps([[invalid]])):
+                            with self.assertRaises((ValueError, KeyError)):
+                                pipeline.reuse_engine()
+
+    def test_reused_engine_skips_rebuild_but_still_publishes_complete_feed(self):
+        plan = {"changed": {name: True for name in ["desktop", "engine", "backend", "frontend", "support"]},
+                "config": {"desktop": {"version": "0.0.2"}, "engine": {"version": "0.1.3"}}}
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            pipeline.write("outputs/engine.json", {"engine": {"assets": {}}})
+            with patch.object(pipeline, "release_plan", return_value=plan):
+                with patch.dict(os.environ, {"GITHUB_OUTPUT": "output"}):
+                    pipeline.plan_outputs()
+            output = Path("output").read_text()
+            self.assertIn("engine=false\n", output)
+            self.assertIn("desktop=true\n", output)
+            self.assertIn("changed=true\n", output)
+
     def test_required_checks_reject_failure_cancellation_and_skips(self):
         for name in ["plan", "care", "engine", "desktop"]:
             for result in ["success", "failure", "cancelled", "skipped"]:

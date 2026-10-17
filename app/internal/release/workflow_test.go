@@ -42,13 +42,19 @@ func TestReleaseWorkflowValidatesIdentity(t *testing.T) {
 		"versions.toml", "env-defaults.yml", "schedule:", "workflow_dispatch:",
 		"cancel-in-progress: false", "name: CI", "if: always()",
 		"ci/releasectl plan --root .", "--plan plan.json",
-		"ci/releasectl verify --manifest previous.json --signature previous.json.sig",
-		"environment: release-signing", "secrets.UPDATES_SIGNING_KEY",
-		"public/updates.json", "public/updates.json.sig", "path: public",
+		"ci/releasectl verify --manifest previous.json", "--signature previous.json.sig",
+		"secrets.UPDATES_SIGNING_KEY", "--unsigned-development",
+		"vars.UPDATES_SIGNING_ENABLED",
+		"environment: ${{ needs.plan.outputs.update_trust == 'signed' && 'release-signing' || 'unsigned-development' }}",
+		"pipeline.py publication", "path: public",
 		"needs: [plan, required]",
 	)
 	if strings.Contains(publish, "pull_request_target") {
 		t.Fatal("untrusted PR code must not run in a privileged event")
+	}
+	planJob := strings.Split(publish, "\n  care:\n")[0]
+	if strings.Contains(planJob, "secrets.UPDATES_SIGNING_KEY") || strings.Contains(planJob, "environment:") {
+		t.Fatal("planning must select trust without accessing the protected key or requiring approval")
 	}
 	requireText(t, publish, "github.event_name != 'pull_request'", "github.event_name != 'merge_group'",
 		"github.ref == 'refs/heads/main'")
@@ -127,7 +133,7 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		"secrets.MACOS_CERT_P12", "secrets.MACOS_CERT_PASSWORD", "secrets.MACOS_SIGN_IDENTITY",
 		"secrets.APPSTORE_PRIVATE_KEY", "secrets.APPSTORE_KEY_ID", "secrets.APPSTORE_ISSUER_ID",
 		"secrets.SIGNPATH_API_TOKEN", "Get-AuthenticodeSignature", "SIGNED_UNINSTALLER=",
-		"SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}",
+		"SIGN_MACOS: ${{ needs.signing.outputs.macos }}",
 		"wait-for-completion-timeout-in-seconds: \"3600\"",
 		"output-artifact-directory: signed-app",
 		"output-artifact-directory: signed-installer",
@@ -158,8 +164,14 @@ func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {
 		"needs.signing.result == 'success'",
 		"needs.sign-windows-installer.result == 'success'",
 		"needs.sign-windows-installer.result == 'skipped'",
-		"SignPath is partially configured",
+		"pipeline.py signing",
 	)
+	data := workflow(t, "desktop.yml")
+	release := strings.Split(data, "\n  release:\n")[1]
+	requireText(t, release, "if: ${{ !cancelled() && needs.package.result == 'success' }}")
+	requireText(t, data, "release.updateTrust=$UPDATE_TRUST", "signed|unsigned-development")
+	requireText(t, workflow(t, "publish.yml"), "update_trust: ${{ needs.plan.outputs.update_trust }}",
+		"pipeline.py reuse-engine", "name: output-engine-reused")
 }
 
 func TestWindowsInstallerRejectsDamagedDownloads(t *testing.T) {

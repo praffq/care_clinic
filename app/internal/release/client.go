@@ -19,17 +19,26 @@ type verifiedState struct {
 	Signature []byte `json:"signature"`
 }
 
-// Client persists the trust watermark and exact verified manifest in one atomic
+// Client persists the trust watermark and exact validated manifest in one atomic
 // file. A Client is shared by all requests for a clinic.
 type Client struct {
-	StatePath string
-	HTTP      *http.Client
+	StatePath           string
+	HTTP                *http.Client
+	unsignedDevelopment bool
 }
 
 var manifestMu sync.Mutex
 
+// Set only by the release build's linker flags, never by runtime configuration.
+var updateTrust = "signed"
+
 func NewClient(clinicDir string) *Client {
-	return &Client{StatePath: filepath.Join(clinicDir, "updates", "verified.json")}
+	unsigned := updateTrust == "unsigned-development"
+	name := "verified.json"
+	if unsigned {
+		name = "unsigned-development.json"
+	}
+	return &Client{StatePath: filepath.Join(clinicDir, "updates", name), unsignedDevelopment: unsigned}
 }
 
 func (c *Client) Fetch(ctx context.Context, endpoint string) (Manifest, error) {
@@ -64,6 +73,17 @@ func (c *Client) Fetch(ctx context.Context, endpoint string) (Manifest, error) {
 		}
 		return b, nil
 	}
+	if c.unsignedDevelopment {
+		endpoint, err := DevelopmentEndpoint(endpoint)
+		if err != nil {
+			return Manifest{}, err
+		}
+		data, err := get(endpoint, 4<<20)
+		if err != nil {
+			return Manifest{}, err
+		}
+		return c.accept(data, nil)
+	}
 	data, err := get(endpoint, 4<<20)
 	if err != nil {
 		return Manifest{}, err
@@ -75,8 +95,8 @@ func (c *Client) Fetch(ctx context.Context, endpoint string) (Manifest, error) {
 	return c.accept(data, sig)
 }
 
-// ReadVerified returns the last accepted manifest after rechecking its
-// signature and persisted revision watermark.
+// ReadVerified returns the last accepted manifest after rechecking the build's
+// trust policy and persisted revision watermark.
 func (c *Client) ReadVerified() (Manifest, []byte, error) {
 	manifestMu.Lock()
 	defer manifestMu.Unlock()
@@ -88,7 +108,7 @@ func (c *Client) ReadVerified() (Manifest, []byte, error) {
 	if err := json.Unmarshal(stored, &previous); err != nil {
 		return Manifest{}, nil, fmt.Errorf("read manifest trust state: %w", err)
 	}
-	m, err := VerifyManifest(previous.Manifest, previous.Signature, previous.Highest)
+	m, err := c.verify(previous.Manifest, previous.Signature, previous.Highest)
 	if err != nil || m.Revision != previous.Highest {
 		if err == nil {
 			err = fmt.Errorf("persisted revision %d does not match manifest revision %d", previous.Highest, m.Revision)
@@ -105,14 +125,14 @@ func (c *Client) accept(data, sig []byte) (Manifest, error) {
 		if err := json.Unmarshal(stored, &previous); err != nil {
 			return Manifest{}, fmt.Errorf("read manifest trust state: %w", err)
 		}
-		old, err := VerifyManifest(previous.Manifest, previous.Signature, previous.Highest)
+		old, err := c.verify(previous.Manifest, previous.Signature, previous.Highest)
 		if err != nil || old.Revision != previous.Highest {
 			return Manifest{}, fmt.Errorf("invalid persisted manifest trust state")
 		}
 	} else if !os.IsNotExist(err) {
 		return Manifest{}, err
 	}
-	m, err := VerifyManifest(data, sig, previous.Highest)
+	m, err := c.verify(data, sig, previous.Highest)
 	if err != nil {
 		return m, err
 	}
@@ -127,4 +147,11 @@ func (c *Client) accept(data, sig []byte) (Manifest, error) {
 		return m, fmt.Errorf("persist verified manifest: %w", err)
 	}
 	return m, nil
+}
+
+func (c *Client) verify(data, sig []byte, highest uint64) (Manifest, error) {
+	if c.unsignedDevelopment {
+		return VerifyDevelopmentManifest(data, highest)
+	}
+	return VerifyManifest(data, sig, highest)
 }

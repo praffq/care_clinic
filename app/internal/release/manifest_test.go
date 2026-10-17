@@ -125,6 +125,11 @@ func TestManifestRequiresCompleteProvenance(t *testing.T) {
 		func(m *Manifest) { m.Care.Version = "3.0.0" },
 		func(m *Manifest) { m.Engine.RequiresDesktop = "nonsense" },
 		func(m *Manifest) { delete(m.Engine.Assets, "linux-arm64") },
+		func(m *Manifest) {
+			a := m.Engine.Assets["linux-arm64"]
+			a.SHA256 = strings.Repeat("0", 64)
+			m.Engine.Assets["linux-arm64"] = a
+		},
 		func(m *Manifest) { m.Care.Backend.Image = "care:latest" },
 		func(m *Manifest) { m.Care.Frontend.BuildEnv = nil },
 		func(m *Manifest) { m.Blocked = nil },

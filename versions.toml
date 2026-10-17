@@ -4,7 +4,7 @@
 schema = 1
 
 [desktop]
-version = "0.0.1"
+version = "0.0.2"
 requires_engine = ">=0.1.3, <0.2.0"
 updates_url = "https://praffq.github.io/care_clinic/updates.json"
 
@@ -51,15 +51,13 @@ sha256 = "667395fbffab52901b80181dfbb39ea76da2fbd7642c4fbddd24e42146b07b48"
 [tools.care_engine_aarch64]
 version = "0.1.3"
 url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-arm64.tar.gz"
-# BLOCKED bootstrap: replace with the actual immutable bundle hash after CI
-# publication. All-zero hashes are rejected before any download or activation.
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+# Immutable care-engine-v0.1.3 release asset digest, verified against SHA256SUMS.
+sha256 = "b65d4e5c7170f3987550c17a19be5a1fbfd77f9894629a07b19ec498ae2b544a"
 
 [tools.care_engine_x86_64]
 version = "0.1.3"
 url = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/care-engine-0.1.3-linux-amd64.tar.gz"
-# BLOCKED bootstrap; native Linux uses signed dynamic engine assets instead.
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+sha256 = "4214759172637decf568f091b068aa1d25da164247706eb7ce8299e7a0bc5b29"
 
 # Windows QEMU and the 7-Zip extractors, fetched directly from their publishers.
 # 7zr reads the embedded 7z payload without running either installer.

@@ -12,7 +12,7 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Schema != ConfigSchema || c.Desktop.Version != "0.0.1" || c.Engine.Version != "0.1.3" || c.Care.Version != "3.1.0" {
+	if c.Schema != ConfigSchema || c.Desktop.Version != "0.0.2" || c.Engine.Version != "0.1.3" || c.Care.Version != "3.1.0" {
 		t.Fatalf("unexpected config: schema %d, desktop %s, engine %s, CARE %s", c.Schema, c.Desktop.Version, c.Engine.Version, c.Care.Version)
 	}
 	if c.Engine.RequiresDesktop != ">=0.0.1" || c.Care.RequiresDesktop != ">=0.0.1" {

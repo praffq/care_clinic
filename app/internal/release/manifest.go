@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -106,7 +107,7 @@ func (m Manifest) Validate() error {
 		for platform, a := range assets {
 			u, err := url.Parse(a.URL)
 			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" ||
-				!sha256Pattern.MatchString(a.SHA256) || a.Size <= 0 {
+				!sha256Pattern.MatchString(a.SHA256) || a.SHA256 == strings.Repeat("0", 64) || a.Size <= 0 {
 				return fmt.Errorf("invalid %s asset %s", name, platform)
 			}
 		}
@@ -158,6 +159,24 @@ func VerifyWithKeys(data, signature []byte, highest uint64, keys []string) (Mani
 	if !valid {
 		return Manifest{}, fmt.Errorf("updates signature is not trusted")
 	}
+	return VerifyDevelopmentManifest(data, highest)
+}
+
+// DevelopmentEndpoint keeps explicitly unsigned development metadata separate
+// from the signed feed. Signed clients never request this endpoint.
+func DevelopmentEndpoint(endpoint string) (string, error) {
+	if err := httpsURL("updates endpoint", endpoint); err != nil {
+		return "", err
+	}
+	if !strings.HasSuffix(endpoint, ".json") {
+		return "", fmt.Errorf("development updates endpoint must end in .json")
+	}
+	return strings.TrimSuffix(endpoint, ".json") + "-unsigned-development.json", nil
+}
+
+// VerifyDevelopmentManifest validates provenance and rollback protection, but
+// does not authenticate the publisher. Signed callers must authenticate bytes first.
+func VerifyDevelopmentManifest(data []byte, highest uint64) (Manifest, error) {
 	m, err := DecodeManifest(data)
 	if err != nil {
 		return m, err
