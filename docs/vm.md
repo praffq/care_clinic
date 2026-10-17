@@ -57,7 +57,7 @@ VM shutdown API.
 
 The agent's file put/get/list/delete API is the only transfer channel:
 
-- The installed deployment kit and generated configuration are uploaded before
+- The installed deployment and generated configuration are uploaded before
   runtime operations. Secrets retain private modes and never appear in job
   command logs. Guest-owned backup state is not overwritten from the host.
 - Image builds upload the selected Dockerfile and isolated build context under

@@ -50,7 +50,7 @@ func (e *Clinic) baseEnv() []string {
 	env := os.Environ()
 	set := func(k, v string) { env = append(env, k+"="+v) }
 	set("PATH", proc.AugmentedPath())
-	// Compose runs in the agent against the uploaded kit, never host paths.
+	// Compose runs in the agent against the uploaded deployment, never host paths.
 	set("COMPOSE_PROJECT_NAME", composeProject)
 	set("COMPOSE_FILE", path.Join(AgentClinicDir, "docker-compose.yml"))
 	set("BACKEND_IMAGE", e.Pins.BackendImage)
@@ -120,10 +120,10 @@ func (e *Clinic) workdir() string {
 }
 
 // Runner runs host commands in the install folder and engine operations in
-// the agent's clinic folder, after uploading the clinic kit and configuration.
+// the agent's clinic folder, after uploading the clinic deployment and configuration.
 func (e *Clinic) Runner() proc.Runner {
 	return proc.Runner{Dir: e.workdir(), Env: e.baseEnv(), Log: e.Log, Ctx: e.ctx,
-		Agent: e.Agent, AgentDir: AgentClinicDir, PrepareAgent: e.uploadKit}
+		Agent: e.Agent, AgentDir: AgentClinicDir, PrepareAgent: e.uploadDeployment}
 }
 
 func (e *Clinic) run(extraEnv []string, op engine.Operation, args ...string) error {

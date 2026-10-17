@@ -129,7 +129,7 @@ The [`App`](../app/app.go) owns:
 
 | Field group | Purpose and protection |
 | --- | --- |
-| `ctx`, `installFS`, `pins`, `log` | Wails runtime context, embedded kit, parsed release identity, and diagnostic sink. |
+| `ctx`, `installFS`, `pins`, `log` | Wails runtime context, embedded deployment, parsed release identity, and diagnostic sink. |
 | `cfg`, `configFile`, `cfgMu` | Cached persisted configuration. Reads take a shared lock; writes take an exclusive lock. |
 | `jobMu`, `closing` | Coordination of conflicting operations and the closing transition. |
 | `confirmationMu`, pending confirmation and readiness | One permission request at a time, explicit answers, and cancellation on frontend loss or shutdown. |
@@ -141,7 +141,7 @@ These locks solve different problems. Protecting the `Config` struct does not ma
 
 ### Durable local state
 
-The local configuration records setup completion, an incomplete-removal checkpoint, the clinic hostname, the backup directory, and the CARE Clinic administrator's bcrypt hash. Installed files include the deployment kit, editable environments, keys, and build material.
+The local configuration records setup completion, an incomplete-removal checkpoint, the clinic hostname, the backup directory, and the CARE Clinic administrator's bcrypt hash. Installed files include the deployment, editable environments, keys, and build material.
 
 The clinic manager keeps an exported private backup recovery file and a separate printable sheet of CARE Clinic admin recovery codes. Config stores the public encryption certificate, recovery-code hashes and
 recovery metadata, plus a password-encrypted local copy of the backup private
@@ -163,7 +163,7 @@ For example, `setup_done=true` does not imply that Docker is currently running, 
 ```mermaid
 stateDiagram-v2
     [*] --> NotConfigured
-    NotConfigured --> Preparing: RunSetup saves configuration and installs kit
+    NotConfigured --> Preparing: RunSetup saves configuration and installs deployment
     Preparing --> Installed: Setup and Start succeed; persist SetupDone
     Preparing --> PartialSetup: Setup or Start fails
     PartialSetup --> Removing: CleanupFailedInstall
@@ -198,10 +198,10 @@ See [the job protocol](wails-application.md#concurrency-and-job-protocol) for co
 
 | Choice | Why it exists | Consequence for changes |
 | --- | --- | --- |
-| Wrap Docker Compose rather than implement a service manager | The stack already defines dependencies, containers, and persistent storage. | Keep orchestration consistent with the deployment kit; do not invent a competing resource model. |
-| Fixed installation location | Avoid unsupported file-sharing, removable-drive, cloud-sync, and path-layout combinations. | Moving the executable or kit is not a way to move Docker's patient-data volumes. |
+| Wrap Docker Compose rather than implement a service manager | The stack already defines dependencies, containers, and persistent storage. | Keep orchestration consistent with the deployment; do not invent a competing resource model. |
+| Fixed installation location | Avoid unsupported file-sharing, removable-drive, cloud-sync, and path-layout combinations. | Moving the executable or deployment is not a way to move Docker's patient-data volumes. |
 | Separate release pins from clinic settings | Reproducibility and operator customization have different owners. | Change `deployments/.env` for shipped versions; use installed environment files for clinic configuration. |
-| Preserve editable environments during kit refresh | App upgrades must not erase operator settings. | New defaults in a template are not automatically merged into an existing clinic's preserved file. |
+| Preserve editable environments during deployment refresh | App upgrades must not erase operator settings. | New defaults in a template are not automatically merged into an existing clinic's preserved file. |
 | Digest-pinned CARE images | An upstream change must not silently replace a running clinic. | `care-images.json` records current and staged CARE 3.1 images; metadata is signature-verified before use. See [CARE images](images.md). |
 | Local image freshness fingerprints | Decide whether a build is necessary from explicit inputs and local images. | New build inputs must participate in the freshness contract. |
 | Named Docker volumes and stable project identity | Data ownership must survive working-directory changes. | Renaming services or volumes is a data migration decision, not cosmetic cleanup. |

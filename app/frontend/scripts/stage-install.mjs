@@ -22,7 +22,7 @@ const source = join(root, "deployments");
 const install = join(app, "install");
 
 // Validate and render before touching install/, so a bad versions.toml leaves
-// the previously staged kit intact.
+// the previously staged deployment intact.
 let staged;
 try {
   const output = execFileSync(

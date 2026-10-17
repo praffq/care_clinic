@@ -11,7 +11,7 @@ This guide covers `app/*.go` and the desktop-to-Go contract. Lower-level work is
 | Embedded filesystem | Source at compile time | Runtime use |
 | --- | --- | --- |
 | `assets` | `app/frontend/dist/` | Wails serves the desktop control panel from the executable. |
-| `installFS` | `app/install/` | The application reads release pins and unpacks the deployment kit. |
+| `installFS` | `app/install/` | The application reads release pins and unpacks the deployment. |
 
 The desktop UI is not served from the CARE frontend container. It must remain usable when the clinic stack is stopped or not installed.
 
@@ -51,7 +51,7 @@ flowchart TD
     Config --> Journal["Inspect pending restore metadata"]
     Journal --> Wails["wails.Run with bound App"]
     Wails --> Startup["startup: store Wails context"]
-    Startup --> Refresh["Refresh installed kit when setup is complete and stable"]
+    Startup --> Refresh["Refresh installed deployment when setup is complete and stable"]
     Refresh --> Advertise["Start mDNS advertiser and watcher"]
     Advertise --> Probe["Run initial Docker probe in a goroutine"]
     Probe --> UI["Desktop requests GetState"]
@@ -65,7 +65,7 @@ flowchart TD
 
 `NewApp` does not treat a missing embedded release file, malformed saved configuration, or invalid restore journal as an ordinary first run. It returns an error rather than allowing initialization against uncertain state.
 
-During `startup`, a server first rolls back an interrupted CARE engine update under the mutation gate ([CARE engine](vm.md#engine-update-rollback)). [`refreshInstallDir()`](../app/app_lifecycle.go) runs under the mutation gate. It does nothing for an unconfigured or removing installation. It also leaves the installed kit untouched when a restore or plugin rollback is pending. Otherwise it refreshes kit files and reapplies the saved clinic domain. A refresh error is logged; the callback does not silently rewrite the configuration as uninstalled.
+During `startup`, a server first rolls back an interrupted CARE engine update under the mutation gate ([CARE engine](vm.md#engine-update-rollback)). [`refreshInstallDir()`](../app/app_lifecycle.go) runs under the mutation gate. It does nothing for an unconfigured or removing installation. It also leaves the installed deployment untouched when a restore or plugin rollback is pending. Otherwise it refreshes deployment files and reapplies the saved clinic domain. A refresh error is logged; the callback does not silently rewrite the configuration as uninstalled.
 
 The backend starts name advertising, but the desktop state store owns panel boot.
 In [`care-store.tsx`](../app/frontend/src/state/care-store.tsx), `bootPanel()`
@@ -453,7 +453,7 @@ The password policy in [`password.go`](../app/password.go) is 8 through 20 Unico
 | `start` | `Start()` | Setup required; pending restore allowed for recovery. |
 | `stop` | `Stop()` | Setup required; pending restore allowed. |
 | `restart` | `Restart()` | Stable clinic required. |
-| `rebuild-all` | `RebuildAll()` | Stable clinic and administrator password required. Before the engine call, the app recopies its bundled kit into the install directory and reapplies the domain, the same refresh it does at launch. This is the Advanced tab's **Rebuild everything** button. |
+| `rebuild-all` | `RebuildAll()` | Stable clinic and administrator password required. Before the engine call, the app recopies its bundled deployment into the install directory and reapplies the domain, the same refresh it does at launch. This is the Advanced tab's **Rebuild everything** button. |
 | `rebuild-backend` | `RebuildBackend()` | Stable clinic and administrator password required. |
 | `rebuild-frontend` | `RebuildFrontend()` | Stable clinic and administrator password required. |
 | `apply-plugins` | `ApplyPlugins()` | Healthy running clinic required; no CARE Clinic admin password. Applies a staged draft with bounded readiness checks and durable configuration/image rollback on failure. |

@@ -13,15 +13,15 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
 
-func installKitApp(t *testing.T, kit fstest.MapFS) *App {
+func installDeploymentApp(t *testing.T, deployment fstest.MapFS) *App {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
-	return &App{configFile: filepath.Join(root, "care-clinic", "config.json"), installFS: kit}
+	return &App{configFile: filepath.Join(root, "care-clinic", "config.json"), installFS: deployment}
 }
 
-func putKitFile(t *testing.T, a *App, rel, data string) {
+func putDeploymentFile(t *testing.T, a *App, rel, data string) {
 	t.Helper()
 	path := filepath.Join(a.installDir(), filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -32,8 +32,8 @@ func putKitFile(t *testing.T, a *App, rel, data string) {
 	}
 }
 
-func TestKitRefreshRemovesOnlyPreviouslyShippedFiles(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{
+func TestDeploymentRefreshRemovesOnlyPreviouslyShippedFiles(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{
 		"install/.env":          {Data: []byte("PINS=old")},
 		"install/old/nested.sh": {Data: []byte("old script")},
 		"install/backend.env":   {Data: []byte("DEFAULT=old")},
@@ -44,7 +44,7 @@ func TestKitRefreshRemovesOnlyPreviouslyShippedFiles(t *testing.T) {
 	retained := []string{"backend.env", "frontend.env", "notes.txt", "keys/backup-cert.pem",
 		"backup-state/restore-state.json", "plugin-recovery.json", "plugins.json", "plugins-pending.json", "care-images.json"}
 	for _, rel := range retained {
-		putKitFile(t, a, rel, "operator data")
+		putDeploymentFile(t, a, rel, "operator data")
 	}
 	a.installFS = fstest.MapFS{"install/.env": {Data: []byte("PINS=new")}}
 	if _, err := a.ensureInstallDir(); err != nil {
@@ -58,15 +58,19 @@ func TestKitRefreshRemovesOnlyPreviouslyShippedFiles(t *testing.T) {
 			t.Fatalf("retained file %s changed: %q %v", rel, data, err)
 		}
 	}
-	files, err := readKitInventory(a.installDir())
+	files, err := readDeploymentInventory(a.installDir())
 	if err != nil || len(files) != 1 || files[0] != ".env" {
 		t.Fatalf("incorrect final ownership: %v %v", files, err)
 	}
+	data, err := os.ReadFile(filepath.Join(a.installDir(), ".deployment-files.json"))
+	if err != nil || string(data) != `{"version":1,"files":[".env"]}` {
+		t.Fatalf("deployment inventory was not persisted: %q %v", data, err)
+	}
 }
 
-func TestKitFirstUpgradeDoesNotGuessOldOwnership(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
-	putKitFile(t, a, "old-shipped-or-user.txt", "unknown owner")
+func TestDeploymentFirstUpgradeDoesNotGuessOldOwnership(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
+	putDeploymentFile(t, a, "old-shipped-or-user.txt", "unknown owner")
 	if _, err := a.ensureInstallDir(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +79,13 @@ func TestKitFirstUpgradeDoesNotGuessOldOwnership(t *testing.T) {
 	}
 }
 
-func TestKitCopyReplacesInodeAndSetsModes(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{
+func TestDeploymentCopyReplacesInodeAndSetsModes(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{
 		"install/file.txt":    {Data: []byte("complete new file")},
 		"install/script.sh":   {Data: []byte("#!/bin/sh\n")},
 		"install/backend.env": {Data: []byte("SECRET=initial")},
 	})
-	putKitFile(t, a, "file.txt", "previous complete file")
+	putDeploymentFile(t, a, "file.txt", "previous complete file")
 	alias := filepath.Join(t.TempDir(), "old-inode")
 	if err := os.Link(filepath.Join(a.installDir(), "file.txt"), alias); err != nil {
 		t.Skipf("hard links unavailable: %v", err)
@@ -95,7 +99,7 @@ func TestKitCopyReplacesInodeAndSetsModes(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(a.installDir(), "file.txt")); string(data) != "complete new file" {
 		t.Fatalf("incomplete new payload: %q", data)
 	}
-	for rel, mode := range map[string]os.FileMode{"file.txt": 0o644, "script.sh": 0o755, "backend.env": 0o600, kitInventoryFile: 0o600} {
+	for rel, mode := range map[string]os.FileMode{"file.txt": 0o644, "script.sh": 0o755, "backend.env": 0o600, deploymentInventoryFile: 0o600} {
 		info, err := os.Stat(filepath.Join(a.installDir(), rel))
 		if err != nil {
 			t.Fatal(err)
@@ -106,17 +110,17 @@ func TestKitCopyReplacesInodeAndSetsModes(t *testing.T) {
 	}
 }
 
-type failingKitRead struct{ fs.FS }
+type failingDeploymentRead struct{ fs.FS }
 
-func (f failingKitRead) ReadFile(name string) ([]byte, error) {
+func (f failingDeploymentRead) ReadFile(name string) ([]byte, error) {
 	if name == "install/z-failure.txt" {
-		return nil, errors.New("injected kit read failure")
+		return nil, errors.New("injected deployment read failure")
 	}
 	return fs.ReadFile(f.FS, name)
 }
 
-func TestKitPartialCopyDoesNotPruneAndRetryCompletes(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{"install/obsolete.txt": {Data: []byte("old")}})
+func TestDeploymentPartialCopyDoesNotPruneAndRetryCompletes(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{"install/obsolete.txt": {Data: []byte("old")}})
 	if _, err := a.ensureInstallDir(); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +128,7 @@ func TestKitPartialCopyDoesNotPruneAndRetryCompletes(t *testing.T) {
 		"install/a-first.txt":   {Data: []byte("new")},
 		"install/z-failure.txt": {Data: []byte("complete")},
 	}
-	a.installFS = failingKitRead{next}
+	a.installFS = failingDeploymentRead{next}
 	if _, err := a.ensureInstallDir(); err == nil {
 		t.Fatal("copy failure hidden")
 	}
@@ -140,16 +144,16 @@ func TestKitPartialCopyDoesNotPruneAndRetryCompletes(t *testing.T) {
 	}
 }
 
-func TestKitPendingCleanupInventoryRetainsProtectedFiles(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
+func TestDeploymentPendingCleanupInventoryRetainsProtectedFiles(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
 	pending := map[string]bool{"gone.txt": true, "already-removed.txt": true, "backend.env": true,
 		"keys/secret.pem": true, "backup-state/restore-state.json": true, "plugin-recovery.json": true}
 	for rel := range pending {
 		if rel != "already-removed.txt" {
-			putKitFile(t, a, rel, "retain unless owned kit")
+			putDeploymentFile(t, a, rel, "retain unless owned deployment")
 		}
 	}
-	if err := writeKitInventory(a.installDir(), pending); err != nil {
+	if err := writeDeploymentInventory(a.installDir(), pending); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.ensureInstallDir(); err != nil {
@@ -157,24 +161,24 @@ func TestKitPendingCleanupInventoryRetainsProtectedFiles(t *testing.T) {
 	}
 	for rel := range pending {
 		_, err := os.Stat(filepath.Join(a.installDir(), filepath.FromSlash(rel)))
-		if protectedKitPath(rel) && err != nil {
+		if protectedDeploymentPath(rel) && err != nil {
 			t.Fatalf("protected artifact removed: %s %v", rel, err)
 		}
-		if !protectedKitPath(rel) && !os.IsNotExist(err) {
+		if !protectedDeploymentPath(rel) && !os.IsNotExist(err) {
 			t.Fatalf("interrupted cleanup not completed: %s %v", rel, err)
 		}
 	}
 }
 
-func TestKitRejectsUnsafePathsAndNonFileObsoleteTargets(t *testing.T) {
+func TestDeploymentRejectsUnsafePathsAndNonFileObsoleteTargets(t *testing.T) {
 	for _, rel := range []string{"../outside", "/absolute", `C:\outside`, "nested/../outside", ".", "backend.env.", "keys /secret"} {
 		t.Run(rel, func(t *testing.T) {
-			a := installKitApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
-			data, err := json.Marshal(kitInventory{Version: 1, Files: []string{rel}})
+			a := installDeploymentApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
+			data, err := json.Marshal(deploymentInventory{Version: 1, Files: []string{rel}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			putKitFile(t, a, kitInventoryFile, string(data))
+			putDeploymentFile(t, a, deploymentInventoryFile, string(data))
 			if _, err := a.ensureInstallDir(); err == nil {
 				t.Fatal("unsafe inventory accepted")
 			}
@@ -183,8 +187,8 @@ func TestKitRejectsUnsafePathsAndNonFileObsoleteTargets(t *testing.T) {
 			}
 		})
 	}
-	a := installKitApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
-	if err := writeKitInventory(a.installDir(), map[string]bool{"obsolete": true}); err != nil {
+	a := installDeploymentApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
+	if err := writeDeploymentInventory(a.installDir(), map[string]bool{"obsolete": true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(a.installDir(), "obsolete"), 0o700); err != nil {
@@ -195,8 +199,8 @@ func TestKitRejectsUnsafePathsAndNonFileObsoleteTargets(t *testing.T) {
 	}
 }
 
-func TestKitFailureAfterCleanupKeepsRetryInventory(t *testing.T) {
-	a := installKitApp(t, fstest.MapFS{"install/obsolete.txt": {Data: []byte("old")}})
+func TestDeploymentFailureAfterCleanupKeepsRetryInventory(t *testing.T) {
+	a := installDeploymentApp(t, fstest.MapFS{"install/obsolete.txt": {Data: []byte("old")}})
 	if _, err := a.ensureInstallDir(); err != nil {
 		t.Fatal(err)
 	}
@@ -204,12 +208,12 @@ func TestKitFailureAfterCleanupKeepsRetryInventory(t *testing.T) {
 	if err := os.Remove(state); err != nil {
 		t.Fatal(err)
 	}
-	putKitFile(t, a, backupStateDir, "blocking directory creation")
+	putDeploymentFile(t, a, backupStateDir, "blocking directory creation")
 	a.installFS = fstest.MapFS{"install/current.txt": {Data: []byte("current")}}
 	if _, err := a.ensureInstallDir(); err == nil {
 		t.Fatal("post-cleanup failure hidden")
 	}
-	previous, err := readKitInventory(a.installDir())
+	previous, err := readDeploymentInventory(a.installDir())
 	if err != nil || len(previous) != 2 {
 		t.Fatalf("partial cleanup lost retry inventory: %v %v", previous, err)
 	}
@@ -219,16 +223,16 @@ func TestKitFailureAfterCleanupKeepsRetryInventory(t *testing.T) {
 	if _, err := a.ensureInstallDir(); err != nil {
 		t.Fatal(err)
 	}
-	previous, err = readKitInventory(a.installDir())
+	previous, err = readDeploymentInventory(a.installDir())
 	if err != nil || len(previous) != 1 || previous[0] != "current.txt" {
 		t.Fatalf("retry did not finalize inventory: %v %v", previous, err)
 	}
 }
 
-func TestKitCorruptInventoryAndReservedPayloadFailBeforeCopy(t *testing.T) {
+func TestDeploymentCorruptInventoryAndReservedPayloadFailBeforeCopy(t *testing.T) {
 	for _, data := range []string{"{", "null", `{"version":2,"files":[]}`} {
-		a := installKitApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
-		putKitFile(t, a, kitInventoryFile, data)
+		a := installDeploymentApp(t, fstest.MapFS{"install/new.txt": {Data: []byte("new")}})
+		putDeploymentFile(t, a, deploymentInventoryFile, data)
 		if _, err := a.ensureInstallDir(); err == nil {
 			t.Fatalf("invalid inventory ignored: %q", data)
 		}
@@ -236,43 +240,43 @@ func TestKitCorruptInventoryAndReservedPayloadFailBeforeCopy(t *testing.T) {
 			t.Fatal("invalid inventory allowed copies")
 		}
 	}
-	for _, rel := range []string{"keys/secret.pem", "backup-state/restore-state.json", "plugin-recovery.json"} {
-		a := installKitApp(t, fstest.MapFS{"install/" + rel: {Data: []byte("not kit material")}})
+	for _, rel := range []string{deploymentInventoryFile, "keys/secret.pem", "backup-state/restore-state.json", "plugin-recovery.json"} {
+		a := installDeploymentApp(t, fstest.MapFS{"install/" + rel: {Data: []byte("not deployment material")}})
 		if _, err := a.ensureInstallDir(); err == nil {
 			t.Fatalf("reserved payload accepted: %s", rel)
 		}
 	}
 }
 
-func TestKitStartupStillHonorsRecoveryGates(t *testing.T) {
+func TestDeploymentStartupStillHonorsRecoveryGates(t *testing.T) {
 	for _, rel := range []string{"plugin-recovery.json", "restore-state.json"} {
 		t.Run(rel, func(t *testing.T) {
 			a := roleApp(t)
 			a.cfg = Config{Role: roleServer, SetupDone: true}
 			a.installFS = fstest.MapFS{"install/file.txt": {Data: []byte("replacement")}}
-			putKitFile(t, a, "file.txt", "retain for recovery")
-			putKitFile(t, a, rel, "{")
+			putDeploymentFile(t, a, "file.txt", "retain for recovery")
+			putDeploymentFile(t, a, rel, "{")
 			a.refreshInstallDir()
 			if data, err := os.ReadFile(filepath.Join(a.installDir(), "file.txt")); err != nil || string(data) != "retain for recovery" {
-				t.Fatalf("startup refreshed kit through recovery error: %q %v", data, err)
+				t.Fatalf("startup refreshed deployment through recovery error: %q %v", data, err)
 			}
 		})
 	}
 }
 
-func TestKitRejectsSymlinkCopyAndCleanup(t *testing.T) {
-	for _, rel := range []string{"file.txt", "nested", kitInventoryFile, "obsolete.txt"} {
+func TestDeploymentRejectsSymlinkCopyAndCleanup(t *testing.T) {
+	for _, rel := range []string{"file.txt", "nested", deploymentInventoryFile, "obsolete.txt"} {
 		t.Run(rel, func(t *testing.T) {
-			a := installKitApp(t, fstest.MapFS{
+			a := installDeploymentApp(t, fstest.MapFS{
 				"install/file.txt":         {Data: []byte("new")},
 				"install/nested/script.sh": {Data: []byte("new")},
 			})
-			if err := writeKitInventory(a.installDir(), map[string]bool{"obsolete.txt": true}); err != nil {
+			if err := writeDeploymentInventory(a.installDir(), map[string]bool{"obsolete.txt": true}); err != nil {
 				t.Fatal(err)
 			}
 			outside := t.TempDir()
 			target := filepath.Join(a.installDir(), rel)
-			if rel == kitInventoryFile {
+			if rel == deploymentInventoryFile {
 				if err := os.Remove(target); err != nil {
 					t.Fatal(err)
 				}
@@ -291,9 +295,9 @@ func TestKitRejectsSymlinkCopyAndCleanup(t *testing.T) {
 	}
 }
 
-func TestKitRejectsLinkedInstallationRootAndParent(t *testing.T) {
+func TestDeploymentRejectsLinkedInstallationRootAndParent(t *testing.T) {
 	for _, parent := range []bool{false, true} {
-		a := installKitApp(t, fstest.MapFS{"install/file.txt": {Data: []byte("new")}})
+		a := installDeploymentApp(t, fstest.MapFS{"install/file.txt": {Data: []byte("new")}})
 		outside := t.TempDir()
 		target := a.installDir()
 		if parent {

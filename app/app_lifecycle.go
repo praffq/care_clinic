@@ -109,7 +109,7 @@ func (a *App) refreshInstallDir() {
 			a.logln("An unfinished restore was found; its installed configuration was left unchanged for recovery.")
 			return nil
 		}
-		if err := a.syncInstallKit(); err != nil {
+		if err := a.syncInstallDeployment(); err != nil {
 			return err
 		}
 		updated = true
@@ -123,7 +123,7 @@ func (a *App) refreshInstallDir() {
 	}
 }
 
-func (a *App) syncInstallKit() error {
+func (a *App) syncInstallDeployment() error {
 	if _, err := a.ensureInstallDir(); err != nil {
 		return err
 	}

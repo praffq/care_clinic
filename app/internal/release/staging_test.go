@@ -36,7 +36,7 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 	}
 	command := strings.Fields(config.PreBuildHooks["*/*"])
 	if len(command) == 0 {
-		t.Fatal("Wails must stage the install kit before every platform's Go build")
+		t.Fatal("Wails must stage the deployment before every platform's Go build")
 	}
 	script, err := os.ReadFile("../../frontend/scripts/stage-install.mjs")
 	if err != nil {
@@ -83,12 +83,12 @@ func TestWailsStagesMissingInstallBeforeGoBuild(t *testing.T) {
 	write("app/main.go", `package main
 import ("embed"; "fmt"; "os")
 //go:embed all:install
-var kit embed.FS
+var deployment embed.FS
 func main() {
-	data, err := kit.ReadFile("install/.env")
+	data, err := deployment.ReadFile("install/.env")
 	if err != nil { panic(err) }
 	if len(os.Args) > 1 {
-		data, err = kit.ReadFile("install/" + os.Args[1])
+		data, err = deployment.ReadFile("install/" + os.Args[1])
 		if err != nil { panic(err) }
 	}
 	fmt.Print(string(data))
@@ -148,20 +148,20 @@ func main() {
 			cmd = proc.Command("go", "run", "main.go")
 			cmd.Dir = filepath.Join(root, "app")
 			if output, err := cmd.CombinedOutput(); err != nil || string(output) != string(manifest) {
-				t.Fatalf("compiled kit is missing or stale: %v\n%s", err, output)
+				t.Fatalf("compiled deployment is missing or stale: %v\n%s", err, output)
 			}
 			if pins, err := Load(manifest); err != nil || pins.AppVersion != tc.version || pins.CAREVersion != current.Care.Version {
-				t.Fatalf("staged kit does not load: %v", err)
+				t.Fatalf("staged deployment does not load: %v", err)
 			}
 			if data, err := os.ReadFile(filepath.Join(install, "minio", "entrypoint.sh")); err != nil || string(data) != "storage entrypoint" {
-				t.Fatalf("nested kit file was not staged: %v", err)
+				t.Fatalf("nested deployment file was not staged: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(install, "setup")); !os.IsNotExist(err) {
 				t.Fatalf("obsolete device setup was staged: %v", err)
 			}
 			if tc.state == "stale" {
 				if _, err := os.Stat(filepath.Join(install, "removed-file")); !os.IsNotExist(err) {
-					t.Fatalf("obsolete kit file survived: %v", err)
+					t.Fatalf("obsolete deployment file survived: %v", err)
 				}
 				if _, err := os.Stat(filepath.Join(install, ".gitkeep")); err != nil {
 					t.Fatalf("tracked placeholder was removed: %v", err)
@@ -199,7 +199,7 @@ func main() {
 			}
 			data, err := os.ReadFile(filepath.Join(root, "app", "install", ".env"))
 			if err != nil || string(data) != string(last) {
-				t.Fatalf("invalid config changed the staged kit: %q, %v", data, err)
+				t.Fatalf("invalid config changed the staged deployment: %q, %v", data, err)
 			}
 		})
 	}

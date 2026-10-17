@@ -283,7 +283,7 @@ func (a *App) ClinicAction(action, adminPassword string) (err error) {
 			}
 		}
 		if action == "rebuild-all" {
-			if err := a.syncInstallKit(); err != nil {
+			if err := a.syncInstallDeployment(); err != nil {
 				return err
 			}
 		}
