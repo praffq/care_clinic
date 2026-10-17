@@ -625,3 +625,119 @@ func TestMethodNotAllowed(t *testing.T) {
 	resp := e.do(t, "GET", "/v1/ops/stack.up", nil)
 	expectStatus(t, resp, 405)
 }
+
+// startCanceledOp starts path with a client context, waits for the executor to
+// start, cancels the client and returns the op's context once it finishes.
+func startCanceledOp(t *testing.T, e *testEnv, path string, body func() io.Reader) (opCtxErr chan error, release chan struct{}) {
+	t.Helper()
+	started := make(chan struct{})
+	release = make(chan struct{})
+	opCtxErr = make(chan error, 1)
+	e.fake.Handle = func(ctx context.Context, op protocol.Op, em Emitter) (any, error) {
+		em.Log(protocol.LogLine{Line: "before disconnect"})
+		close(started)
+		<-release
+		// Let the server notice the disconnect before emitting again.
+		time.Sleep(50 * time.Millisecond)
+		for range 100 {
+			em.Log(protocol.LogLine{Line: "after disconnect"})
+		}
+		opCtxErr <- ctx.Err()
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "POST", e.srv.URL+path, body())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	<-started
+	cancel()
+	<-done
+	return opCtxErr, release
+}
+
+func TestMutatingOpSurvivesClientDisconnect(t *testing.T) {
+	e := newTestEnv(t)
+	opCtxErr, release := startCanceledOp(t, e, "/v1/ops/migrations.run", func() io.Reader { return nil })
+
+	// The op is still running and holds the lock.
+	resp := e.do(t, "POST", "/v1/ops/stack.stop", nil)
+	expectStatus(t, resp, 409)
+	if body := decodeJSON[map[string]string](t, resp.Body); body["op"] != protocol.OpRunMigrations {
+		t.Fatalf("body = %v", body)
+	}
+
+	close(release)
+	select {
+	case err := <-opCtxErr:
+		if err != nil {
+			t.Fatalf("op context was cancelled: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("op did not finish")
+	}
+	waitForIdle(t, e)
+	if !slices.ContainsFunc(e.cfg.Log.Lines(), func(l string) bool { return strings.Contains(l, "op migrations.run: done") }) {
+		t.Fatalf("agent log = %v", e.cfg.Log.Lines())
+	}
+}
+
+func TestImageLoadCancelledOnDisconnect(t *testing.T) {
+	e := newTestEnv(t)
+	params := url.QueryEscape(`{"role":"backend","digest":"sha256:` + strings.Repeat("a", 64) + `"}`)
+	// The fake reads the whole body before Handle runs, so a finite body is fine.
+	opCtxErr, release := startCanceledOp(t, e, "/v1/ops/image.load?params="+params, func() io.Reader { return strings.NewReader("TAR") })
+	close(release)
+	select {
+	case err := <-opCtxErr:
+		if err == nil {
+			t.Fatal("image.load context not cancelled on disconnect")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("op did not finish")
+	}
+	waitForIdle(t, e)
+}
+
+func TestMutatingOpMaxDuration(t *testing.T) {
+	e := newTestEnv(t, func(c *Config) { c.MaxOpDuration = 50 * time.Millisecond })
+	e.fake.Handle = func(ctx context.Context, _ protocol.Op, _ Emitter) (any, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	resp := e.do(t, "POST", "/v1/ops/stack.up", nil)
+	expectStatus(t, resp, 200)
+	frames := readFrames(t, resp.Body)
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != CodeCanceled {
+		t.Fatalf("frames = %+v", frames)
+	}
+}
+
+// waitForIdle polls until a mutating op is accepted again.
+func waitForIdle(t *testing.T, e *testEnv) {
+	t.Helper()
+	e.fake.Handle = nil
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp := e.do(t, "POST", "/v1/ops/stack.stop", nil)
+		if resp.StatusCode == 200 {
+			if frames := readFrames(t, resp.Body); len(frames) != 1 || frames[0].Result == nil {
+				t.Fatalf("frames = %+v", frames)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock not released: %d", resp.StatusCode)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

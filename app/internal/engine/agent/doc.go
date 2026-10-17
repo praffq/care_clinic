@@ -25,6 +25,17 @@
 // "params" query parameter (POST /v1/ops/image.load?params=%7B...%7D). The
 // "params" query parameter is rejected for every other op.
 //
+// image.load verifies the requested digest against the loaded image's ID,
+// which with Docker's containerd image store (Docker 29) is the manifest
+// digest, or against a RepoDigest when one exists; tarballs produced locally
+// by "docker save" carry no RepoDigests.
+//
+// Mutating ops other than image.load are detached from the request context:
+// if the client disconnects they run to completion (bounded by
+// Config.MaxOpDuration) and keep holding the op lock until they finish;
+// frames written after the disconnect are dropped. Read-only ops and
+// image.load are cancelled on disconnect.
+//
 // Unknown ops get 404, bad params 400 (the protocol error JSON verbatim). Only
 // one mutating op runs at a time; a second one gets 409
 // {"error":"busy","op":"<running op>"}. stack.status and stack.logs are

@@ -26,6 +26,7 @@ const (
 	DefaultMaxFileBytes         = 64 << 20
 	DefaultMaxRestoreInputBytes = 64 << 30
 	DefaultMaxImageBytes        = 32 << 30
+	DefaultMaxOpDuration        = 30 * time.Minute
 
 	// ParamsQuery carries image.load params, URL-encoded JSON.
 	ParamsQuery = "params"
@@ -49,6 +50,9 @@ type Config struct {
 	MaxRestoreInputBytes int64 // upload limit for the restore-input area
 	MaxImageBytes        int64 // image.load body limit
 
+	// MaxOpDuration bounds mutating ops, which keep running when the client
+	// disconnects (except image.load, whose input is the request body).
+	MaxOpDuration time.Duration
 	// ShutdownDelay is how long /v1/shutdown waits after responding before
 	// powering off, so the response reaches the caller.
 	ShutdownDelay time.Duration
@@ -75,6 +79,9 @@ func (c *Config) setDefaults() {
 	defN(&c.MaxFileBytes, DefaultMaxFileBytes)
 	defN(&c.MaxRestoreInputBytes, DefaultMaxRestoreInputBytes)
 	defN(&c.MaxImageBytes, DefaultMaxImageBytes)
+	if c.MaxOpDuration <= 0 {
+		c.MaxOpDuration = DefaultMaxOpDuration
+	}
 	if c.Log == nil {
 		c.Log = NewLogRing(500)
 	}
@@ -219,12 +226,23 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 		defer s.release()
 	}
 
+	// A mutating op killed half-way is worse than one that finishes, so it
+	// outlives the client, bounded by MaxOpDuration. image.load reads the
+	// request body and read-only ops have nothing to finish, so they keep the
+	// request context. The op lock is held until dispatch returns.
+	ctx := r.Context()
+	if !readOnlyOps[name] && name != protocol.OpImageLoad {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), s.cfg.MaxOpDuration)
+		defer cancel()
+	}
+
 	s.logf("op %s: started", name)
 	start := time.Now()
 	fw := newFrameWriter(w)
-	result, err := dispatch(r.Context(), s.exec, op, body, password, fw)
+	result, err := dispatch(ctx, s.exec, op, body, password, fw)
 	if err != nil {
-		oe := toOpError(r.Context(), err)
+		oe := toOpError(ctx, err)
 		s.logf("op %s: failed after %s: %s", name, time.Since(start).Round(time.Millisecond), oe.Error())
 		fw.finish(protocol.Frame{Error: oe})
 		return
@@ -239,7 +257,8 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 }
 
 // frameWriter streams NDJSON frames, flushing after each one. It implements
-// Emitter and redacts everything it writes.
+// Emitter and redacts everything it writes. After a write or flush fails (the
+// client went away) every further write is a no-op.
 type frameWriter struct {
 	mu   sync.Mutex
 	w    http.ResponseWriter
@@ -268,7 +287,9 @@ func (f *frameWriter) write(fr protocol.Frame, terminal bool) {
 		f.done = true
 		return
 	}
-	_ = f.rc.Flush()
+	if err := f.rc.Flush(); err != nil {
+		f.done = true
+	}
 }
 
 func (f *frameWriter) Progress(p protocol.Progress) {
