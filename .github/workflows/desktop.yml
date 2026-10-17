@@ -211,7 +211,12 @@ jobs:
             *-macos)
               apps=("$BUILD_DIR"/*.app)
               test "${#apps[@]}" -eq 1 && test -d "${apps[0]}"
-              codesign --verify --strict "${apps[0]}"
+              bash .github/scripts/verify-macos-entitlements.sh "${apps[0]}"
+              swiftc .github/scripts/virtualization-smoke.swift -o ci-artifacts/virtualization-smoke
+              touch ci-artifacts/smoke-kernel
+              codesign --force --sign - --entitlements app/build/darwin/entitlements.plist ci-artifacts/virtualization-smoke
+              ci-artifacts/virtualization-smoke ci-artifacts/smoke-kernel
+              rm ci-artifacts/virtualization-smoke ci-artifacts/smoke-kernel
               ditto -c -k --keepParent "${apps[0]}" "ci-artifacts/$TARGET-unsigned.zip"
               ;;
             desktop-windows)

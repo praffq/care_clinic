@@ -30,6 +30,11 @@ on:
         required: false
         default: false
         type: boolean
+      desktop_only:
+        description: Publish a new desktop version only, retaining verified engine and CARE images
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -57,7 +62,7 @@ jobs:
       changed: ${{ steps.plan.outputs.changed }}
       desktop_version: ${{ steps.plan.outputs.desktop_version }}
       engine_version: ${{ steps.plan.outputs.engine_version }}
-      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' }}
+      publish: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' && inputs.desktop_only) }}
       update_trust: ${{ steps.trust.outputs.mode }}
     steps:
       - name: Require recovery source for metadata normalization
@@ -68,6 +73,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.desktop_only && '0' || '1' }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
@@ -93,11 +99,18 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          DESKTOP_ONLY: ${{ inputs.desktop_only }}
         run: |
           previous=()
           if [ -f previous.json ]; then previous+=(--previous previous.json); fi
-          ci/releasectl plan --root . "${previous[@]}" --update-trust "$UPDATE_TRUST" --out plan.json
-          python3 .github/scripts/pipeline.py reuse-engine
+          options=()
+          if [ "$DESKTOP_ONLY" = true ]; then options+=(--desktop-only); fi
+          ci/releasectl plan --root . "${previous[@]}" "${options[@]}" --update-trust "$UPDATE_TRUST" --out plan.json
+          if [ "$DESKTOP_ONLY" = true ]; then
+            python3 .github/scripts/pipeline.py desktop-only
+          else
+            python3 .github/scripts/pipeline.py reuse-engine
+          fi
           python3 .github/scripts/pipeline.py plan-outputs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -196,8 +209,8 @@ jobs:
       actions: read
       deployments: read
     outputs:
-      feed_url: ${{ steps.normalize.outputs.feed_url }}
-      feed_sha256: ${{ steps.normalize.outputs.feed_sha256 }}
+      feed_url: ${{ steps.normalize.outputs.feed_url || steps.baseline.outputs.feed_url }}
+      feed_sha256: ${{ steps.normalize.outputs.feed_sha256 || steps.baseline.outputs.feed_sha256 }}
     env:
       UPDATE_TRUST: ${{ needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development') }}
     # Only signed publication may access the protected private key. The
@@ -231,6 +244,10 @@ jobs:
           UPDATES_SIGNING_ENABLED: ${{ vars.UPDATES_SIGNING_ENABLED }}
           NORMALIZE_DIGEST_REFS: ${{ inputs.normalize_digest_refs }}
         run: python3 .github/scripts/pipeline.py recover
+      - name: Record verified desktop-only feed baseline
+        id: baseline
+        if: ${{ inputs.desktop_only }}
+        run: python3 .github/scripts/pipeline.py publication-baseline
       - name: Generate manifest using sole release configuration
         run: |
           mkdir -p ci public
@@ -274,8 +291,8 @@ jobs:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
     steps:
-      - name: Require unchanged live metadata before deploying normalization
-        if: ${{ inputs.normalize_digest_refs }}
+      - name: Require unchanged live metadata before targeted publication
+        if: ${{ inputs.normalize_digest_refs || inputs.desktop_only }}
         env:
           FEED_URL: ${{ needs.sign.outputs.feed_url }}
           FEED_SHA256: ${{ needs.sign.outputs.feed_sha256 }}

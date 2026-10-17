@@ -13,6 +13,29 @@ import pipeline
 
 
 class PipelineTests(unittest.TestCase):
+    def test_desktop_only_reuses_published_engine_and_rejects_other_builds(self):
+        fixture = json.loads(Path("app/internal/release/testdata/published-revision1.json").read_text())
+        plan = {"desktop": True, "engine": False, "backend": False, "frontend": False,
+                "support": False, "hashes": fixture["source_hashes"]}
+        env = {"GITHUB_REPOSITORY": "praffq/care_clinic", "GITHUB_EVENT_NAME": "workflow_dispatch"}
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            pipeline.write("plan.json", plan)
+            pipeline.write("previous.json", fixture)
+            with patch.dict(os.environ, env), patch.object(pipeline, "run") as run, \
+                    patch.object(pipeline, "verify_published") as verify:
+                pipeline.desktop_only()
+                run.assert_called_once_with("git", "merge-base", "--is-ancestor", "origin/main", "HEAD")
+                verify.assert_called_once_with("praffq/care_clinic", "engine", fixture["engine"],
+                                               fixture["source_hashes"]["engine"])
+                self.assertEqual(pipeline.read("outputs/engine.json"), {"engine": fixture["engine"]})
+                for key in ("engine", "backend", "frontend", "support"):
+                    pipeline.write("plan.json", {**plan, key: True})
+                    with self.assertRaises(ValueError):
+                        pipeline.desktop_only()
+                for bad in ({"GITHUB_REPOSITORY": "other/repo"}, {"GITHUB_EVENT_NAME": "pull_request"}):
+                    with patch.dict(os.environ, bad), self.assertRaises(ValueError):
+                        pipeline.desktop_only()
+
     def test_normalization_preserves_exact_source_identity_and_increments_revision(self):
         fixture = json.loads(Path("app/internal/release/testdata/published-revision1.json").read_text())
         with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
@@ -208,7 +231,7 @@ class PipelineTests(unittest.TestCase):
                     "-config", str(Path("versions.toml").resolve()),
                     "-env", str(root / "deployments/.env"),
                 ], text=True))
-                self.assertEqual(staged["desktop_version"], "0.0.1")
+                self.assertEqual(staged["desktop_version"], resolved["desktop"]["version"])
                 for arch, env in [("arm64", "CARE_VM_AARCH64_SHA256"), ("amd64", "CARE_VM_X86_64_SHA256")]:
                     self.assertIn(f'{env}={measured["assets"][f"linux-{arch}"]["sha256"]}\n', staged["env"])
                 resolved_once = Path("versions.toml").read_text()

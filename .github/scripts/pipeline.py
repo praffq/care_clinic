@@ -183,6 +183,29 @@ def reuse_engine():
     write("outputs/engine.json", {"engine": {"version": version, "assets": assets}})
 
 
+def desktop_only():
+    repository = os.environ["GITHUB_REPOSITORY"]
+    if repository != "praffq/care_clinic" or os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch":
+        raise ValueError("branch desktop-only publication is restricted to manual dispatch in praffq/care_clinic")
+    run("git", "merge-base", "--is-ancestor", "origin/main", "HEAD")
+    plan = read("plan.json")
+    previous_manifest = read("previous.json")
+    if not plan["desktop"] or any(plan[key] for key in ("engine", "backend", "frontend", "support")):
+        raise ValueError("desktop-only plan must not rebuild engine or images")
+    verify_published(repository, "engine", previous_manifest["engine"], plan["hashes"]["engine"])
+    write("outputs/engine.json", {"engine": previous_manifest["engine"]})
+
+
+def publication_baseline():
+    config = tomllib.loads(Path("versions.toml").read_text())
+    endpoint = config["desktop"]["updates_url"]
+    if update_trust() == "unsigned-development":
+        endpoint = development_endpoint(endpoint)
+    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+        output.write(f"feed_url={endpoint}\n")
+        output.write(f"feed_sha256={digest('previous.json')}\n")
+
+
 def bootstrap():
     """Resolve both bundle pins before any frontend/Wails build staging.
 
@@ -476,7 +499,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["previous", "plan-outputs", "assets", "merge", "required",
                                           "signing", "publication", "reuse-engine", "trust", "bootstrap",
-                                          "recover", "normalize-metadata"])
+                                          "recover", "normalize-metadata", "desktop-only", "publication-baseline"])
     parser.add_argument("--component", choices=["desktop", "engine"])
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
@@ -487,7 +510,8 @@ def main():
          "merge": merge, "required": required, "signing": signing,
          "publication": publication, "reuse-engine": reuse_engine,
          "trust": configure_update_trust, "bootstrap": bootstrap,
-         "recover": recover, "normalize-metadata": normalize_metadata}[args.command]()
+         "recover": recover, "normalize-metadata": normalize_metadata,
+         "desktop-only": desktop_only, "publication-baseline": publication_baseline}[args.command]()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,51 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
 
+func TestDesktopOnlyPlanRetainsVerifiedSnapshotsAndRejectsOtherChanges(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	data, err := os.ReadFile(filepath.Join(root, "versions.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := release.ReadConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(filepath.Join(root, "app", "internal", "release", "testdata", "published-revision1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := release.DecodeManifest(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := makePlan(root, config, old, "unsigned-development", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Desktop || p.Engine || p.Backend || p.Frontend || p.Support ||
+		p.BackendCommit != old.Care.Backend.Commit || p.FrontendCommit != old.Care.Frontend.Commit {
+		t.Fatalf("desktop-only plan rebuilt or resolved other components: %+v", p)
+	}
+	for _, change := range []func(*release.Config, *release.Manifest){
+		func(c *release.Config, _ *release.Manifest) { c.Desktop.Version = "0.0.1" },
+		func(c *release.Config, _ *release.Manifest) { c.Engine.Version = "0.1.4" },
+		func(c *release.Config, _ *release.Manifest) { c.Care.Version = "3.2.0" },
+		func(c *release.Config, _ *release.Manifest) { c.Care.Backend.Branch = "other" },
+		func(c *release.Config, _ *release.Manifest) { c.Engine.RequiresDesktop = ">=0.0.2" },
+		func(_ *release.Config, m *release.Manifest) { m.SourceHashes = map[string]string{} },
+		func(_ *release.Config, m *release.Manifest) {
+			m.Care.Frontend.BuildEnv = map[string]string{"CHANGED": "true"}
+		},
+	} {
+		c, m := config, old
+		change(&c, &m)
+		if _, err := makePlan(root, c, m, "unsigned-development", true); err == nil {
+			t.Fatal("desktop-only plan accepted changed component or reused version")
+		}
+	}
+}
+
 func TestVerifyRequiresExplicitDevelopmentMode(t *testing.T) {
 	hash := strings.Repeat("a", 64)
 	image := "ghcr.io/example/image@sha256:" + hash

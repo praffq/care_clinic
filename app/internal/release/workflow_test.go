@@ -225,10 +225,42 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		`if [ "$SIGN_MACOS" = "true" ]`, "--no-wait --output-format json",
 		"for attempt in 1 2 3 4 5 6", `notarytool wait "$id" "${notary[@]}" --timeout 2h`,
 		`notarytool info "$id"`, `notarytool log "$id"`,
+		"--entitlements app/build/darwin/entitlements.plist",
+		`codesign --force --sign - --entitlements`,
+		`verify-macos-entitlements.sh "$app"`,
+		`verify-macos-entitlements.sh "$mount_dir/CARE Clinic.app"`,
 	)
-	if strings.Contains(string(data), "--entitlements") || strings.Contains(string(data), "--wait --timeout") {
-		t.Fatal("native macOS signing arguments must not change during pipeline redesign")
+	requireText(t, workflow(t, "desktop.yml"),
+		`codesign --force --sign - --entitlements app/build/darwin/entitlements.plist`,
+		`bash .github/scripts/verify-macos-entitlements.sh "${apps[0]}"`,
+		"swiftc .github/scripts/virtualization-smoke.swift")
+	verifier, err := os.ReadFile("../../../.github/scripts/verify-macos-entitlements.sh")
+	if err != nil {
+		t.Fatal(err)
 	}
+	requireText(t, string(verifier), "lipo -archs", `--arch "$arch" --entitlements`,
+		`com.apple.security.virtualization`, `codesign --verify --deep --strict`)
+	if strings.Contains(string(data), "--wait --timeout") {
+		t.Fatal("notarization submission must not block without bounded polling")
+	}
+	wails, err := os.ReadFile("../../wails.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, string(wails), `"darwin/*": "bash ../darwin/sign.sh ${bin}"`)
+	hook, err := os.ReadFile("../../build/darwin/sign.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, string(hook), `--force --sign - --entitlements "$directory/entitlements.plist"`)
+}
+
+func TestDesktopOnlyPublicationRemainsExplicitAndFeedGuarded(t *testing.T) {
+	requireText(t, workflow(t, "publish.yml"),
+		"desktop_only:", `github.event_name == 'workflow_dispatch' && inputs.desktop_only`,
+		`options+=(--desktop-only)`, "pipeline.py desktop-only",
+		"pipeline.py publication-baseline",
+		"if: ${{ inputs.normalize_digest_refs || inputs.desktop_only }}")
 }
 
 func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {
@@ -414,7 +446,7 @@ func TestPublicationRecoveryReusesFinalOutputsOnly(t *testing.T) {
 	requireText(t, publish, "python3 .github/scripts/pipeline.py normalize-metadata",
 		"git archive \"$(cat recovery-source-sha.txt)\" app",
 		"COMPAT_FEED_PATH=\"$PWD/manifest.json\"",
-		"feed_sha256: ${{ steps.normalize.outputs.feed_sha256 }}",
+		"feed_sha256: ${{ steps.normalize.outputs.feed_sha256 || steps.baseline.outputs.feed_sha256 }}",
 		"sha256sum --check --strict",
 		"normalize_digest_refs requires recover_run_id")
 	normalDownloads := 0
