@@ -234,12 +234,25 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 		`codesign --force --sign - --entitlements app/build/darwin/entitlements.plist`,
 		`bash .github/scripts/verify-macos-entitlements.sh "${apps[0]}"`,
 		"swiftc .github/scripts/virtualization-smoke.swift")
+	if strings.Index(workflow(t, "desktop.yml"), `verify-macos-entitlements.sh "${apps[0]}"`) >
+		strings.Index(workflow(t, "desktop.yml"), "swiftc .github/scripts/virtualization-smoke.swift") {
+		t.Fatal("mandatory app entitlement verification must precede the hardware-dependent smoke test")
+	}
 	verifier, err := os.ReadFile("../../../.github/scripts/verify-macos-entitlements.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	requireText(t, string(verifier), "lipo -archs", `--arch "$arch" --entitlements`,
 		`com.apple.security.virtualization`, `codesign --verify --deep --strict`)
+	smoke, err := os.ReadFile("../../../.github/scripts/virtualization-smoke.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireText(t, string(smoke), "if !VZVirtualMachine.isSupported", "::notice::SKIP",
+		"try configuration.validate()", "exit(1)")
+	if strings.Index(string(smoke), "if !VZVirtualMachine.isSupported") > strings.Index(string(smoke), "try configuration.validate()") {
+		t.Fatal("unsupported hardware must be detected before VM configuration validation")
+	}
 	if strings.Contains(string(data), "--wait --timeout") {
 		t.Fatal("notarization submission must not block without bounded polling")
 	}

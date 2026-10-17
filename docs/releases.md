@@ -179,6 +179,9 @@ Wails' signing command, and final certificate signing also omitted it. Version
 0.0.2 fixes local Wails builds/rebuilds and both final signing paths. CI verifies
 each executable slice before upload and again from the final mounted DMG, and
 runs a signed Virtualization framework configuration-validation smoke test.
+The smoke test explicitly skips on hosts without virtualization hardware
+(including GitHub-hosted macOS VMs); entitlement checks still run on every
+host. On supported hardware, configuration validation errors fail the build.
 The old installer assets are not replaced.
 
 An explicit `workflow_dispatch` with `desktop_only=true` can publish the new
