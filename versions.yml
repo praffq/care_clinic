@@ -12,8 +12,8 @@ engine:
 care:
   version: "3.1.0"
   requires: { desktop: ">=0.2.0", engine: ">=0.1.0" }
-  backend: { repo: "ohcnetwork/care", ref: "develop" }
-  frontend: { repo: "ohcnetwork/care_fe", ref: "develop" }
+  backend: { repo: "ohcnetwork/care", ref: "ENG-737" }
+  frontend: { repo: "ohcnetwork/care_fe", ref: "bodhi/questionnaire-actions" }
 
 images:
   postgres: "postgres:17.10-alpine"
