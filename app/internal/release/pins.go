@@ -131,6 +131,9 @@ func Load(env []byte) (*Pins, error) {
 		*f.dst = v
 	}
 	if len(missing) > 0 {
+		if p.CareVMAarch64SHA256 == "" || p.CareVMX8664SHA256 == "" {
+			return nil, fmt.Errorf("engine bootstrap hashes are unresolved: download matching release-plan/output-engine CI artifacts, then run python3 .github/scripts/pipeline.py bootstrap with GITHUB_REPOSITORY set before build staging")
+		}
 		return nil, fmt.Errorf("%s is missing required values: %s", EnvFile, strings.Join(missing, ", "))
 	}
 	if !versionPattern.MatchString(p.AppVersion) {

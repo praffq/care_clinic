@@ -70,28 +70,55 @@ CARE images are prepared under local `-next` tags. A backend update takes an
 encrypted safety backup before applying images or migrating the database.
 Current image records support offline startup.
 
-## Recovering the initial fork release
+## Clean bootstrap after the fork release reset
 
-Desktop `v0.0.1` embedded all-zero engine bundle hashes and required signed
-metadata. Its missing feed cannot be fixed by publishing unsigned metadata:
-those installed clients will reject it, and their bootstrap pins cannot change
-server-side. Install the replacement `v0.0.2` desktop after this change is merged
-and released. Do not overwrite the immutable `v0.0.1` assets/tag.
+The user explicitly reset the fork's `v0.0.1` desktop and
+`care-engine-v0.1.3` releases/tags. The next publication recreates those versions;
+it does not overwrite existing assets. Source configuration deliberately omits
+engine bundle hashes rather than retaining checksums for deleted assets.
 
-The replacement embeds actual `care-engine-v0.1.3` bundle hashes from the fork's
-published asset digests and `SHA256SUMS`. Native Linux agents use the same
-release's native-asset hashes/sizes from validated metadata. On first successful
-feed publication, the planner reuses an existing engine only if its recorded
-source hash matches the current engine inputs, all required asset digests/sizes
-are present, and VM bundle digests match bootstrap pins. A mismatch fails and
-requires a new engine version; it never replaces assets or invents provenance.
+With no previous feed or releases, PR CI builds both engine architectures and
+measures the actual bundles/native agents without publishing. Desktop builds
+wait for those outputs. `pipeline.py bootstrap` validates both bundle versions,
+URLs, nonzero hashes and sizes, then resolves the build workspace's
+`versions.toml` before frontend and native build staging. Each installer embeds
+those measured pins; the attached `versions.toml` comes from the same resolved
+configuration. On merge, the existing workflow builds, publishes engine assets,
+packages/publishes desktop assets, then deploys the matching Pages feed.
+
+If the engine is unchanged, builds can use its previously authenticated
+manifest assets. Recovery after a partially completed publication can reuse an
+existing engine only when its recorded source hash and required immutable
+asset digests/sizes match. A missing/malformed output never falls back to
+source pins. A different existing source requires a version bump; assets/tags
+are never overwritten. Planning hashes the checked-in source before any
+bootstrap resolution, so staging does not change the next run's source identity.
+
+Local `npm run build` / Wails staging also refuses unresolved engine hashes.
+Before building locally, download `release-plan` and the matching `output-engine`
+(or `output-engine-reused`) artifacts from a successful CI run of the same
+checkout into the repository root (`plan.json`, `outputs/engine.json`), then run:
+
+```sh
+GITHUB_REPOSITORY=praffq/care_clinic python3 .github/scripts/pipeline.py bootstrap
+```
+
+This resolves local build configuration, not a human-edited checksum. Do not
+commit the generated hashes or downloaded artifacts. Clean source still
+supports `go build ./...` with placeholders and the focused fixture tests;
+a usable desktop needs real measured engine outputs. Native Linux agents
+consume that same release's hashes/sizes from validated update metadata.
 
 After merging, allow the existing Publish workflow on `main` (or dispatch it
 there) to produce the new installers and atomically deploy the matching feed.
-GitHub Pages must use GitHub Actions as its source. Without signing secrets,
+GitHub Pages must use GitHub Actions as its source. With signing disabled,
 this is an explicitly unsigned development release, not a production-authenticated
 distribution. Download the new installer from the fork release and replace the
-old desktop before retrying engine installation. Neither merging nor local
+old desktop before retrying engine installation. Old installed copies of the
+deleted release still contain blocked pins and strict signed-feed policy;
+unsigned server-side metadata cannot repair them. Because the replacement
+keeps version 0.0.1, download/reinstall it manually rather than relying on a
+same-version automatic update. Neither merging nor local
 tests prove successful native installation/activation; check macOS and Windows
 on isolated machines before deploying to a real clinic.
 

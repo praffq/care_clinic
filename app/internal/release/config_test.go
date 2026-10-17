@@ -12,7 +12,7 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Schema != ConfigSchema || c.Desktop.Version != "0.0.2" || c.Engine.Version != "0.1.3" || c.Care.Version != "3.1.0" {
+	if c.Schema != ConfigSchema || c.Desktop.Version != "0.0.1" || c.Engine.Version != "0.1.3" || c.Care.Version != "3.1.0" {
 		t.Fatalf("unexpected config: schema %d, desktop %s, engine %s, CARE %s", c.Schema, c.Desktop.Version, c.Engine.Version, c.Care.Version)
 	}
 	if c.Engine.RequiresDesktop != ">=0.0.1" || c.Care.RequiresDesktop != ">=0.0.1" {
@@ -24,6 +24,23 @@ func TestRepositoryConfigIsValid(t *testing.T) {
 	constraint, err := semver.NewConstraint(c.Desktop.RequiresEngine)
 	if err != nil || constraint.Check(semver.MustParse("0.1.2")) {
 		t.Fatal("desktop must exclude engines predating the jobs protocol")
+	}
+}
+
+func TestUnresolvedEngineSourceCannotBeEmbedded(t *testing.T) {
+	config := repoFile(t, ConfigFile)
+	c, err := ReadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"care_engine_aarch64", "care_engine_x86_64"} {
+		if c.Tools[tool].SHA256 != "" {
+			t.Fatal("reset source must not contain stale or invented engine hashes")
+		}
+	}
+	if _, err := LoadSource(config, repoFile(t, "deployments/.env")); err == nil ||
+		!strings.Contains(err.Error(), "engine bootstrap hashes are unresolved") {
+		t.Fatalf("unresolved bootstrap source was accepted: %v", err)
 	}
 }
 

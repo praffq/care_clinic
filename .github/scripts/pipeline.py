@@ -117,7 +117,7 @@ def signing():
             raise ValueError(f"{name} is partially configured; set all signing settings or none")
         results[platform] = str(configured == len(settings)).lower()
         if not configured:
-            print(f"::warning::{name} signing is absent; publishing unsigned installers.")
+            print(f"{name} signing is not configured; using unsigned development installers.")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         for platform, enabled in results.items():
             output.write(f"{platform}={enabled}\n")
@@ -139,7 +139,7 @@ def publication():
         run("ci/releasectl", "sign", "--manifest", str(target), "--out", str(target) + ".sig")
         run("ci/releasectl", "verify", "--manifest", str(target), "--signature", str(target) + ".sig")
     else:
-        print("::warning::Publishing unsigned development metadata; no publisher authentication.")
+        print("Publishing unsigned development metadata (build-time development trust mode).")
         run("ci/releasectl", "verify", "--manifest", str(target), "--unsigned-development")
 
 
@@ -179,13 +179,51 @@ def reuse_engine():
         if (not re.fullmatch(r"sha256:(?!0{64}$)[0-9a-f]{64}", digest)
                 or asset["size"] <= 0 or asset["browser_download_url"] != expected_url):
             raise ValueError(f"existing engine asset lacks immutable digest/size/URL: {name}")
-        if platform in ("linux-arm64", "linux-amd64"):
-            tool = "care_engine_aarch64" if platform == "linux-arm64" else "care_engine_x86_64"
-            pin = plan["config"]["tools"][tool]
-            if pin["url"] != expected_url or pin["sha256"] != digest[7:]:
-                raise ValueError(f"engine bootstrap pin differs from published asset: {name}")
         assets[platform] = {"url": expected_url, "sha256": digest[7:], "size": asset["size"]}
-    write("outputs/engine.json", {"engine": {"assets": assets}})
+    write("outputs/engine.json", {"engine": {"version": version, "assets": assets}})
+
+
+def bootstrap():
+    """Resolve both bundle pins before any frontend/Wails build staging.
+
+    A current-run measurement takes precedence; only an unchanged engine may
+    use the previously authenticated manifest. Source pins are never a fallback.
+    """
+    source = Path("versions.toml").read_text()
+    config = tomllib.loads(source)
+    plan = read("plan.json")
+    if Path("outputs/engine.json").exists():
+        engine = read("outputs/engine.json")["engine"]
+    elif not plan["engine"] and Path("previous.json").exists():
+        engine = read("previous.json")["engine"]
+    else:
+        raise ValueError("engine bootstrap needs measured engine output; source pins are not a fallback")
+    version = config["engine"]["version"]
+    if engine["version"] != version:
+        raise ValueError("engine output version does not match bootstrap configuration")
+    repository = os.environ["GITHUB_REPOSITORY"]
+    replacements = {}
+    for platform, tool in [("linux-arm64", "care_engine_aarch64"), ("linux-amd64", "care_engine_x86_64")]:
+        asset = engine["assets"][platform]
+        arch = platform.removeprefix("linux-")
+        expected_url = (f"https://github.com/{repository}/releases/download/care-engine-v{version}/"
+                        f"care-engine-{version}-linux-{arch}.tar.gz")
+        if (asset["url"] != expected_url
+                or config["tools"][tool]["url"] != expected_url
+                or config["tools"][tool]["version"] != version
+                or not re.fullmatch(r"(?!0{64}$)[0-9a-f]{64}", asset["sha256"])
+                or not isinstance(asset["size"], int) or asset["size"] <= 0):
+            raise ValueError(f"invalid measured engine bootstrap asset: {platform}")
+        replacements[tool] = asset["sha256"]
+    for tool, checksum in replacements.items():
+        pattern = rf"(?ms)(^\[tools\.{tool}\]\n)(.*?)(?=^\[|\Z)"
+        def replace(match):
+            body = re.sub(r"(?m)^sha256\s*=.*\n?", "", match[2])
+            return match[1] + f'sha256 = "{checksum}"\n' + body
+        source, count = re.subn(pattern, replace, source)
+        if count != 1:
+            raise ValueError(f"expected exactly one bootstrap configuration section: {tool}")
+    Path("versions.toml").write_text(source)
 
 
 def release_assets(component, publish):
@@ -218,7 +256,7 @@ def release_assets(component, publish):
         }
     checksums = "".join(f"{digest(p)}  {p.name}\n" for p in files)
     Path("release-assets/SHA256SUMS").write_text(checksums)
-    write(f"outputs/{component}.json", {component: {"assets": assets}})
+    write(f"outputs/{component}.json", {component: {"version": version, "assets": assets}})
     if not publish:
         return
     # Never upload to an existing release or overwrite an asset. A matching
@@ -275,7 +313,7 @@ def required():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["previous", "plan-outputs", "assets", "merge", "required",
-                                          "signing", "publication", "reuse-engine", "trust"])
+                                          "signing", "publication", "reuse-engine", "trust", "bootstrap"])
     parser.add_argument("--component", choices=["desktop", "engine"])
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
@@ -285,7 +323,7 @@ def main():
         {"previous": previous, "plan-outputs": plan_outputs,
          "merge": merge, "required": required, "signing": signing,
          "publication": publication, "reuse-engine": reuse_engine,
-         "trust": configure_update_trust}[args.command]()
+         "trust": configure_update_trust, "bootstrap": bootstrap}[args.command]()
 
 
 if __name__ == "__main__":

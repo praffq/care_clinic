@@ -1,8 +1,11 @@
 import contextlib
+import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -121,7 +124,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_reused_engine_skips_rebuild_but_still_publishes_complete_feed(self):
         plan = {"changed": {name: True for name in ["desktop", "engine", "backend", "frontend", "support"]},
-                "config": {"desktop": {"version": "0.0.2"}, "engine": {"version": "0.1.3"}}}
+                "config": {"desktop": {"version": "0.0.1"}, "engine": {"version": "0.1.3"}}}
         with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
             pipeline.write("outputs/engine.json", {"engine": {"assets": {}}})
             with patch.object(pipeline, "release_plan", return_value=plan):
@@ -131,6 +134,81 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("engine=false\n", output)
             self.assertIn("desktop=true\n", output)
             self.assertIn("changed=true\n", output)
+
+    def test_clean_bootstrap_embeds_current_measurements_for_both_architectures(self):
+        root = Path.cwd()
+        source = Path("versions.toml").read_text()
+        config = tomllib.loads(source)
+        version = config["engine"]["version"]
+        plan = {"config": config}
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            Path("versions.toml").write_text(source)
+            pipeline.write("plan.json", {"engine": True})
+            Path("release-assets").mkdir()
+            for name in [f"care-engine-{version}-linux-arm64.tar.gz",
+                         f"care-engine-{version}-linux-amd64.tar.gz",
+                         "care-engine-agent-linux-arm64", "care-engine-agent-linux-amd64"]:
+                Path("release-assets", name).write_text("new synthetic engine bytes: " + name)
+            with patch.dict(os.environ, {"GITHUB_REPOSITORY": "praffq/care_clinic"}):
+                with patch.object(pipeline, "release_plan", return_value=plan):
+                    with patch.object(pipeline, "run") as run:
+                        pipeline.release_assets("engine", False)
+                        run.assert_not_called()  # PR validation measures without publishing.
+                measured = pipeline.read("outputs/engine.json")["engine"]
+                pipeline.bootstrap()
+                resolved = tomllib.loads(Path("versions.toml").read_text())
+                for arch, tool in [("arm64", "care_engine_aarch64"), ("amd64", "care_engine_x86_64")]:
+                    actual = pipeline.digest(Path("release-assets", f"care-engine-{version}-linux-{arch}.tar.gz"))
+                    self.assertEqual(resolved["tools"][tool]["sha256"], actual)
+                    self.assertEqual(measured["assets"][f"linux-{arch}"]["sha256"], actual)
+                staged = json.loads(subprocess.check_output([
+                    "go", "-C", str(root / "app"), "run", "./cmd/stageconfig",
+                    "-config", str(Path("versions.toml").resolve()),
+                    "-env", str(root / "deployments/.env"),
+                ], text=True))
+                self.assertEqual(staged["desktop_version"], "0.0.1")
+                for arch, env in [("arm64", "CARE_VM_AARCH64_SHA256"), ("amd64", "CARE_VM_X86_64_SHA256")]:
+                    self.assertIn(f'{env}={measured["assets"][f"linux-{arch}"]["sha256"]}\n', staged["env"])
+                resolved_once = Path("versions.toml").read_text()
+                pipeline.bootstrap()
+                self.assertEqual(Path("versions.toml").read_text(), resolved_once)
+
+    def test_bootstrap_never_falls_back_to_missing_stale_or_invalid_measurements(self):
+        source = Path("versions.toml").read_text()
+        base = "https://github.com/praffq/care_clinic/releases/download/care-engine-v0.1.3/"
+        engine = {"version": "0.1.3", "assets": {
+            f"linux-{arch}": {"url": base + f"care-engine-0.1.3-linux-{arch}.tar.gz",
+                             "sha256": checksum * 64, "size": 42}
+            for arch, checksum in [("arm64", "a"), ("amd64", "b")]
+        }}
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            Path("versions.toml").write_text(source)
+            pipeline.write("plan.json", {"engine": True})
+            with patch.dict(os.environ, {"GITHUB_REPOSITORY": "praffq/care_clinic"}):
+                with self.assertRaisesRegex(ValueError, "needs measured engine output"):
+                    pipeline.bootstrap()
+                pipeline.write("previous.json", {"engine": engine})
+                with self.assertRaises(ValueError):
+                    pipeline.bootstrap()  # A changed engine cannot reuse previous metadata.
+                for mutate in [
+                    lambda m: m.update(version="0.1.2"),
+                    lambda m: m["assets"].pop("linux-amd64"),
+                    lambda m: m["assets"]["linux-arm64"].update(sha256="0" * 64),
+                    lambda m: m["assets"]["linux-amd64"].update(size=0),
+                    lambda m: m["assets"]["linux-amd64"].update(url=base + "wrong"),
+                ]:
+                    invalid = copy.deepcopy(engine)
+                    mutate(invalid)
+                    pipeline.write("outputs/engine.json", {"engine": invalid})
+                    with self.assertRaises((ValueError, KeyError)):
+                        pipeline.bootstrap()
+                    self.assertEqual(Path("versions.toml").read_text(), source)
+                Path("outputs/engine.json").unlink()
+                pipeline.write("plan.json", {"engine": False})
+                pipeline.bootstrap()  # Unchanged engine uses authenticated previous metadata.
+                resolved = tomllib.loads(Path("versions.toml").read_text())
+                self.assertEqual(resolved["tools"]["care_engine_aarch64"]["sha256"], "a" * 64)
+                self.assertEqual(resolved["tools"]["care_engine_x86_64"]["sha256"], "b" * 64)
 
     def test_required_checks_reject_failure_cancellation_and_skips(self):
         for name in ["plan", "care", "engine", "desktop"]:

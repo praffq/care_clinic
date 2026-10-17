@@ -55,6 +55,13 @@ builds resolve the Wails CLI version from that module instead of installing
 
 ## Prepare a fresh checkout
 
+The reset release's engine hashes are resolved from measured CI outputs, not
+pre-baked in source. Before npm/Wails build staging, follow the
+[bootstrap artifact instructions](releases.md#clean-bootstrap-after-the-fork-release-reset).
+Without those outputs, staging fails explicitly rather than embedding
+checksums for deleted release assets. Plain Go compilation and fixture tests
+do not require a published engine.
+
 From the repository root:
 
 ```sh
@@ -278,9 +285,10 @@ engine bundles. CI ships both VM bundles and `care-engine-agent-linux-{arch}`
 binaries in that immutable release, recording actual hashes and sizes in the
 engine assets consumed by the update feed.
 Native installation and updates require those verified assets; there
-are no static agent hashes. The VM bootstrap checksums in `versions.toml`
-match the published fork `care-engine-v0.1.3` asset digests and `SHA256SUMS`.
-All-zero checksums are never trusted download hashes.
+are no static agent hashes. CI builds/measures both engine bundles first,
+then resolves the generated build's VM bootstrap checksums before embedding.
+Source `versions.toml` omits unresolved engine hashes; build staging rejects
+missing values and all-zero checksums are never trusted download hashes.
 Each `*_SHA256` is 64 lowercase hex characters. The CARE engine and native
 agent assets are documented in the [CARE engine guide](vm.md); native Linux
 Docker provisioning is covered in
@@ -299,7 +307,7 @@ Both paths validate metadata, provenance, revisions and download digests;
 only signed mode authenticates the publisher. The private key stays in the
 protected `release-signing` environment; selecting signed mode with no key fails.
 See the [release runbook](releases.md)
-for credentials, trust anchors and recovery of old v0.0.1 installations. Clinics keep
+for credentials, trust anchors and the v0.0.1 release reset. Clinics keep
 current and staged digest-pinned CARE 3.1 images in `care-images.json`;
 background checks enforce the build's trust policy before downloading updates. Optional
 `CADDY_WAF_PREBUILT` and `BACKUP_PREBUILT` must be digest-pinned when set; blank
@@ -320,9 +328,10 @@ into `main`, or the commit selected for a manual run):
 
 The shared [Publish workflow](../.github/workflows/publish.yml) plans once,
 builds changed components, publishes immutable release assets, and deploys
-matching update metadata atomically. Desktop 0.0.2 replaces the initial fork's
-blocked bootstrap; existing 0.0.1 clients need the new installer, not just a
-server-side unsigned feed. See the [release runbook](releases.md) and
+matching update metadata atomically. Following the user-approved deletion of
+the initial releases/tags, desktop 0.0.1 and engine 0.1.3 are rebuilt from clean
+outputs. Existing installed copies need a manual reinstall of the new 0.0.1,
+not just a server-side unsigned feed. See the [release runbook](releases.md) and
 [engine build guide](vm.md).
 
 ### Testing the updater

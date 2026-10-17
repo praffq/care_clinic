@@ -210,7 +210,9 @@ func (c *Config) validate() error {
 	for _, k := range keys(c.Tools) {
 		t, spec := c.Tools[k], toolSpecs[k]
 		field := "tools." + k
-		if !sha256Pattern.MatchString(t.SHA256) {
+		// Engine hashes can be unresolved in source configuration. Build
+		// staging must resolve them from measured output before Load accepts it.
+		if (spec.group != "engine" || t.SHA256 != "") && (!sha256Pattern.MatchString(t.SHA256) || t.SHA256 == strings.Repeat("0", 64)) {
 			return fmt.Errorf("%s.sha256 must be 64 lowercase hex characters", field)
 		}
 		if err := httpsURL(field+".url", t.URL); err != nil {

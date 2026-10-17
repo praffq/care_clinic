@@ -118,7 +118,8 @@ jobs:
       version: ${{ needs.plan.outputs.engine_version }}
   desktop:
     name: Desktop checks
-    needs: plan
+    needs: [plan, engine]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.engine.result == 'success' }}
     uses: ./.github/workflows/desktop.yml
     permissions:
       contents: write

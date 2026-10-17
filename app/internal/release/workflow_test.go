@@ -171,7 +171,16 @@ func TestUnsignedReleaseCannotBypassFailedSigning(t *testing.T) {
 	requireText(t, release, "if: ${{ !cancelled() && needs.package.result == 'success' }}")
 	requireText(t, data, "release.updateTrust=$UPDATE_TRUST", "signed|unsigned-development")
 	requireText(t, workflow(t, "publish.yml"), "update_trust: ${{ needs.plan.outputs.update_trust }}",
-		"pipeline.py reuse-engine", "name: output-engine-reused")
+		"pipeline.py reuse-engine", "name: output-engine-reused", "needs: [plan, engine]",
+		"if: ${{ !cancelled() && needs.plan.result == 'success' && needs.engine.result == 'success' }}")
+	requireText(t, workflow(t, "engine.yml"), "if: inputs.build", "PUBLISH: ${{ inputs.publish }}",
+		`if [ "$PUBLISH" = true ]; then publish+=(--publish); fi`, "name: output-engine")
+	if strings.Count(data, "run: python3 .github/scripts/pipeline.py bootstrap") != 2 {
+		t.Fatal("frontend and native builds must both resolve measured bootstrap hashes")
+	}
+	requireText(t, data, "name: desktop-bootstrap-config", "pattern: output-engine*")
+	packageJob := strings.Split(strings.Split(data, "\n  package:\n")[1], "\n  release:\n")[0]
+	requireText(t, packageJob, "name: desktop-bootstrap-config", "cp versions.toml release-assets/versions.toml")
 }
 
 func TestWindowsInstallerRejectsDamagedDownloads(t *testing.T) {
