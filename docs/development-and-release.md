@@ -55,6 +55,13 @@ builds resolve the Wails CLI version from that module instead of installing
 
 ## Prepare a fresh checkout
 
+The reset release's engine hashes are resolved from measured CI outputs, not
+pre-baked in source. Before npm/Wails build staging, follow the
+[bootstrap artifact instructions](releases.md#clean-bootstrap-after-the-fork-release-reset).
+Without those outputs, staging fails explicitly rather than embedding
+checksums for deleted release assets. Plain Go compilation and fixture tests
+do not require a published engine.
+
 From the repository root:
 
 ```sh
@@ -177,7 +184,7 @@ stage-install.mjs
 
 ```mermaid
 flowchart TD
-    Kit["deployments/ source kit"] --> Stage["stage-install.mjs"]
+    Deployment["deployments/ source deployment"] --> Stage["stage-install.mjs"]
     Stage --> Install["app/install/ including .env"]
     Types["Go App methods and wails.d.ts"] --> Check["check-bindings.mjs"]
     TS["Desktop TypeScript and React"] --> TSC["TypeScript"]
@@ -188,7 +195,7 @@ flowchart TD
     Install --> Go["Go embed and Wails build"]
     Dist --> Go
     Go --> App["Desktop executable"]
-    App --> Refresh["Runtime installed-kit refresh"]
+    App --> Refresh["Runtime installed-deployment refresh"]
 ```
 
 ### `stage-install.mjs`
@@ -198,22 +205,22 @@ The script derives `app/wails.json`'s numeric installer version from
 Run it before invoking Wails for production builds, as Wails reads its metadata
 before its pre-build hook. CI does this explicitly.
 
-It then enumerates `deployments/`, including `.env`, rather than keeping a second manual file list. It skips `.DS_Store`, `Thumbs.db`, and `.gitkeep`, clears previous staging entries while retaining the tracked placeholder, and copies the kit recursively.
+It then enumerates `deployments/`, including `.env`, rather than keeping a second manual file list. It skips `.DS_Store`, `Thumbs.db`, and `.gitkeep`, clears previous staging entries while retaining the tracked placeholder, and copies the deployment recursively.
 
 Wails runs pre-build hooks from `app/build/bin/`, so its hook invokes
 `node ../../frontend/scripts/stage-install.mjs`. The script resolves source and
 destination paths relative to itself, not the working directory. The standalone
-`npm run build` command also stages the kit.
+`npm run build` command also stages the deployment.
 
 This is **build staging**, not runtime installation. Clearing `app/install/` does not remove the user's installed directory.
 
-Always edit `deployments/` for a kit change. Editing `app/install/` would be overwritten by the next build and would not be the versioned source of truth.
+Always edit `deployments/` for a deployment change. Editing `app/install/` would be overwritten by the next build and would not be the versioned source of truth.
 
 ### Placeholders and `go build`
 
-`app/install/.gitkeep` and `app/frontend/dist/.gitkeep` keep the Go embed patterns valid in a clean checkout. Their presence allows compilation; it does not create a usable deployment kit or desktop UI.
+`app/install/.gitkeep` and `app/frontend/dist/.gitkeep` keep the Go embed patterns valid in a clean checkout. Their presence allows compilation; it does not create a usable deployment or desktop UI.
 
-`NewApp` explicitly rejects a build whose embedded kit lacks `.env`. A plain Go compilation of placeholders is therefore a useful compile check, not a substitute for the complete Wails/frontend build.
+`NewApp` explicitly rejects a build whose embedded deployment lacks `.env`. A plain Go compilation of placeholders is therefore a useful compile check, not a substitute for the complete Wails/frontend build.
 
 ### Desktop assets
 
@@ -237,7 +244,7 @@ cd app/frontend
 node scripts/check-bindings.mjs
 ```
 
-These checks do not stage the kit or build a release.
+These checks do not stage the deployment or build a release.
 
 For changed native consent or setup contracts, the existing focused suite can
 run without real elevation:
@@ -269,19 +276,19 @@ environment using dotenv.
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
 | CARE software | `CARE_VERSION` and `CARE_UPDATES_URL`, staged from `versions.toml`; only CARE 3.1 ships. |
-| Prerequisite downloads | `CARE_VM_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, and native Linux `DOCKER_LINUX_*` pins. Native agents use signed engine-manifest assets. |
+| Prerequisite downloads | `CARE_VM_*`, `QEMU_WINDOWS_*`, `SEVENZIP_*`, and native Linux `DOCKER_LINUX_*` pins. Native agents use validated engine-manifest assets. |
 
 Desktop, engine and CARE versions are strict `X.Y.Z` pins (desktop development
 builds may use `X.Y.Z-dev`). Agent assets share the engine version and release.
 Engine `0.1.3` introduces the jobs protocol; desktop requirements exclude older
 engine bundles. CI ships both VM bundles and `care-engine-agent-linux-{arch}`
 binaries in that immutable release, recording actual hashes and sizes in the
-engine assets consumed by the unchanged manifest-signing flow.
-Native installation and updates require those verified signed assets; there
-are no static agent hashes. All-zero VM bootstrap checksums in `versions.toml`
-are explicit publication blockers, never trusted download hashes. Replace them
-only with the actual immutable bundle hashes after CI publication. Until then,
-VM bootstrap/download/activation remains blocked rather than using old assets.
+engine assets consumed by the update feed.
+Native installation and updates require those verified assets; there
+are no static agent hashes. CI builds/measures both engine bundles first,
+then resolves the generated build's VM bootstrap checksums before embedding.
+Source `versions.toml` omits unresolved engine hashes; build staging rejects
+missing values and all-zero checksums are never trusted download hashes.
 Each `*_SHA256` is 64 lowercase hex characters. The CARE engine and native
 agent assets are documented in the [CARE engine guide](vm.md); native Linux
 Docker provisioning is covered in
@@ -292,9 +299,17 @@ Windows QEMU and its temporary extraction tools download directly from upstream;
 Both `SEVENZIP_*_URL` and `SEVENZIP_*_SHA256` pairs are required. No upstream
 installer is run and no third-party binary is hosted by the CARE release.
 
-`CARE_UPDATES_URL` points to signed update metadata. Clinics keep
+`CARE_UPDATES_URL` is the signed-feed base URL. CI builds use signed metadata
+when repository variable `UPDATES_SIGNING_ENABLED=true`, otherwise explicitly embed
+`unsigned-development` trust and request the separate
+`updates-unsigned-development.json` feed. This is not a runtime fallback.
+Both paths validate metadata, provenance, revisions and download digests;
+only signed mode authenticates the publisher. The private key stays in the
+protected `release-signing` environment; selecting signed mode with no key fails.
+See the [release runbook](releases.md)
+for credentials, trust anchors and the v0.0.1 release reset. Clinics keep
 current and staged digest-pinned CARE 3.1 images in `care-images.json`;
-background checks verify signatures before downloading updates. Optional
+background checks enforce the build's trust policy before downloading updates. Optional
 `CADDY_WAF_PREBUILT` and `BACKUP_PREBUILT` must be digest-pinned when set; blank
 values retain local builds. See [CARE images](images.md).
 
@@ -311,14 +326,13 @@ into `main`, or the commit selected for a manual run):
 | Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
 | CARE software | CARE 3.1 runtime/builder digests in signed `updates.json`. |
 
-The tracked release workflow is currently blocked before packaging: it still
-requires removed image-revision values and obsolete desktop dependency pins,
-and its prerequisite check does not verify the CARE engine or host-client/QEMU pins.
-The corresponding release-contract tests fail against that workflow. A
-workflow-only patch is prepared for the GitHub configuration owner; `.github/`
-is intentionally unchanged in this checkout. See the [release runbook](releases.md)
-for the exact blockers and the [engine build guide](vm.md) for the current
-publication boundary.
+The shared [Publish workflow](../.github/workflows/publish.yml) plans once,
+builds changed components, publishes immutable release assets, and deploys
+matching update metadata atomically. Following the user-approved deletion of
+the initial releases/tags, desktop 0.0.1 and engine 0.1.3 are rebuilt from clean
+outputs. Existing installed copies need a manual reinstall of the new 0.0.1,
+not just a server-side unsigned feed. See the [release runbook](releases.md) and
+[engine build guide](vm.md).
 
 ### Testing the updater
 
@@ -347,16 +361,16 @@ The current storage image pin points to Silo while the key remains `MINIO_IMAGE`
 
 ## CI
 
-[`ci.yml`](../.github/workflows/ci.yml) runs on pull requests, pushes to `main`,
-merge-queue groups, manual dispatch, and reusable calls from the release workflow.
-A newer run cancels the previous run
-for the same PR/ref. There are no path filters that could leave a required check
-missing, and a PR branch push does not trigger a duplicate push workflow.
+[`publish.yml`](../.github/workflows/publish.yml) dispatches the reusable
+desktop, engine and CARE image workflows for pull requests, relevant pushes to
+`main`, merge-queue groups, schedules and manual dispatch. Runs are serialized
+without cancellation so immutable component publication and atomic Pages
+deployment can finish. A PR branch push does not trigger a duplicate push workflow.
 
 | Job/check | What it does |
 | --- | --- |
-| Lint | Formatting, the Wails/internal boundary, Actionlint v1.7.12 workflow validation, and golangci-lint v2.13.2 through its version-tagged action. |
-| Go tests | Clean-checkout `go build ./...` and the race-enabled suite for the `app/` Go module. It does not run the separate `vm/agent` module or the Python QEMU packaging tests. The release-contract tests detect the stale workflow pins and currently fail until the workflow patch is applied. |
+| Lint | Formatting, the Wails/internal boundary, Actionlint v1.7.12 workflow validation, and golangci-lint v2.13.2. |
+| Go tests | Clean-checkout `go build ./...`, Linux and Windows vet, and the race-enabled suite for `app/`. The engine workflow separately tests `vm/agent`, Python QEMU packaging and CI adapters. |
 | Frontend | Node 22, `npm ci`, binding checks, TypeScript, and the Vite production build. Uploads the built frontend for native builds. |
 | Native builds | After the first three jobs pass: actual Wails macOS universal and Windows/amd64 builds for CARE Clinic. Windows must produce an NSIS installer with NSIS 3.12 from [`install-nsis`](../.github/actions/install-nsis/action.yml), and its version metadata must match `wails.json` and `.env`; the bare application and the generated installer inputs are uploaded separately so a release can sign the application before rebuilding the installer. |
 | CI | Stable aggregate check; fails if any required job failed, was cancelled, or was skipped. Configure this check in branch protection. |
@@ -365,7 +379,7 @@ Go comes from `app/go.mod`, and module writes are disallowed. Native jobs reuse
 the frontend artifact rather than running npm for each platform. They use the
 Wails CLI version from `go.mod`, production build flags, and real platform
 dependencies. The Desktop pre-build hook still
-stages the deployment kit before embedding it.
+stages the deployment before embedding it.
 
 [`app/.golangci.yml`](../app/.golangci.yml) keeps `errcheck`, `govet`,
 `ineffassign`, `staticcheck`, `unused`, `bodyclose`, and `misspell`. Staticcheck
@@ -373,18 +387,17 @@ exempts public API documentation rules for these internal application packages
 and ST1005 for operator-facing sentence-style errors. Correctness checks are
 not disabled to make CI pass.
 
-CI has read-only repository permissions, no signing secrets, explicit timeouts,
-and seven-day **unsigned** build artifacts. Its macOS build currently does not
-apply or assert the virtualization entitlement required by the CARE engine.
-The versioned third-party Action references are not immutable commit pins. A
-workflow-only patch covering these gaps is awaiting the GitHub configuration
-owner; do not treat the patch as applied. macOS bundles are zipped with
+Checks have read-only repository permissions and explicit timeouts; release
+jobs receive only their required write permissions. Third-party actions use
+immutable commit pins. Native build artifacts are kept unsigned for seven days;
+signing and packaging run only for publication. macOS bundles are zipped with
 `ditto` to retain executable bits and symlinks. These are maintainer preview
 builds, not clinic-ready signed releases. The intermediate frontend artifact is
 kept for one day.
 
-The Go suite runs on Linux. CI does not cross-vet the Windows/macOS source, test
-the guest agent or QEMU packager, or assert that a macOS build can boot the VM.
+The portable Go suite runs on Linux, Windows code is cross-vetted, and desktop
+sources are vetted on their native hosts. CI does not assert that a macOS
+build can boot the VM.
 Native builds prove compilation and packaging on the other platforms, not
 successful administrator prompts, certificate installation, browser trust, or
 real clinic Wi-Fi behavior. Network mDNS tests remain opt-in.
@@ -456,9 +469,9 @@ For another change, select the package/test covering that behavior first. The fu
 
 ## Packaging and publication
 
-The release workflow runs when a push to `main` changes `CARE_CLINIC_VERSION`
-in `deployments/.env`, or when started by hand, and reuses the native artifacts
-built by CI in the same workflow run:
+The [Publish workflow](../.github/workflows/publish.yml) runs for relevant
+pushes to `main`, scheduled checks, or manual dispatch. It uses `versions.toml`
+and reuses the native artifacts built in the same workflow run:
 
 | Platform | Wails target | Artifact |
 | --- | --- | --- |
@@ -469,14 +482,17 @@ Linux has backend/native helper implementations but no published desktop install
 
 The workflow packages a DMG and the Windows NSIS installer, adds the exact
 configuration, build identity, and checksums, creates `vX.Y.Z` at the selected
-source commit, and creates a **draft prerelease**. Published assets are never
-replaced. Only the draft job has write permission.
+source commit, and publishes a stable release (including approved unsigned
+development releases). Published assets are never replaced. Only publication
+jobs have write permission.
 
 macOS preserves the existing optional Developer ID signing/notarization flow and
 secret names; without credentials it retains Wails' ad-hoc signature. Windows
 application, uninstaller and installer are signed through SignPath when its configuration is
-present, otherwise left unsigned. The release manifest records each platform's
-actual status; these remain preview releases.
+complete, otherwise left unsigned when all settings are absent. Partial
+configuration or failed signing fails the release. Update metadata uses the
+matching build-time trust mode independently of installer signing; see
+[Releases](releases.md). Unsigned development downloads remain untrusted by the OS.
 
 The Windows installer definition lives in `app/build/windows/` (`info.json`,
 `wails.exe.manifest`, `installer/project.nsi`). Wails regenerates `icon.ico`,
@@ -565,7 +581,7 @@ success; native upgrade acceptance remains required.
 | Image/build input | Release pin or builder input, freshness calculation, deployment contract and relevant tests. |
 | Restore sequence | Journal/state recovery, staging cleanup, worker callbacks, interruption cases, restore diagrams. |
 | Native resource identity | Creation, inspection, cleanup, residue classification, platform-specific tests. |
-| Kit file | `deployments/` source, readers/mounts, staging/runtime preservation assumptions, file map. |
+| Deployment file | `deployments/` source, readers/mounts, staging/runtime preservation assumptions, file map. |
 | Release version | `deployments/.env`; build metadata and tags are derived. Update release documentation if behavior changes. |
 
 Keep code and diagrams synchronized. A documentation-only change does not require rebuilding CARE Clinic.

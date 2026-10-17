@@ -12,6 +12,9 @@ on:
       version:
         type: string
         required: true
+      update_trust:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -108,6 +111,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: output-engine*
+          merge-multiple: true
+          path: outputs
+      - name: Resolve deployment bootstrap from measured engine assets
+        run: python3 .github/scripts/pipeline.py bootstrap
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -142,6 +156,25 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-plan
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: output-engine*
+          merge-multiple: true
+          path: outputs
+      - name: Resolve deployment bootstrap from measured engine assets
+        run: python3 .github/scripts/pipeline.py bootstrap
+      - name: Preserve resolved bootstrap configuration
+        if: matrix.target == 'desktop-macos'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-bootstrap-config
+          path: versions.toml
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
@@ -161,14 +194,19 @@ jobs:
       - name: Install matching Wails CLI
         working-directory: app
         run: go install github.com/wailsapp/wails/v2/cmd/wails@"$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)"
-      - name: Prepare installer metadata and deployment kit
+      - name: Prepare installer metadata and deployment
         run: node app/frontend/scripts/stage-install.mjs
       - name: Vet on the native desktop host
         working-directory: app
         run: go vet ./...
       - name: Build native application
         working-directory: app
-        run: wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }}
+        env:
+          UPDATE_TRUST: ${{ inputs.update_trust }}
+        run: |
+          case "$UPDATE_TRUST" in signed|unsigned-development) ;; *) exit 1 ;; esac
+          wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }} \
+            -ldflags "-X github.com/ohcnetwork/care_desktop/app/internal/release.updateTrust=$UPDATE_TRUST"
       - name: Verify and collect unsigned build
         env:
           TARGET: ${{ matrix.target }}
@@ -268,23 +306,25 @@ jobs:
     timeout-minutes: 5
     outputs:
       windows: ${{ steps.config.outputs.windows }}
+      macos: ${{ steps.config.outputs.macos }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - id: config
         env:
           TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
           ORGANIZATION: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
         run: |
-          count=0
-          for value in "$TOKEN" "$ORGANIZATION" "$PROJECT" "$POLICY"; do
-            if [ -n "$value" ]; then count=$((count + 1)); fi
-          done
-          case "$count" in
-            0) echo "windows=false" >> "$GITHUB_OUTPUT" ;;
-            4) echo "windows=true" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::SignPath is partially configured"; exit 1 ;;
-          esac
+          python3 .github/scripts/pipeline.py signing
   sign-windows-app:
     name: Sign Windows application and uninstaller
     needs: signing
@@ -419,6 +459,10 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          name: desktop-bootstrap-config
+          path: .
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
           name: desktop-macos-unsigned
           path: incoming/macos
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -428,7 +472,7 @@ jobs:
       - name: Sign macOS application, notarize and package
         env:
           VERSION: ${{ inputs.version }}
-          SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}
+          SIGN_MACOS: ${{ needs.signing.outputs.macos }}
           CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -453,6 +497,7 @@ jobs:
   release:
     name: Publish immutable desktop binaries
     needs: package
+    if: ${{ !cancelled() && needs.package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

@@ -18,11 +18,20 @@ func repoFile(t *testing.T, path string) []byte {
 // deploymentPins is the .env a build of this checkout embeds.
 func deploymentPins(t *testing.T) []byte {
 	t.Helper()
-	data, err := StageEnv(repoFile(t, ConfigFile), repoFile(t, "deployments/.env"))
+	data, err := StageEnv(fixtureEngineConfig(repoFile(t, ConfigFile)), repoFile(t, "deployments/.env"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func fixtureEngineConfig(data []byte) []byte {
+	text := string(data)
+	for _, name := range []string{"care_engine_aarch64", "care_engine_x86_64"} {
+		section := "[tools." + name + "]"
+		text = strings.Replace(text, section, section+"\nsha256 = \""+strings.Repeat("a", 64)+"\"", 1)
+	}
+	return []byte(text)
 }
 
 func TestDeploymentPinsOneCARERelease(t *testing.T) {
@@ -88,7 +97,7 @@ func TestLoadValidatesVersions(t *testing.T) {
 }
 
 func TestLoadSourceMatchesConfig(t *testing.T) {
-	config := repoFile(t, ConfigFile)
+	config := fixtureEngineConfig(repoFile(t, ConfigFile))
 	c, err := ReadConfig(config)
 	if err != nil {
 		t.Fatal(err)

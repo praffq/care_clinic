@@ -97,7 +97,7 @@ func (a *App) checkCareUpdate() {
 			return err
 		}
 		if verified.Revision != manifest.Revision {
-			return fmt.Errorf("signed update changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
+			return fmt.Errorf("update metadata changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
 		}
 		if err := a.updateCoordinator.SaveVerifiedManifest(manifest, raw); err != nil {
 			return err
@@ -105,7 +105,7 @@ func (a *App) checkCareUpdate() {
 		engine := a.EngineStatus()
 		if engine.Supported && engine.UpdateNeeded {
 			if err := a.provisioner().PrepareEngineUpdate(); err != nil {
-				return fmt.Errorf("prepare the signed app's CARE engine update: %w", err)
+				return fmt.Errorf("prepare the app's pinned CARE engine update: %w", err)
 			}
 		}
 		care, err := careversions.FromRelease(manifest, a.pins)
@@ -255,7 +255,7 @@ func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 			return err
 		}
 		if verified.Revision != manifest.Revision {
-			return fmt.Errorf("signed update changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
+			return fmt.Errorf("update metadata changed during check (revision %d to %d)", manifest.Revision, verified.Revision)
 		}
 		if err := a.updateCoordinator.SaveVerifiedManifest(manifest, raw); err != nil {
 			return err
@@ -263,11 +263,11 @@ func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 		out.Version = manifest.Desktop.Version
 		asset, ok := manifest.Desktop.Assets[desktopPlatformKey()]
 		if !ok || desktopPlatformKey() == "" {
-			return fmt.Errorf("signed release %s has no installer for this computer", out.Version)
+			return fmt.Errorf("published release %s has no installer for this computer", out.Version)
 		}
 		u, err := url.Parse(asset.URL)
 		if err != nil {
-			return fmt.Errorf("signed desktop installer URL is invalid: %w", err)
+			return fmt.Errorf("published desktop installer URL is invalid: %w", err)
 		}
 		out.Asset, out.Size = filepath.Base(u.Path), asset.Size
 		out.Available = newerVersion(out.Current, out.Version)
@@ -287,7 +287,7 @@ func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 			return err
 		}
 		a.stagedAppUpdates[out.Version] = path
-		a.logln("The signed CARE Clinic update is downloaded and verified; it will not install until staff choose Update.")
+		a.logln("The CARE Clinic update is downloaded and checksum-verified; it will not install until staff choose Update.")
 		return nil
 	})
 	return out, err
@@ -313,7 +313,7 @@ func (a *App) installStagedDesktopUpdate(j *updates.Journal, checkpoint updates.
 	}
 	asset, ok := manifest.Desktop.Assets[desktopPlatformKey()]
 	if !ok || desktopPlatformKey() == "" {
-		return fmt.Errorf("signed release %s has no installer for this computer", manifest.Desktop.Version)
+		return fmt.Errorf("published release %s has no installer for this computer", manifest.Desktop.Version)
 	}
 	a.stagedUpdateMu.Lock()
 	path := a.stagedAppUpdates[manifest.Desktop.Version]
@@ -326,11 +326,11 @@ func (a *App) installStagedDesktopUpdate(j *updates.Journal, checkpoint updates.
 		return fmt.Errorf("read staged desktop update: %w", err)
 	}
 	if digest != asset.SHA256 {
-		return errors.New("the staged desktop update failed its signed SHA-256 check")
+		return errors.New("the staged desktop update failed its published SHA-256 check")
 	}
 	version := manifest.Desktop.Version
 	if !newerVersion(a.pins.AppVersion, version) {
-		return errors.New("this is already the newest signed version of CARE Clinic")
+		return errors.New("this is already the newest published version of CARE Clinic")
 	}
 	j.Rollback.PreviousApp = target
 	j.To.Files = append(j.To.Files, updates.FileDigest{Path: path, SHA256: digest})

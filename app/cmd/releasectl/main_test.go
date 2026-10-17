@@ -1,12 +1,61 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 )
+
+func TestVerifyRequiresExplicitDevelopmentMode(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	image := "ghcr.io/example/image@sha256:" + hash
+	a := release.Asset{URL: "https://example.test/asset", SHA256: hash, Size: 42}
+	build := release.ImageBuild{Commit: strings.Repeat("b", 40), Image: image, Builder: image, SourceHash: hash}
+	frontend := build
+	frontend.BuildEnv = map[string]string{"EMPTY": ""}
+	m := release.Manifest{
+		Schema: 1, Revision: 1, PublishedAt: "2026-10-14T14:00:00Z",
+		Desktop: release.DesktopUpdate{Version: "0.0.2", RequiresEngine: ">=0.1.2",
+			Assets: map[string]release.Asset{"darwin-universal": a, "windows-amd64": a}},
+		Engine: release.EngineUpdate{Version: "0.1.2", RequiresDesktop: ">=0.0.1",
+			Assets: map[string]release.Asset{"linux-arm64": a, "linux-amd64": a}},
+		Care: release.CareUpdate{Version: "3.1.0", RequiresDesktop: ">=0.0.1", RequiresEngine: ">=0.1.2",
+			Backend: build, Frontend: frontend},
+		SupportImages: map[string]string{"postgres": image, "redis": image, "caddy": image, "silo": image, "backup": image},
+		Blocked:       []string{}, SourceHashes: map[string]string{"desktop": hash, "engine": hash, "support": hash},
+	}
+	path := filepath.Join(t.TempDir(), "updates.json")
+	write := func(m release.Manifest) {
+		t.Helper()
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(m)
+	if err := run([]string{"verify", "--manifest", path, "--unsigned-development"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"verify", "--manifest", path}); err == nil {
+		t.Fatal("default verifier accepted unsigned metadata")
+	}
+	if err := run([]string{"sign", "--manifest", path, "--unsigned-development"}); err == nil ||
+		!strings.Contains(err.Error(), "does not accept") {
+		t.Fatalf("sign command accepted development bypass: %v", err)
+	}
+	m.Engine.Assets = nil
+	write(m)
+	if err := run([]string{"verify", "--manifest", path, "--unsigned-development"}); err == nil {
+		t.Fatal("development verifier skipped manifest validation")
+	}
+}
 
 func TestFrontendDefaultsAreBuildInputs(t *testing.T) {
 	root := t.TempDir()
