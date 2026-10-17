@@ -74,7 +74,7 @@ care_desktop/
         `-- release.yml
 ```
 
-`deployments/` is versioned kit source. `app/install/` is generated build staging. The clinic computer's installed kit is a third location selected by the application, not either of those checkout directories. [Facility setup](onboarding.md) and its curated datasets live in the separate `ohcnetwork/care_onboarding_fe` plugin repository.
+`deployments/` is versioned deployment source. `app/install/` is generated build staging. The clinic computer's installed deployment is a third location selected by the application, not either of those checkout directories. [Facility setup](onboarding.md) and its curated datasets live in the separate `ohcnetwork/care_onboarding_fe` plugin repository.
 
 ## Application boundary: `app/*.go`
 
@@ -89,7 +89,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_quit.go`](../app/app_quit.go) | Registered running-job quit requests and guarded responses. | [Closing the application](wails-application.md#closing-the-application). |
 | [`app_config.go`](../app/app_config.go) | `Config`, OS configuration path, strict initial loading, cached/atomic saves and forgetting state. | [Configuration](configuration-and-settings.md). |
 | [`app_client.go`](../app/app_client.go) | Native client connection, pinned trust/ownership journal, TLS verification, and exact-certificate uninstall with role reset after success. | [Native integrations](native-integrations.md), [Wails application](wails-application.md). |
-| [`app_installdir.go`](../app/app_installdir.go) | Fixed runtime kit path, atomic per-file refresh, managed-file inventory and safe obsolete-file cleanup, creation of a configured `Clinic`. | [Configuration](configuration-and-settings.md). |
+| [`app_installdir.go`](../app/app_installdir.go) | Fixed runtime deployment path, atomic per-file refresh, managed-file inventory and safe obsolete-file cleanup, creation of a configured `Clinic`. | [Configuration](configuration-and-settings.md). |
 | [`app_actions.go`](../app/app_actions.go) | Read/write job gates, async runner, lifecycle/admin guards, setup, action dispatch, failed-install cleanup. | [Wails application](wails-application.md), [clinic lifecycle](clinic-lifecycle.md). |
 | [`app_setup_check.go`](../app/app_setup_check.go) | Review preflight and the same checks repeated under RunSetup's exclusive lock. | [Setup configuration order](configuration-and-settings.md#setup-configuration-order). |
 | [`app_recovery.go`](../app/app_recovery.go) | Recovery-key/code export and verification, replacement, CARE Clinic password changes and offline reset. | [Recovery materials](backups-and-restore.md#3-backup-recovery-file-and-care-clinic-admin-recovery). |
@@ -123,7 +123,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_client_test.go`](../app/app_client_test.go), [`app_mdns_test.go`](../app/app_mdns_test.go) | Native client contracts and server name-advertisement checks. |
 | [`app_update_test.go`](../app/app_update_test.go), [`app_update_access_test.go`](../app/app_update_access_test.go) | Desktop release/update behavior and access outside an installed server. |
 | [`app_env_test.go`](../app/app_env_test.go), [`app_plugins_test.go`](../app/app_plugins_test.go) | Settings/plugin persistence, access and operation gates. |
-| [`app_installdir_test.go`](../app/app_installdir_test.go), [`app_osremove_test.go`](../app/app_osremove_test.go), [`app_log_test.go`](../app/app_log_test.go) | Kit embedding, executable-removal checks and native error logging. |
+| [`app_installdir_test.go`](../app/app_installdir_test.go), [`app_osremove_test.go`](../app/app_osremove_test.go), [`app_log_test.go`](../app/app_log_test.go) | Deployment embedding, executable-removal checks and native error logging. |
 
 The complete method signatures and event/result shapes are in the [Wails API reference](wails-application.md#complete-bound-method-reference). Do not infer an exported API just from a filename: Wails binds exported `App` methods, not every function in this package.
 
@@ -158,6 +158,8 @@ app/internal/
 |   |-- migrate.go
 |   |-- domain.go
 |   |-- secret.go
+|   |-- deployment.go
+|   |-- deployment_export_test.go
 |   |-- backup.go
 |   |-- backupstore.go
 |   |-- caddyroot.go
@@ -276,7 +278,7 @@ app/internal/
 | [`internal/prereq`](../app/internal/prereq) | Docker readiness, CARE engine provisioning, Windows Hypervisor Platform setup, and native Linux Docker setup. | [Native integrations](native-integrations.md), [CARE engine](vm.md). |
 | [`internal/vm`](../app/internal/vm) | CARE engine host lifecycle, transactional engine/QEMU updates with rollback ([`update.go`](../app/internal/vm/update.go)), macOS and Windows VM drivers, private agent transport, web forwarding, and helper process. | [CARE engine](vm.md). |
 | [`internal/release`](../app/internal/release) | Validated desktop release pins, line selection and image identity. | [Development and release](development-and-release.md#release-identity-and-pins). |
-| [`internal/residue`](../app/internal/residue) | Owned-resource inventory, unknown-state errors, old kit location. | [Cleanup](cleanup-and-uninstall.md). |
+| [`internal/residue`](../app/internal/residue) | Owned-resource inventory, unknown-state errors, old deployment location. | [Cleanup](cleanup-and-uninstall.md). |
 | [`internal/storage`](../app/internal/storage) | Storage thresholds, backup-space estimates, policy/status reporting and backup-run state. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
 | [`sys/diskspace`](../app/internal/sys/diskspace) | Platform filesystem free-space measurements. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
 | [`sys/proc`](../app/internal/sys/proc) | Child-process creation, streamed-command network failure classification, pipe-free launcher execution with discarded output, Windows Desktop known-folder lookup, and PATH repair. | [Native integrations](native-integrations.md). |
@@ -390,7 +392,7 @@ app/frontend/
 
 See [Wails API](wails-application.md) and [configuration](configuration-and-settings.md) for behavior rather than visual layout.
 
-## Deployment kit
+## Deployment
 
 | Source | Runtime purpose |
 | --- | --- |
@@ -406,7 +408,7 @@ See [Wails API](wails-application.md) and [configuration](configuration-and-sett
 | [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Verified latest-only backup cycle, manifest checks, trial restore, WAL status/pruning, writer locking and status files. |
 | [`minio/entrypoint.sh`](../deployments/minio/entrypoint.sh) | Starts Silo, waits for readiness, configures credentials and buckets under the retained storage-service identity. |
 
-Generated public trust files and restore/build working files belong to the installed copy, not the source kit.
+Generated public trust files and restore/build working files belong to the installed copy, not the source deployment.
 
 ## Published CARE images
 
@@ -431,7 +433,7 @@ inventory and publication contract.
 | [`frontend/vite.config.ts`](../app/frontend/vite.config.ts) | Embedded-compatible asset URLs, output directory, placeholder retention. |
 | [`frontend/playwright.config.ts`](../app/frontend/playwright.config.ts) | Isolated loopback test server, test-only entry, browser workers and failure traces. |
 | [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | Whitespace/YAML checks, Go formatting and package-wide Go lint before commits. |
-| [`stage-install.mjs`](../app/frontend/scripts/stage-install.mjs) | Refreshes the embedded-kit staging tree from `deployments/`. |
+| [`stage-install.mjs`](../app/frontend/scripts/stage-install.mjs) | Refreshes the embedded-deployment staging tree from `deployments/`. |
 | [`check-bindings.mjs`](../app/frontend/scripts/check-bindings.mjs) | Checks desktop declarations against exported Go methods and arities. |
 | [`prune-fonts.mjs`](../app/frontend/scripts/prune-fonts.mjs) | Removes specified legacy asset extensions after bundling. |
 | [`build/darwin/Info.plist`](../app/build/darwin/Info.plist) | macOS production bundle metadata template. |

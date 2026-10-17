@@ -1,6 +1,6 @@
 # build artifacts
 build/bin/
-# staged at build time from the repo-root kit (source of truth lives at ../) —
+# staged at build time from the repo-root deployment (source of truth lives at ../) —
 # only the placeholder is tracked, so //go:embed compiles on a clean checkout.
 install/*
 !install/.gitkeep

@@ -8,9 +8,9 @@ The backend has several configuration layers. Understanding their ownership prev
 
 ```mermaid
 flowchart LR
-    Source["deployments: versioned kit templates"] --> Stage["app/install: build staging"]
+    Source["deployments: versioned deployment templates"] --> Stage["app/install: build staging"]
     Stage --> Binary["Embedded installFS in desktop executable"]
-    Binary --> Installed["Installed kit on clinic computer"]
+    Binary --> Installed["Installed deployment on clinic computer"]
     Config["config.json: local installation identity"] --> Engine["App.engine configuration snapshot"]
     Binary --> Pins["release.Pins: embedded release identity"]
     Pins --> Engine
@@ -30,11 +30,11 @@ flowchart LR
 | `deployments/env-defaults.yml` | Maintainer | Deliberate string defaults in `be` and `fe`, excluding secrets, hostname and clinic-owned operational settings. |
 | Other `deployments/` files | Maintainer | The Compose stack, proxy and helper programs. |
 | `app/install/` | Build process | Staging for Go embedding; not the place for source edits. |
-| Embedded `installFS` | Desktop executable | Immutable copy of the kit used by that build. |
-| Installed kit | Application | Runtime files used by Docker Compose. |
+| Embedded `installFS` | Desktop executable | Immutable copy of the deployment used by that build. |
+| Installed deployment | Application | Runtime files used by Docker Compose. |
 | Installed `backend.overrides.env` / `frontend.overrides.env` | Clinic operator | Persistent explicit overrides. Equal-to-default and empty values remain explicit; reset removes the key. |
 | Installed `secrets.env` | Application | Credentials generated once at install, private (0600 / Windows restricted DACL), never returned to the editor. |
-| Installed `backend.env` / `frontend.env` | Application | Deterministic effective defaults + overrides + derived wiring + secrets, regenerated on settings saves and kit refresh. |
+| Installed `backend.env` / `frontend.env` | Application | Deterministic effective defaults + overrides + derived wiring + secrets, regenerated on settings saves and deployment refresh. |
 | `config.json` | `App` | Local setup/removal state, name, backup path, and CARE Clinic administrator hash. |
 | Exported recovery materials | Clinic manager | Private backup recovery file and printable CARE Clinic admin recovery codes, kept outside the installation and backup folder. |
 
@@ -42,9 +42,9 @@ flowchart LR
 
 [`configPath()`](../app/app_config.go) starts with Go's `os.UserConfigDir()`, falls back to `os.UserHomeDir()` on failure, requires an absolute result, and appends `care-clinic/config.json`.
 
-[`installDir()`](../app/app_installdir.go) normally places `install` beside that configuration file. On Windows, when an absolute home directory is available, the installed kit instead lives under the user's home directory. This avoids making the potentially roaming application-configuration directory the normal home for Docker bind mounts and installed configuration.
+[`installDir()`](../app/app_installdir.go) normally places `install` beside that configuration file. On Windows, when an absolute home directory is available, the installed deployment instead lives under the user's home directory. This avoids making the potentially roaming application-configuration directory the normal home for Docker bind mounts and installed configuration.
 
-| Platform | Typical configuration file | Typical installed kit |
+| Platform | Typical configuration file | Typical installed deployment |
 | --- | --- | --- |
 | macOS | `~/Library/Application Support/care-clinic/config.json` | `~/Library/Application Support/care-clinic/install/` |
 | Windows | `%AppData%\care-clinic\config.json` | `%UserProfile%\care-clinic\install\` |
@@ -54,7 +54,7 @@ These are conventions, not hard-coded assumptions about every user's home or env
 
 The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); Linux and macOS keep `<user home>/Desktop/care-db-backups`. Linux deliberately does not follow `XDG_DESKTOP_DIR` here: changing an empty-config installation's effective destination would hide existing backups from listing, replacement and removal. Folder-opening helpers may still use localized XDG Desktop settings. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
 
-The installed kit contains the following recognizable parts:
+The installed deployment contains the following recognizable parts:
 
 ```text
 install/
@@ -199,7 +199,7 @@ during setup: an offline or multicast-isolated device cannot be detected.
 
 Inside the protected job, it rejects an installed or removing clinic, creates the administrator's bcrypt hash, computes and validates the backup destination, and persists the initial configuration. `SetupDone` is still false at this point.
 
-It then unpacks the kit, checks port availability, runs `Clinic.Setup()` with the public backup certificate, refreshes name advertising, and runs `Clinic.Start()`. Only the job runner's successful completion path persists `SetupDone=true`. A capable macOS/Windows helper advertises only after that completion and the installed-clinic availability checks; Linux/older-helper window advertising retains the earlier lifecycle.
+It then unpacks the deployment, checks port availability, runs `Clinic.Setup()` with the public backup certificate, refreshes name advertising, and runs `Clinic.Start()`. Only the job runner's successful completion path persists `SetupDone=true`. A capable macOS/Windows helper advertises only after that completion and the installed-clinic availability checks; Linux/older-helper window advertising retains the earlier lifecycle.
 
 A failure after configuration or files were created is therefore a partial setup,
 not proof that nothing was installed. While the original process retains the
@@ -209,31 +209,33 @@ accept replacement settings. After a full app restart, or when that attempt is
 no longer available, the UI explains the destructive
 [failed-install cleanup](cleanup-and-uninstall.md) fallback before retrying.
 
-## Embedded-kit refresh
+## Embedded deployment refresh
 
 `ensureInstallDir()` walks and validates the embedded `install` tree. It skips
 placeholders, creates directories and publishes each file through the existing
 atomic-file helper: a fully written and synced sibling temporary file replaces
 the target, rather than truncating it in place. Shell scripts use `0755`, other
-managed kit files `0644`, and newly created user environments use private `0600`
+managed deployment files `0644`, and newly created user environments use private `0600`
 files (with the existing Windows private DACL helper).
 
-Its preservation allow-list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other kit files are refreshed from the executable. This includes `.env`, so the shipped pins do not become an independently editable runtime release mechanism.
+Its preservation allow-list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other deployment files are refreshed from the executable. This includes `.env`, so the shipped pins do not become an independently editable runtime release mechanism.
 
 The clinic's CARE version and current/staged published images are kept in `care-images.json`,
-not `.env`. It is not embedded, so kit refresh does not overwrite it; uninstall
-removes it with the installed kit. A missing or corrupt lock is treated as an
+not `.env`. It is not embedded, so deployment refresh does not overwrite it; uninstall
+removes it with the installed deployment. A missing or corrupt lock is treated as an
 empty record and selects images from verified signed update metadata.
 Recorded current images support offline startup. Recording current images
 removes the legacy source checkouts and lock. See [CARE images](images.md).
 
 Writes go through a process-wide mutex and a temporary file renamed into place, because the background check and an operator pressing "Install now" can reach the lock at the same time, and a half-written lock would lose the record of what the clinic is running.
 
-Facility setup lives in the [CARE Onboarding frontend plugin](onboarding.md); its assets are not bundled into the kit. Existing `plugins.json` choices are preserved and catalog defaults are initialized only during new-clinic setup.
+Facility setup lives in the [CARE Onboarding frontend plugin](onboarding.md); its assets are not bundled into the deployment. Existing `plugins.json` choices are preserved and catalog defaults are initialized only during new-clinic setup.
 
-Private `.kit-files.json` records the exact app-managed paths successfully
-shipped by refresh. Only a previously recorded file absent from the new embedded
-kit is obsolete; a file being unused by code is not deletion proof. After all
+Private `.deployment-files.json` records the exact app-managed paths successfully
+shipped by refresh. The inventory is not migrated from earlier filenames: the
+first refresh without this inventory retains files whose ownership is unknown.
+Only a previously recorded file absent from the new embedded
+deployment is obsolete; a file being unused by code is not deletion proof. After all
 copies complete, refresh atomically records the union of previous and current
 managed files, removes obsolete regular files, then publishes the current-only
 inventory. Copy failure does not prune. Cleanup/finalization failure retains
@@ -248,10 +250,10 @@ Invalid paths, symlinks within the installation, non-regular file targets and
 damaged/unsupported inventories fail explicitly. File-to-directory transitions
 also fail rather than deleting a directory or guessing its contents.
 
-Atomicity is **per file**, not a transaction over the entire kit. An interruption
+Atomicity is **per file**, not a transaction over the entire deployment. An interruption
 between files can leave a mixture of old and new complete files until the next
 successful refresh. Existing job serialization and restore/plugin-recovery gates
-remain in place. The kit refresh then regenerates effective environment files from the refreshed
+remain in place. The deployment refresh then regenerates effective environment files from the refreshed
 defaults and preserved overrides/secrets. Precedence is explicit overrides over
 our defaults over CARE's own defaults; absent keys are not invented. Clinic
 names, languages, hostname and operational choices remain setup/Settings-owned,
@@ -286,7 +288,7 @@ privilege prompts and from the CARE web login after initial setup. See
 
 ## Environment-file API
 
-[`envPath()`](../app/app_env.go) accepts only `backend` and `frontend`, mapping them to fixed filenames under the installed kit. It is not an arbitrary file-reading or file-writing API.
+[`envPath()`](../app/app_env.go) accepts only `backend` and `frontend`, mapping them to fixed filenames under the installed deployment. It is not an arbitrary file-reading or file-writing API.
 
 `ReadEnv` checks the CARE Clinic administrator password and setup state under a
 shared read lock, then reads the selected **override** file. A missing override

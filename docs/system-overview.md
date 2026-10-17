@@ -61,7 +61,7 @@ values. Effective env files combine overrides, deliberate string defaults from
 Clinic settings never trigger releases.
 
 `deployments/env-defaults.yml` has strict string-only `be`/`fe` maps. Per-clinic
-`backend.overrides.env` and `frontend.overrides.env` survive kit refresh; reset
+`backend.overrides.env` and `frontend.overrides.env` survive deployment refresh; reset
 removes a key, while saving an equal-to-default or empty string keeps it
 explicit. Setup generates independent credentials once in private `secrets.env`
 (0600 and a restricted Windows DACL). The editor never reads effective env or
@@ -71,7 +71,7 @@ Effective `backend.env`/`frontend.env` are deterministic private outputs.
 Published frontend `build_env` and local builds preserve empty strings; JSON
 build inputs avoid dotenv expansion of literal settings.
 
-The desktop explicitly uploads the generated kit, effective env, private
+The desktop explicitly uploads the generated deployment, effective env, private
 secrets, public backup certificate, scripts and build contexts into
 `/var/lib/care`; no desktop directory is bind-mounted into the VM. Container
 mounts refer to engine-local paths. Recovery files and selected backup inputs

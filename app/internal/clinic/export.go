@@ -44,7 +44,7 @@ var exportedName = regexp.MustCompile(`^(?:care-[^/]+\.dump(?:\.enc)?|files-[^/]
 // ExportBackups brings the host backup folder and backup status up to date
 // with the engine. Calls are serialised; a second caller waits for the first.
 func (e *Clinic) ExportBackups(ctx context.Context) error {
-	if installed, err := e.kitInstalled(); err != nil || !installed {
+	if installed, err := e.deploymentInstalled(); err != nil || !installed {
 		return err
 	}
 	select {
@@ -62,7 +62,7 @@ func (e *Clinic) ExportBackups(ctx context.Context) error {
 // ExportBackupState refreshes only the small status files the health view
 // reads, for callers that cannot wait for a backup set to transfer.
 func (e *Clinic) ExportBackupState(ctx context.Context) error {
-	if installed, err := e.kitInstalled(); err != nil || !installed {
+	if installed, err := e.deploymentInstalled(); err != nil || !installed {
 		return err
 	}
 	select {
@@ -74,7 +74,7 @@ func (e *Clinic) ExportBackupState(ctx context.Context) error {
 	return e.exportBackupState(ctx)
 }
 
-func (e *Clinic) kitInstalled() (bool, error) {
+func (e *Clinic) deploymentInstalled() (bool, error) {
 	info, err := os.Stat(filepath.Join(e.InstallDir, "docker-compose.yml"))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil

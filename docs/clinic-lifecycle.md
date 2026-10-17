@@ -2,7 +2,7 @@
 
 # Clinic lifecycle, images, and deployment
 
-This guide follows the Wails backend from an installed deployment kit to a
+This guide follows the Wails backend from an installed deployment to a
 running clinic. "Backend" has two meanings here:
 
 - The **desktop Go backend** validates requests and sends engine operations.
@@ -24,7 +24,7 @@ specification.
 | Guide | Use it for |
 | --- | --- |
 | [Architecture](architecture.md) | The whole application and its dependency boundaries. |
-| [Repository map](repository-map.md) | Finding files outside the engine and deployment kit. |
+| [Repository map](repository-map.md) | Finding files outside the engine and deployment. |
 | [Wails application](wails-application.md) | Bound methods, authorization, job serialization, and completion events. |
 | [Configuration and settings](configuration-and-settings.md) | Saved configuration, installed paths, and environment editing. |
 | [Backups and restore](backups-and-restore.md) | Encryption, recovery keys, backup scheduling, and the restore state machine. |
@@ -79,7 +79,7 @@ and a small runner value, rather than a framework or a container registry.
 
 | Injected input | Meaning and limits |
 | --- | --- |
-| `InstallDir` | The unpacked runtime kit and isolated local build workspace, not this repository's checkout. |
+| `InstallDir` | The unpacked runtime deployment and isolated local build workspace, not this repository's checkout. |
 | `MDNSName` | The saved clinic name. An empty engine value defaults to `care`. `Host()` normalizes the label and appends `.local`; `Label()` exposes the configured name or default. |
 | `AdminPassword` | Used by administrator creation when nonempty. It is not the CARE Clinic administrator hash. |
 | `BackupCertificate` | Public encryption certificate prepared by the CARE Clinic recovery setup. The private recovery file is exported separately, never installed. |
@@ -100,9 +100,11 @@ remaining teardown files and the residue package.
 | Source | Responsibility |
 | --- | --- |
 | [`clinic.go`](../app/internal/clinic/clinic.go) | `Clinic`, nil-safe logging, effective paths/name, runtime environment, runner helpers, and builder construction. |
+| [`deployment.go`](../app/internal/clinic/deployment.go) | Enumerates installed deployment inputs and synchronizes them to the engine before operations, preserving guest-owned backup state. |
+| [`deployment_export_test.go`](../app/internal/clinic/deployment_export_test.go) | Deployment transfer permissions, host-path isolation, and verified backup export behavior. |
 | [`setup.go`](../app/internal/clinic/setup.go) | Ordered first-time preparation: location check, default plugins, secret, domain, directories, encryption keys, and images. |
 | [`secret.go`](../app/internal/clinic/secret.go) | One-time private credential generation through `envconfig`. |
-| [`domain.go`](../app/internal/clinic/domain.go) | Discover managed hostnames, update selected settings and kit files, and construct the clinic host. |
+| [`domain.go`](../app/internal/clinic/domain.go) | Discover managed hostnames, update selected settings and deployment files, and construct the clinic host. |
 | [`domain_test.go`](../app/internal/clinic/domain_test.go) | Unmanaged-setting preservation, multiline dotenv handling, mode preservation, idempotence, incomplete setups, and validation before writes. |
 | [`start.go`](../app/internal/clinic/start.go) | Plugin rollback before normal startup; restore recovery, prerequisites, worker safety, phased Compose startup, migrations, health, and native completion. |
 | [`plugin_transaction.go`](../app/internal/clinic/plugin_transaction.go), [`plugin_health.go`](../app/internal/clinic/plugin_health.go) | Durable plugin apply/rollback and sustained container/HTTP readiness; see [Plugins](plugins.md#save-and-apply). |
@@ -133,23 +135,23 @@ Do not confuse these locations:
 1. **Repository deployment sources**, under [`deployments/`](../deployments).
    Developers edit the Compose file, Dockerfiles, environment templates, and
    bootstrap assets here.
-2. **The embedded install kit**, staged as `app/install/` when building the
+2. **The embedded deployment**, staged as `app/install/` when building the
    desktop application. The executable carries it in `installFS`, alongside a
    separate embedded filesystem for the desktop control panel.
-3. **The installed kit**, in the App-selected `care-clinic/install` directory.
+3. **The installed deployment**, in the App-selected `care-clinic/install` directory.
    Docker bind mounts, environment edits, generated keys, and downloaded CARE
    sources refer to this runtime copy.
 
 [`ensureInstallDir`](../app/app_installdir.go) belongs to the App layer, not
-`Clinic.Setup`. It copies the embedded kit to the installed location. Existing
+`Clinic.Setup`. It copies the embedded deployment to the installed location. Existing
 `backend.env` and `frontend.env` are generated files;
-other embedded kit files can be refreshed. Placeholder `.gitkeep` files are not
-installation payloads. The App reapplies the saved domain after normal kit
+other embedded deployment files can be refreshed. Placeholder `.gitkeep` files are not
+installation payloads. The App reapplies the saved domain after normal deployment
 refresh, regenerating effective env from defaults, preserved overrides and
 private secrets. It deliberately suppresses that refresh while removal or a pending
 restore or plugin rollback makes replacement unsafe; see [Wails application](wails-application.md).
 
-`Setup()` therefore assumes its input kit has already been unpacked. It does
+`Setup()` therefore assumes its input deployment has already been unpacked. It does
 not compile the desktop UI, copy the executable, save `SetupDone`, or export
 the private recovery file.
 
@@ -158,7 +160,7 @@ the private recovery file.
 | Build | Input and output | When it matters |
 | --- | --- | --- |
 | Desktop control panel | `app/frontend/` becomes embedded Wails web assets. | Development or desktop release packaging. The panel must work without a running clinic. |
-| Desktop Go executable | `app/` plus embedded assets and install kit become the native application. | Development or release packaging. |
+| Desktop Go executable | `app/` plus embedded frontend assets and deployment files become the native application. | Development or release packaging. |
 | CARE backend image | Published backend runtime image by digest; optional plugins use its matching builder image. | Setup, startup freshness checks, or explicit backend rebuild. |
 | CARE frontend image | Published frontend image by digest; a builder-image rebuild for any differing compiled setting. Only the API origin is substituted at startup. | Setup, startup freshness checks, or explicit frontend rebuild. This is the clinical browser application. |
 | Caddy and backup images | Optional digest-pinned prebuilt images, or installed Dockerfiles and pinned base/module inputs. | Setup or startup freshness checks. |
@@ -172,7 +174,7 @@ interface.
 Each call to [`Runner()`](../app/internal/clinic/clinic.go) creates an
 agent-backed runner with the clinic's directory, selected environment,
 logging callback and cancellation context. Preparation uploads the generated
-kit/configuration before execution. The operation working directory and bind
+deployment/configuration before execution. The operation working directory and bind
 paths are engine-local, not guesses derived from a host drive letter.
 
 `dc(args...)` sends the typed `compose` operation. `run` supports per-call
@@ -226,7 +228,7 @@ edits from overlapping a job; an external file editor is outside that gate.
 ## 4. Setup: ordered preparation, not a transaction
 
 The outer App flow validates input, persists initial configuration with setup
-still incomplete, installs the kit, and checks port availability. It then
+still incomplete, installs the deployment, and checks port availability. It then
 calls `Setup`, refreshes advertising, and calls
 `Start`. Only after the entire callback succeeds does the App persist
 `SetupDone=true`. See [configuration and settings](configuration-and-settings.md)
@@ -252,7 +254,7 @@ sequenceDiagram
     participant Docker as Docker
     UI->>App: RunSetup with validated operator input
     App->>Config: Save initial configuration, setup incomplete
-    App->>App: Unpack kit and check ports
+    App->>App: Unpack deployment and check ports
     App->>Clinic: Setup()
     Clinic->>Clinic: Validate location and initialize default plugins
     Clinic->>Clinic: Prepare secret, domain, directories
@@ -274,7 +276,7 @@ error. There is no implicit rollback of earlier successful steps.
 
 | Order | Operation | Durable or operational effect |
 | --- | --- | --- |
-| 1 | `backup.CheckLocation(backupDir, InstallDir)` | Reject an unsafe backup location before setup changes the kit. The backup guide explains the path rules. |
+| 1 | `backup.CheckLocation(backupDir, InstallDir)` | Reject an unsafe backup location before setup changes the deployment. The backup guide explains the path rules. |
 | 2 | `genSecret()` | Generate private credentials once and initialize empty override files; retain existing secrets on retry. |
 | 3 | `ApplyDomain()` | Generate effective environment files and apply the clinic host to deployment assets. |
 | 4 | `plugins.New(InstallDir).InitializeDefaults()`, then `Backups().InstallCertificate(BackupCertificate)` | Persist initial plugin choices only when absent; install only the public backup certificate and ownership copy. |
@@ -478,7 +480,7 @@ new release or wipe caches.
 into `${CADDY_IMAGE}`. Caddy's runtime configuration is not baked into it.
 
 The Caddy and backup builders create an empty `.care-buildctx-*` directory
-under the installed kit and remove it on return. The full install directory, including keys and environment files, is not
+under the installed deployment and remove it on return. The full install directory, including keys and environment files, is not
 uploaded as their build context. Plugin builds and image relabeling also use
 isolated empty contexts; a frontend customization context contains only the
 generated `clinic.json`, with the API placeholder and exact compiled settings.
@@ -530,7 +532,7 @@ or secrets fail. Overrides are never rewritten by a hostname change, even if a
 plugin value mentions an old hostname. Proxy/setup replacements use whole host
 tokens discovered from `example.local` and the managed site/address shapes;
 unrelated device hostnames are preserved. Atomicity is per file; retries are
-idempotent, not a transaction across the whole kit.
+idempotent, not a transaction across the whole deployment.
 
 Changing the domain has several downstream effects: backend runtime URLs must
 change, the frontend must be recreated to apply runtime URLs, the proxy
@@ -620,7 +622,7 @@ flowchart LR
 | `localhost:443` | Dedicated internal-TLS site that proxies `/ping/*` to the backend for desktop health checks, not a second full clinical frontend. |
 
 The normal site enables gzip and removes the `Strict-Transport-Security`
-response header. Server protocols are restricted to HTTP/1 and HTTP/2; the kit
+response header. Server protocols are restricted to HTTP/1 and HTTP/2; the deployment
 does not expose a UDP HTTP/3 listener.
 
 Caddy's container writes `SecRuleEngine <mode>` into
@@ -641,7 +643,7 @@ bucket matchers or a new WAF mode. An atomically replaced bind-mounted
 `Caddyfile` can also leave an existing container attached to the old file
 inode. Merely finding the image current, or having Compose leave an unchanged
 container running, is not sufficient evidence that Caddy is using the current
-kit.
+deployment.
 
 The explicit recreation refreshes the proxy with current mounts and
 environment before the HTTP health wait. It does not rebuild the Caddy image
@@ -660,12 +662,12 @@ limited to 200 MiB/seven days. The helper continuously copies guest and containe
 logs into the host's [shared diagnostics folder](local-logs.md). Engine upgrades
 remove containers without volumes and recreate them, because old containers
 keep their original logging driver. Linux uses the host Docker daemon's logging
-configuration; this deployment kit does not impose a Linux log-size cap or
+configuration; this deployment does not impose a Linux log-size cap or
 collect Linux container logs into the host diagnostics folder.
 
 In this table, `healthy` means a Compose `service_healthy` dependency;
 `started` means the short-form dependency, not verified application readiness.
-Ports shown as internal are not host-published by this kit.
+Ports shown as internal are not host-published by this deployment.
 
 | Service | Image pin and process | Dependencies | Persistent/bind-mounted material | Ports |
 | --- | --- | --- | --- | --- |
@@ -727,9 +729,9 @@ engine's default `Desktop/care-db-backups` location.
 Client onboarding is native CARE Clinic functionality, described in
 [native integrations](native-integrations.md#native-client-setup-and-trust-on-first-use).
 The public root bootstrap is not the CA's private key. Existing unused setup
-files are no longer exposed by current routes and mounts. Kit refresh removes
-them only if a prior managed-kit inventory proves they were shipped and they
-are absent from the current embedded kit; older untracked files are retained.
+files are no longer exposed by current routes and mounts. Deployment refresh removes
+them only if a prior managed-deployment inventory proves they were shipped and they
+are absent from the current embedded deployment; older untracked files are retained.
 
 The backup Dockerfile and backup script are described in
 [backups and restore](backups-and-restore.md).
@@ -934,7 +936,7 @@ safe to call and how staged data becomes live.
 | `db` healthcheck | `pg_isready -U postgres` succeeds. Declared interval 10 seconds, five retries, 10-second start period. | All CARE migrations completed. |
 | `redis` healthcheck | `redis-cli ping` succeeds. Declared interval 10 seconds, five retries. | Worker/scheduler processing is safe for the current schema. |
 | `minio` healthcheck | HTTP readiness endpoint on internal port 9000 responds successfully to `curl -f`. Declared interval 10 seconds, five retries. | Bucket and policy bootstrap has necessarily finished. |
-| Compose `--wait` | Selected services satisfy Compose's running/healthy criteria. | Every clinical request or frontend asset has been tested. Other services have no healthcheck declared in this kit, though their images can supply one. |
+| Compose `--wait` | Selected services satisfy Compose's running/healthy criteria. | Every clinical request or frontend asset has been tested. Other services have no healthcheck declared in this deployment, though their images can supply one. |
 | Desktop HTTP health | A GET to Caddy's dedicated `https://localhost/ping/` route returns HTTP 200, with a three-second request timeout and TLS certificate verification disabled for this local probe. | LAN mDNS resolution, CA trust, authenticated server identity, response-body correctness, or full clinical functionality. |
 | Successful `Start` | Ordered startup, migration/admin guards, HTTP wait, and restore completion returned successfully. | Every optional native convenience was approved or every client device trusts the CA. |
 | `Status()` | Compose service/state text from `{{.Service}} {{.State}}`. | The richer HTTP readiness or native reachability verdict. |
@@ -967,7 +969,7 @@ or prevent a later bind race. Further transport details are in
 | `Restart()` | Call `Stop`; if successful, call the full `Start`. | This is not Compose `restart`: it includes recovery, freshness checks, migrations, Caddy recreation, and health. Stop failure prevents Start. |
 | `RebuildBackend()` | Recover pending restore work; explicitly build backend; stop/verify workers; start/wait backend; migrate once; sync frontend plugin rows (warning only); start/wait worker and scheduler. | No administrator creation, whole-stack HTTP wait, Caddy refresh, native setup, or `FinishRestore` call in this method. |
 | `RebuildFrontend()` | Recover pending restore work; prepare the current frontend image; force-recreate/start/wait frontend so runtime settings are re-read. | Does not run migrations, stop workers, perform the full health wait, or refresh Caddy. |
-| `RebuildAll()` | Recover pending restore work; explicitly build backend and frontend in parallel while CARE keeps running; then `Restart()` (`compose stop`, then the full `Start()` sequence: image freshness, migrations, plugin sync, whole stack, Caddy refresh, health wait, restore finish). | Restarting stopped containers reruns their entrypoints, so the backup sidecar re-reads `backup.sh`; containers whose env files or images changed are recreated by `up`. It does not rebuild the backup or Caddy images unless their inputs changed, and it does not refresh the installed kit itself; the `rebuild-all` action does that first. |
+| `RebuildAll()` | Recover pending restore work; explicitly build backend and frontend in parallel while CARE keeps running; then `Restart()` (`compose stop`, then the full `Start()` sequence: image freshness, migrations, plugin sync, whole stack, Caddy refresh, health wait, restore finish). | Restarting stopped containers reruns their entrypoints, so the backup sidecar re-reads `backup.sh`; containers whose env files or images changed are recreated by `up`. It does not rebuild the backup or Caddy images unless their inputs changed, and it does not refresh the installed deployment itself; the `rebuild-all` action does that first. |
 
 The backend and frontend rebuild methods use Compose waits of 300 seconds per selected startup
 phase. Short-form and healthy dependencies can also cause required dependency
@@ -991,7 +993,7 @@ may be reused; this is not an upstream-update or cache-wipe operation.
 
 1. Every engine Compose call carries the same project name, installed Compose
    path, image pins, backup destination, and derived storage settings.
-2. Preparing the kit, starting services, and saving `SetupDone` are different
+2. Preparing the deployment, starting services, and saving `SetupDone` are different
    checkpoints owned by different layers.
 3. An image inspection failure is not evidence of an absent image; invalid
    manifest/build inputs must not be treated as a successful freshness check.

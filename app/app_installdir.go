@@ -30,14 +30,14 @@ var installUserFiles = map[string]bool{"backend.env": true, "frontend.env": true
 
 const gitkeepPlaceholder = ".gitkeep"
 
-const kitInventoryFile = ".kit-files.json"
+const deploymentInventoryFile = ".deployment-files.json"
 
-type kitInventory struct {
+type deploymentInventory struct {
 	Version int      `json:"version"`
 	Files   []string `json:"files"`
 }
 
-func validKitPath(rel string) bool {
+func validDeploymentPath(rel string) bool {
 	if !fs.ValidPath(rel) || rel == "." || strings.ContainsAny(rel, "\\:") {
 		return false
 	}
@@ -49,11 +49,11 @@ func validKitPath(rel string) bool {
 	return true
 }
 
-func protectedKitPath(rel string) bool {
+func protectedDeploymentPath(rel string) bool {
 	rel = strings.ToLower(rel)
 	root := strings.Split(rel, "/")[0]
 	switch root {
-	case kitInventoryFile, backupStateDir, "keys", "plugins.json", "plugins-pending.json",
+	case deploymentInventoryFile, backupStateDir, "keys", "plugins.json", "plugins-pending.json",
 		"plugin-recovery.json", "restore-state.json", "care-images.json", "channel.lock":
 		return true
 	}
@@ -63,12 +63,12 @@ func protectedKitPath(rel string) bool {
 
 // Reject links anywhere inside the installation before replacing or deleting.
 // This is not a security boundary against a concurrent malicious OS-account user.
-func kitTarget(dest, rel string) (string, error) {
-	if !filepath.IsAbs(dest) || !validKitPath(rel) {
-		return "", fmt.Errorf("invalid deployment-kit path %q", rel)
+func deploymentTarget(dest, rel string) (string, error) {
+	if !filepath.IsAbs(dest) || !validDeploymentPath(rel) {
+		return "", fmt.Errorf("invalid deployment path %q", rel)
 	}
 	if info, err := os.Lstat(filepath.Dir(dest)); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("deployment-kit parent is a symbolic link: %s", filepath.Dir(dest))
+		return "", fmt.Errorf("deployment parent is a symbolic link: %s", filepath.Dir(dest))
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
@@ -83,17 +83,17 @@ func kitTarget(dest, rel string) (string, error) {
 			return "", err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("deployment-kit path is a symbolic link: %s", target)
+			return "", fmt.Errorf("deployment path is a symbolic link: %s", target)
 		}
 		if target != filepath.Join(dest, filepath.FromSlash(rel)) && !info.IsDir() {
-			return "", fmt.Errorf("deployment-kit parent is not a directory: %s", target)
+			return "", fmt.Errorf("deployment parent is not a directory: %s", target)
 		}
 	}
 	return target, nil
 }
 
-func readKitInventory(dest string) ([]string, error) {
-	path, err := kitTarget(dest, kitInventoryFile)
+func readDeploymentInventory(dest string) ([]string, error) {
+	path, err := deploymentTarget(dest, deploymentInventoryFile)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func readKitInventory(dest string) ([]string, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("deployment-kit inventory is not a regular file: %s", path)
+		return nil, fmt.Errorf("deployment inventory is not a regular file: %s", path)
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -114,23 +114,23 @@ func readKitInventory(dest string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var inventory kitInventory
+	var inventory deploymentInventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
-		return nil, fmt.Errorf("could not read deployment-kit inventory: %w", err)
+		return nil, fmt.Errorf("could not read deployment inventory: %w", err)
 	}
 	if inventory.Version != 1 {
-		return nil, fmt.Errorf("unsupported deployment-kit inventory version %d", inventory.Version)
+		return nil, fmt.Errorf("unsupported deployment inventory version %d", inventory.Version)
 	}
 	for _, rel := range inventory.Files {
-		if !validKitPath(rel) {
-			return nil, fmt.Errorf("invalid deployment-kit inventory path %q", rel)
+		if !validDeploymentPath(rel) {
+			return nil, fmt.Errorf("invalid deployment inventory path %q", rel)
 		}
 	}
 	return inventory.Files, nil
 }
 
-func writeKitInventory(dest string, files map[string]bool) error {
-	inventory := kitInventory{Version: 1, Files: make([]string, 0, len(files))}
+func writeDeploymentInventory(dest string, files map[string]bool) error {
+	inventory := deploymentInventory{Version: 1, Files: make([]string, 0, len(files))}
 	for rel := range files {
 		inventory.Files = append(inventory.Files, rel)
 	}
@@ -139,7 +139,7 @@ func writeKitInventory(dest string, files map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	path, err := kitTarget(dest, kitInventoryFile)
+	path, err := deploymentTarget(dest, deploymentInventoryFile)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func writeKitInventory(dest string, files map[string]bool) error {
 
 func (a *App) ensureInstallDir() (string, error) {
 	dest := a.installDir()
-	previous, err := readKitInventory(dest)
+	previous, err := readDeploymentInventory(dest)
 	if err != nil {
 		return dest, err
 	}
@@ -162,26 +162,26 @@ func (a *App) ensureInstallDir() (string, error) {
 		if p == "install" || filepath.Base(rel) == gitkeepPlaceholder {
 			return nil
 		}
-		target, err := kitTarget(dest, rel)
+		target, err := deploymentTarget(dest, rel)
 		if err != nil {
 			return err
 		}
-		if protectedKitPath(rel) && !installUserFiles[rel] {
-			return fmt.Errorf("deployment kit contains reserved runtime path %q", rel)
+		if protectedDeploymentPath(rel) && !installUserFiles[rel] {
+			return fmt.Errorf("deployment contains reserved runtime path %q", rel)
 		}
 		if d.IsDir() {
 			if info, err := os.Lstat(target); err == nil && !info.IsDir() {
-				return fmt.Errorf("deployment-kit directory target is not a directory: %s", target)
+				return fmt.Errorf("deployment directory target is not a directory: %s", target)
 			} else if err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
 		if !d.IsDir() {
 			if !d.Type().IsRegular() {
-				return fmt.Errorf("deployment-kit file is not regular: %s", p)
+				return fmt.Errorf("deployment file is not regular: %s", p)
 			}
 			if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
-				return fmt.Errorf("deployment-kit target is not a regular file: %s", target)
+				return fmt.Errorf("deployment target is not a regular file: %s", target)
 			} else if err != nil && !os.IsNotExist(err) {
 				return err
 			}
@@ -195,15 +195,15 @@ func (a *App) ensureInstallDir() (string, error) {
 		return dest, err
 	}
 	for _, rel := range previous {
-		if current[rel] || protectedKitPath(rel) {
+		if current[rel] || protectedDeploymentPath(rel) {
 			continue
 		}
-		target, err := kitTarget(dest, rel)
+		target, err := deploymentTarget(dest, rel)
 		if err != nil {
 			return dest, err
 		}
 		if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
-			return dest, fmt.Errorf("obsolete deployment-kit target is not a regular file: %s", target)
+			return dest, fmt.Errorf("obsolete deployment target is not a regular file: %s", target)
 		} else if err != nil && !os.IsNotExist(err) {
 			return dest, err
 		}
@@ -216,7 +216,7 @@ func (a *App) ensureInstallDir() (string, error) {
 		if p == "install" || filepath.Base(rel) == gitkeepPlaceholder {
 			return nil
 		}
-		target, err := kitTarget(dest, rel)
+		target, err := deploymentTarget(dest, rel)
 		if err != nil {
 			return err
 		}
@@ -256,38 +256,38 @@ func (a *App) ensureInstallDir() (string, error) {
 		pending[rel] = true
 	}
 	for _, rel := range previous {
-		if !protectedKitPath(rel) {
+		if !protectedDeploymentPath(rel) {
 			pending[rel] = true
 		}
 	}
-	if err := writeKitInventory(dest, pending); err != nil {
+	if err := writeDeploymentInventory(dest, pending); err != nil {
 		return dest, err
 	}
 	for rel := range pending {
 		if current[rel] {
 			continue
 		}
-		target, err := kitTarget(dest, rel)
+		target, err := deploymentTarget(dest, rel)
 		if err != nil {
 			return dest, err
 		}
 		if info, err := os.Lstat(target); err == nil && !info.Mode().IsRegular() {
-			return dest, fmt.Errorf("obsolete deployment-kit target is not a regular file: %s", target)
+			return dest, fmt.Errorf("obsolete deployment target is not a regular file: %s", target)
 		} else if err != nil && !os.IsNotExist(err) {
 			return dest, err
 		}
 		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			return dest, fmt.Errorf("could not remove obsolete deployment-kit file %s: %w", target, err)
+			return dest, fmt.Errorf("could not remove obsolete deployment file %s: %w", target, err)
 		}
 	}
-	state, err := kitTarget(dest, backupStateDir)
+	state, err := deploymentTarget(dest, backupStateDir)
 	if err != nil {
 		return dest, err
 	}
 	if err := os.MkdirAll(state, 0o755); err != nil {
 		return dest, err
 	}
-	return dest, writeKitInventory(dest, current)
+	return dest, writeDeploymentInventory(dest, current)
 }
 
 const backupStateDir = "backup-state" // storage.StateDirName
