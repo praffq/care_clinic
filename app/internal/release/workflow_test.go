@@ -399,6 +399,9 @@ func TestPublicationRecoveryReusesFinalOutputsOnly(t *testing.T) {
 		data.Jobs["required"].If != "${{ always() && !inputs.recover_run_id }}" {
 		t.Fatal("recovery dispatch must skip planning, every build and the CI gate")
 	}
+	if data.Jobs["publish"].If != "${{ !cancelled() && needs.sign.result == 'success' }}" {
+		t.Fatal("feed deployment must not be skipped by transitively skipped planning/build jobs")
+	}
 	sign := data.Jobs["sign"].If
 	for _, required := range []string{"!cancelled()", "inputs.recover_run_id", "needs.plan.result == 'skipped'",
 		"needs.required.result == 'success'", "needs.plan.outputs.publish == 'true'"} {

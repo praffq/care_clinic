@@ -237,6 +237,9 @@ jobs:
   publish:
     name: Deploy update feed
     needs: sign
+    # Explicit: implicit success() also fails on transitively skipped jobs,
+    # which recovery dispatches skip by design.
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
