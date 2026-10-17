@@ -686,9 +686,9 @@ which staff can enter on their phone. iOS instructions cover profile installatio
 and full trust in Safari; Android instructions cover CA installation in Settings.
 The matching device instructions expand automatically. Desktop clients use the
 native app; no generated script installers are served.
-Older untracked files may remain unused in an installed kit. Refresh removes
-only previously inventoried shipped files absent from the new embedded kit,
-never the whole directory; see [embedded-kit refresh](configuration-and-settings.md#embedded-kit-refresh).
+Older untracked files may remain unused in an installed deployment. Refresh removes
+only previously inventoried shipped files absent from the new embedded deployment,
+never the whole directory; see [embedded deployment refresh](configuration-and-settings.md#embedded-deployment-refresh).
 
 ### Native client setup and trust on first use
 

@@ -72,7 +72,7 @@ settings may be forgotten.
 | Pause the clinic | `ClinicAction("stop", ...)` delegates to `Clinic.Stop()`. | Compose stops services. | Containers, all volumes, images/cache, installed files, backups, keys, saved settings, and native configuration. |
 | Remove an installed clinic | `RunUninstall(...)` delegates to `Clinic.Uninstall(options)`. | Live project containers, volumes, and networks; native changes; installed files. Optional known images/cache and owned backup files. App also handles autostart and saved state. | Backups when not selected for removal; images/cache and CARE engine state when not selected; unrelated Docker software; normal diagnostic logs. |
 | Recover from failed first setup | `CleanupFailedInstall()` delegates to a specific `Clinic.Uninstall` option set. | Partial project resources, native changes, installed files, saved secret/config. A matching exported certificate is removed only if it is unused and the final file-deletion phase is reached. | Downloaded images/cache and backup data. Required backup certificates remain. |
-| Clean old installation residue | The UI's "Remove everything" path is `PurgeResidue(confirmed)`, delegating to `Clinic.Purge()`. | Owned project resources when Docker is available, known images/cache when Docker is available, native changes, installed kit. App additionally removes old logs and saved state. | Backups and their backup certificate. With a provably absent managed engine, an unrelated installed Docker CLI does not block native/file cleanup. An existing managed disk, engine marker or control socket retains the need to inspect volumes; unreachable resources are not declared removed. Missing CLI still cannot inspect Docker resources. The desktop executable, Docker installations, and unrelated user files are not an OS-package uninstall target. |
+| Clean old installation residue | The UI's "Remove everything" path is `PurgeResidue(confirmed)`, delegating to `Clinic.Purge()`. | Owned project resources when Docker is available, known images/cache when Docker is available, native changes, installed deployment. App additionally removes old logs and saved state. | Backups and their backup certificate. With a provably absent managed engine, an unrelated installed Docker CLI does not block native/file cleanup. An existing managed disk, engine marker or control socket retains the need to inspect volumes; unreachable resources are not declared removed. Missing CLI still cannot inspect Docker resources. The desktop executable, Docker installations, and unrelated user files are not an OS-package uninstall target. |
 
 ### Removing the desktop app
 
@@ -155,8 +155,8 @@ A successful removal cannot be inferred from just an absent container.
 | Networks | Docker network inventory filtered by the project label. | An unused-looking project network still counts as old installation state. |
 | Known images | Exact repository/tag strings derived from the current release pins. | A matching tag is not proof of exclusive ownership; another project may use it. Older or differently named images are not exhaustively discovered. |
 | Docker build cache | Docker builder's eligible unused cache, not a clinic-labeled inventory. | Removing it affects build performance for other projects using that builder. |
-| Installed kit | App-selected absolute directory ending in `care-clinic/install`, with additional deletion guards. | Contains runtime files, image/line records, keys, and potentially restore working material; older installs may still have legacy source checkouts. It is not interchangeable with a repository checkout. |
-| Local backup certificate | `keys/backup-cert.pem` in the installed kit. | Public encryption material only; it cannot decrypt backups. |
+| Installed deployment | App-selected absolute directory ending in `care-clinic/install`, with additional deletion guards. | Contains runtime files, image/line records, keys, and potentially restore working material; older installs may still have legacy source checkouts. It is not interchangeable with a repository checkout. |
+| Local backup certificate | `keys/backup-cert.pem` in the installed deployment. | Public encryption material only; it cannot decrypt backups. |
 | Exported backup certificate | `backup-cert.pem` in the effective backup directory. | Public ownership marker for recognizing this clinic's backup directory. |
 | Backup files | The backup package's validated inventory in the configured backup location. | Selecting backup removal must not mean recursively deleting arbitrary neighboring files. |
 | Saved configuration | App-provided config path, when it represents installation state rather than only a selected wizard name. | Keeps enough state, including `Removing`, to prevent an unsafe fresh start after partial deletion. |
@@ -217,7 +217,7 @@ stateDiagram-v2
 This checkpoint is not stored by `Clinic.Uninstall`, `Clinic.Purge`, or
 `TeardownProject`. A direct engine caller is responsible for its own policy
 and persistence. Through the App, normal start/configuration mutations reject
-removing state, and ordinary kit refresh does not silently recreate an
+removing state, and ordinary deployment refresh does not silently recreate an
 installation halfway through deletion.
 
 Public certificate preservation is attempted before `beginRemoval` in the public
@@ -322,7 +322,7 @@ not deletion authorization:
 
 Volumes alone cannot supply a container working-directory label. Discovery
 can therefore fail to locate files even while labeled volumes remain, which
-is one reason purge does not depend on having a complete kit.
+is one reason purge does not depend on having a complete deployment.
 
 ## 6. Normal Uninstall, phase by phase
 
@@ -331,15 +331,15 @@ is one reason purge does not depend on having a complete kit.
 | Option | Default and engine effect |
 | --- | --- |
 | `RemoveImages` | False. When true, remove recognized current image tags and prune eligible shared build cache. |
-| `RemoveInstallDir` | False. When true, delete the guarded installed-kit path at the end of successful teardown. The public normal App uninstall sets it true. |
-| `RemoveBackups` | False. When true, call the backup package's `DeleteBackups` after Docker/native phases succeed and before deleting the installed kit. |
+| `RemoveInstallDir` | False. When true, delete the guarded installed-deployment path at the end of successful teardown. The public normal App uninstall sets it true. |
+| `RemoveBackups` | False. When true, call the backup package's `DeleteBackups` after Docker/native phases succeed and before deleting the installed deployment. |
 | `RemoveUnusedCertificate` | False. Only meaningful at the final install-file deletion step. The App sets it true only for failed-install cleanup, never normal uninstall or purge. |
 
 ### Engine sequence
 
 ```mermaid
 flowchart TD
-    Inspect["Inspect all project resource kinds"] --> Key{"Delete kit and retain backups?"}
+    Inspect["Inspect all project resource kinds"] --> Key{"Delete deployment and retain backups?"}
     Key -->|yes| Preserve["Preserve backup certificate"]
     Key -->|no| Compose
     Preserve --> Compose{"Usable installed Compose file?"}
@@ -361,7 +361,7 @@ flowchart TD
 Detailed ordering in [`Uninstall`](../app/internal/clinic/uninstall.go):
 
 1. Inspect the project. Any inspection error stops the engine.
-2. If the kit will be deleted and backups retained, call
+2. If the deployment will be deleted and backups retained, call
    `PreserveBackupCertificate`. A preservation error stops before Docker teardown.
 3. Check the Compose anchor. When present and regular, obtain Caddy's root
    certificate **before** deleting its data volume.
@@ -461,7 +461,7 @@ traces: those still need to exist until verification succeeds. It also
 excludes images when the operator chose to keep them. All other reported
 traces make cleanup incomplete.
 
-This means an autostart or verification error can happen **after** the kit and
+This means an autostart or verification error can happen **after** the deployment and
 live Docker data are already gone. The retained removal state supports a
 cleanup retry; it is not evidence that those deleted data are still present.
 Normal uninstall does not purge diagnostic logs.
@@ -590,12 +590,12 @@ The two layers have different scopes:
 | --- | --- | --- |
 | Decide whether residue cleanup is allowed | Does not authenticate or check `SetupDone`. | Refuses a normally installed clinic; a removal-in-progress state can use cleanup. |
 | Obtain destructive confirmation | Only native helper confirmations as needed. | Presents the explicit "Remove everything" confirmation for detected residue. |
-| Discover an earlier install location | Uses the supplied `InstallDir`. | Resolves the earlier kit through residue discovery. |
+| Discover an earlier install location | Uses the supplied `InstallDir`. | Resolves the earlier deployment through residue discovery. |
 | Persist removal state | No config ownership. | Saves `Removing` before destructive delegation. |
-| Remove project resources | Yes, including by label when the kit is missing. | Delegates. |
+| Remove project resources | Yes, including by label when the deployment is missing. | Delegates. |
 | Remove known images/cache | Always attempts it. | Treats retained known images as a required leftover during the post-engine removal report. |
 | Revert native changes and autostart | Yes. | Verifies afterward. |
-| Delete installed kit | Yes, with path guards and `removeUnusedKey=false`. | Delegates. |
+| Delete installed deployment | Yes, with path guards and `removeUnusedKey=false`. | Delegates. |
 | Delete backup data or its retained backup certificate | No. | No. Checks backup/log location safety before purging logs. |
 | Remove old logs and saved config | No. | Yes, after the required engine/resource phases. |
 | Final residue report | No complete App scan. | Re-scans and reports success or incomplete cleanup. |
@@ -691,14 +691,14 @@ These checks are intentionally conservative but should not be overstated:
 The intended caller supplies the App's known install directory. Do not treat
 these guards as permission to aim the engine at arbitrary user folders.
 
-The installed public certificate is removed with the kit; its backup-folder
+The installed public certificate is removed with the deployment; its backup-folder
 copy identifies retained backups but cannot decrypt them. Backup-directory validation
 and recognized-backup deletion use separate backup-package guards; see
 [backups and restore](backups-and-restore.md).
 
 Removal methods do not call Start's `RecoverRestore` hook. Uninstall/purge
 are destructive choices, not alternate ways to finish a restore. The
-installed kit can contain a pending restore's journal or working material;
+installed deployment can contain a pending restore's journal or working material;
 consult the restore guide before choosing removal instead of recovery.
 
 ## 10. Docker images and caches are a different class of resource
@@ -861,11 +861,11 @@ inventories what remains rather than insisting on the original resource
 count. New/unremoved resources still fail verification. Source-file/path
 guards and preservation rules continue to apply on every attempt.
 
-### A current missing-kit caveat
+### A current missing-deployment caveat
 
 Normal engine Uninstall's missing-compose error suggests reopening CARE
 Clinic to restore the installed files. The App also correctly suppresses
-ordinary kit refresh while `Removing=true`. Therefore **reopening alone is
+ordinary deployment refresh while `Removing=true`. Therefore **reopening alone is
 not guaranteed to repair that particular removal-in-progress state**.
 
 Do not erase `Removing` merely to force a normal Start or fresh setup.

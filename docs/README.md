@@ -9,7 +9,7 @@ The server operations documented here do not run on clients.
 
 These guides cover the operator's desktop workflows and the current
 implementation, from React/Wails lifecycle handling to operating-system
-primitives and the deployment kit. They do not replace the CARE medical
+primitives and the deployment. They do not replace the CARE medical
 application's own user or API documentation.
 
 ## Start here
@@ -69,8 +69,8 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | CARE frontend | The separately built `care_fe` web application served to clinic staff by the Compose stack. |
 | `App` | The Wails-facing object in `app/*.go`; owns application state, authorization, jobs, confirmation requests and native integrations. |
 | `Clinic` | The orchestration object in `app/internal/clinic/`; operates the installed stack without importing Wails. |
-| Deployment kit | The files in `deployments/`, embedded into the desktop executable and unpacked for Docker Compose. |
-| Installed kit | The runtime copy of that kit on the clinic computer; distinct from source and build staging. |
+| Deployment | The files in `deployments/`, embedded into the desktop executable and unpacked for Docker Compose. |
+| Installed deployment | The runtime copy of that deployment on the clinic computer; distinct from source and build staging. |
 | Compose project | The named set of containers, networks, and volumes belonging to `care-clinic`. |
 | Named volume | Docker-managed persistent storage, separate from the desktop executable and source checkout. |
 | Pin | A version, image reference, repository URL, or source commit describing what a desktop release expects. |
@@ -101,7 +101,7 @@ File links lead to the implementation rather than fixed line numbers. When chang
 
 ## Operational caution
 
-Running the desktop application is not a read-only demonstration: it can refresh an existing installed kit, start the clinic, and advertise its name. Setup, restore, networking repair, and removal have real effects on the current computer. Use a disposable development environment for end-to-end experiments.
+Running the desktop application is not a read-only demonstration: it can refresh an existing installed deployment, start the clinic, and advertise its name. Setup, restore, networking repair, and removal have real effects on the current computer. Use a disposable development environment for end-to-end experiments.
 
 For safe UI regression work, use the [Playwright test fixture](development-and-release.md#safe-desktop-ui-tests).
 It requires Vite test mode and does not operate a native clinic. Ordinary

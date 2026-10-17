@@ -111,7 +111,7 @@ compiled frontend settings; see [CARE images](docs/images.md).
 |---|---|
 | `app/` | The desktop app: Go engine in `internal/`, Wails bindings in `*.go`, React UI in `frontend/` |
 | `images/` | CARE 3.1 frontend runtime wrapper and image verification scripts |
-| `deployments/` | The server kit: compose file, Caddyfile, env files, backup script, and public certificate bootstrap route |
+| `deployments/` | The server deployment: compose file, Caddyfile, env files, backup script, and public certificate bootstrap route |
 | `.github/workflows/` | CI, and releases started when `CARE_CLINIC_VERSION` in `deployments/.env` changes on `main` |
 
 **Using the app:** [Desktop workflows](docs/desktop-workflows.md) covers setup,

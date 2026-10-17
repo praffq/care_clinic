@@ -24,35 +24,35 @@ const (
 	agentStateDir  = AgentClinicDir + "/backup-state"
 )
 
-// kitFiles and kitDirs are every bind and env_file input of
+// deploymentFiles and deploymentDirs are every bind and env_file input of
 // deployments/docker-compose.yml, relative to the install folder. backup-state
 // is guest-owned and exported, never uploaded.
 var (
-	kitFiles = []string{"docker-compose.yml", ".env", "backend.env", "frontend.env", "secrets.env", "Caddyfile", "keys/backup-cert.pem"}
-	kitDirs  = []string{"scripts", "setup", "minio"}
+	deploymentFiles = []string{"docker-compose.yml", ".env", "backend.env", "frontend.env", "secrets.env", "Caddyfile", "keys/backup-cert.pem"}
+	deploymentDirs  = []string{"scripts", "setup", "minio"}
 )
 
-// publicKit reports kit files read by unprivileged container users (postgres
+// publicDeployment reports deployment files read by unprivileged container users (postgres
 // reads /keys and /scripts for WAL archiving), so the guest copy is
 // world-readable even when the host copy is private. They hold no secret; the
 // agent creates their leaf folders 0755 inside the private clinic folder.
-func publicKit(rel string) bool {
+func publicDeployment(rel string) bool {
 	return rel == "keys/backup-cert.pem" || strings.HasPrefix(rel, "scripts/")
 }
 
-type kitKey struct {
+type deploymentKey struct {
 	client *engine.Client
 	dir    string
 }
 
-type kitUpload struct {
+type deploymentUpload struct {
 	sum   string
 	stamp int64
 }
 
 var (
-	kitGate     = make(chan struct{}, 1)
-	kitUploaded = map[kitKey]map[string]kitUpload{}
+	deploymentGate     = make(chan struct{}, 1)
+	deploymentUploaded = map[deploymentKey]map[string]deploymentUpload{}
 )
 
 func (e *Clinic) agentClient() *engine.Client {
@@ -62,10 +62,10 @@ func (e *Clinic) agentClient() *engine.Client {
 	return engine.Default
 }
 
-// localKit lists the clinic kit files present in the install folder.
-func (e *Clinic) localKit() ([]string, error) {
+// localDeployment lists the clinic deployment files present in the install folder.
+func (e *Clinic) localDeployment() ([]string, error) {
 	var rels []string
-	for _, rel := range kitFiles {
+	for _, rel := range deploymentFiles {
 		info, err := os.Lstat(filepath.Join(e.InstallDir, filepath.FromSlash(rel)))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -78,7 +78,7 @@ func (e *Clinic) localKit() ([]string, error) {
 		}
 		rels = append(rels, rel)
 	}
-	for _, dir := range kitDirs {
+	for _, dir := range deploymentDirs {
 		root := filepath.Join(e.InstallDir, dir)
 		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -118,13 +118,13 @@ func fileSum(p string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, err
 }
 
-// uploadKit makes the agent's clinic folder an exact copy of this install's
+// uploadDeployment makes the agent's clinic folder an exact copy of this install's
 // compose inputs before any engine operation: changed files are replaced
-// atomically by the agent, and files the kit no longer has are removed so an
+// atomically by the agent, and files the deployment no longer has are removed so an
 // old setting can never linger. Guest-owned backup state is left alone.
-func (e *Clinic) uploadKit(ctx context.Context) error {
+func (e *Clinic) uploadDeployment(ctx context.Context) error {
 	if _, err := os.Stat(filepath.Join(e.InstallDir, "docker-compose.yml")); err != nil {
-		// Nothing installed yet (or it was removed): there is no kit to send.
+		// Nothing installed yet (or it was removed): there is no deployment to send.
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -132,12 +132,12 @@ func (e *Clinic) uploadKit(ctx context.Context) error {
 	}
 	client := e.agentClient()
 	select {
-	case kitGate <- struct{}{}:
-		defer func() { <-kitGate }()
+	case deploymentGate <- struct{}{}:
+		defer func() { <-deploymentGate }()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	rels, err := e.localKit()
+	rels, err := e.localDeployment()
 	if err != nil {
 		return err
 	}
@@ -161,11 +161,11 @@ func (e *Clinic) uploadKit(ctx context.Context) error {
 	for _, en := range guest {
 		remote[en.Path] = en
 	}
-	key := kitKey{client, e.InstallDir}
-	sent := kitUploaded[key]
+	key := deploymentKey{client, e.InstallDir}
+	sent := deploymentUploaded[key]
 	if sent == nil {
-		sent = map[string]kitUpload{}
-		kitUploaded[key] = sent
+		sent = map[string]deploymentUpload{}
+		deploymentUploaded[key] = sent
 	}
 	want := make(map[string]bool, len(rels))
 	for _, rel := range rels {
@@ -179,11 +179,11 @@ func (e *Clinic) uploadKit(ctx context.Context) error {
 		if prev, done := sent[rel]; ok && done && prev.sum == sum && have.Size == size && prev.stamp == have.MtimeNs {
 			continue
 		}
-		if err := putKitFile(ctx, client, local, path.Join(AgentClinicDir, rel), publicKit(rel)); err != nil {
+		if err := putDeploymentFile(ctx, client, local, path.Join(AgentClinicDir, rel), publicDeployment(rel)); err != nil {
 			delete(sent, rel)
 			return fmt.Errorf("copy %s into the CARE engine: %w", rel, err)
 		}
-		sent[rel] = kitUpload{sum: sum}
+		sent[rel] = deploymentUpload{sum: sum}
 	}
 	for rel := range remote {
 		if want[rel] || rel == "backup-state" || strings.HasPrefix(rel, "backup-state/") {
@@ -207,8 +207,8 @@ func (e *Clinic) uploadKit(ctx context.Context) error {
 	return nil
 }
 
-// putKitFile changes public input modes only on the engine.
-func putKitFile(ctx context.Context, client *engine.Client, local, remote string, public bool) error {
+// putDeploymentFile changes public input modes only on the engine.
+func putDeploymentFile(ctx context.Context, client *engine.Client, local, remote string, public bool) error {
 	if !public {
 		return client.Put(ctx, local, remote)
 	}

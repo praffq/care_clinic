@@ -57,7 +57,7 @@ func (s *Store) RestorePointInTime(target, recoveryFile string, now time.Time) e
 		return errors.New("the restore helper scripts are missing from the install; repair CARE first")
 	}
 	// Replay reads the guest's own backups and change files, and the guest
-	// copy of the scripts and keys sent with the clinic kit.
+	// copy of the scripts and keys sent with the clinic deployment.
 	return s.stagedRestore(false, func(j *restoreJournal) error {
 		return s.stagePointInTime(j, s.agentBackupDir(), path.Join(s.agentDir(), "scripts"), path.Join(s.agentDir(), "keys"), key, when)
 	})
