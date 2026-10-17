@@ -34,6 +34,7 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
   const mounted = useRef(false);
   const checkPending = useRef(false);
   const installPending = useRef(false);
+  const checkProgress = useRef(false);
   const progressRef = useRef<AppUpdateProgress | null>(null);
   const failure = useRef<unknown>(null);
   const updating = busy && busyLabel === "Updating CARE Clinic";
@@ -54,6 +55,11 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
       if (mounted.current) setProblem(updateProblem(error, true));
     } finally {
       checkPending.current = false;
+      if (checkProgress.current && !installPending.current) {
+        checkProgress.current = false;
+        progressRef.current = null;
+        if (mounted.current) setProgress(null);
+      }
       if (mounted.current) setChecking(false);
     }
   }, [log]);
@@ -66,7 +72,14 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
   }, []);
 
   useEffect(() => {
+    const offCheckProgress = onCareEvent("app-update-check-progress", (next: AppUpdateProgress) => {
+      if (!checkPending.current || installPending.current) return;
+      checkProgress.current = true;
+      progressRef.current = next;
+      setProgress(next);
+    });
     const offProgress = onCareEvent("app-update-progress", (next: AppUpdateProgress) => {
+      checkProgress.current = false;
       progressRef.current = next;
       setProgress(next);
       setStarting(false);
@@ -85,6 +98,7 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
       }
     });
     return () => {
+      offCheckProgress();
       offProgress();
       offError();
       offDone();

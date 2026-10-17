@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,8 +16,95 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
+
+func TestAppUpdateCheckStagesWithoutEmittingInstallProgress(t *testing.T) {
+	if desktopPlatformKey() == "" {
+		t.Skip("desktop installers are only published for macOS and Windows")
+	}
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKeys, oldHTTP := release.PublicKeys, http.DefaultClient
+	t.Cleanup(func() { release.PublicKeys, http.DefaultClient = oldKeys, oldHTTP })
+	release.PublicKeys = []string{base64.StdEncoding.EncodeToString(pub)}
+	data, err := os.ReadFile("internal/release/testdata/published-revision1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := release.DecodeManifest(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.CanonicalizeImageReferences()
+	manifest.Desktop.Version = "0.0.2"
+	payload := []byte("verified desktop installer fixture")
+	sum := sha256.Sum256(payload)
+	assetRequests := 0
+	var encoded, signature []byte
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/updates.json":
+			_, _ = w.Write(encoded)
+		case "/updates.json.sig":
+			_, _ = w.Write(signature)
+		case "/installer":
+			assetRequests++
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	http.DefaultClient = server.Client()
+	manifest.Desktop.Assets[desktopPlatformKey()] = release.Asset{
+		URL: server.URL + "/installer", Size: int64(len(payload)), SHA256: hex.EncodeToString(sum[:]),
+	}
+	encoded, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature = ed25519.Sign(key, encoded)
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	t.Setenv("LOCALAPPDATA", root)
+	t.Setenv("XDG_CACHE_HOME", root)
+	app := &App{
+		configFile:       filepath.Join(root, "config.json"),
+		pins:             &release.Pins{AppVersion: "0.0.1", UpdatesURL: server.URL + "/updates.json"},
+		stagedAppUpdates: make(map[string]string),
+	}
+	app.updateCoordinator, err = updates.New(filepath.Join(app.installDir(), "updates"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress []AppUpdateProgress
+	app.emitEvent = func(event string, args ...any) {
+		if event != "app-update-check-progress" {
+			t.Errorf("checking must not emit install lifecycle event %q", event)
+			return
+		}
+		progress = append(progress, args[0].(AppUpdateProgress))
+	}
+	for check := 0; check < 2; check++ {
+		result, err := app.CheckAppUpdate()
+		if err != nil || !result.Available || result.Version != "0.0.2" {
+			t.Fatalf("check %d: result=%+v error=%v", check, result, err)
+		}
+	}
+	if assetRequests != 1 || len(progress) == 0 || progress[len(progress)-1].Done != int64(len(payload)) {
+		t.Fatalf("staging/cache behavior: requests=%d progress=%+v", assetRequests, progress)
+	}
+	staged, err := os.ReadFile(app.stagedAppUpdates["0.0.2"])
+	if err != nil || string(staged) != string(payload) {
+		t.Fatalf("installer was not staged intact: %v", err)
+	}
+}
 
 func TestNewerVersion(t *testing.T) {
 	for _, tt := range []struct {

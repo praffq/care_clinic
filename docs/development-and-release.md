@@ -529,6 +529,12 @@ the existing DMG and NSIS assets and `SHA256SUMS`; no additional executable help
 or unsigned remote script is downloaded. Locally generated helpers wait for the
 desktop process to exit, replace the installed application, and reopen it.
 
+Checking for desktop updates also downloads and checksum-verifies an available
+installer, but does not install it. Its `app-update-check-progress` events belong
+to that check and end when `CheckAppUpdate` resolves or rejects, returning the UI
+to Update now or retry. Only an accepted installation uses `app-update-progress`
+and the global update-job lock; finishing a check must never unlock an installation.
+
 macOS extracts and verifies the bundle before handoff, then stages a complete
 copy beside the current bundle before renaming it. Windows releases must retain
 the `/S /CAREUPDATE=1 /D=<existing directory>` path in `project.nsi`: it stages

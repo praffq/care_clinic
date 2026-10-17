@@ -280,9 +280,12 @@ func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 			}
 			delete(a.stagedAppUpdates, out.Version)
 		}
-		a.updateProgress(phaseDownloading, 0, asset.Size)
+		checkProgress := func(done int64) {
+			a.emit("app-update-check-progress", AppUpdateProgress{Phase: phaseDownloading, Done: done, Total: asset.Size})
+		}
+		checkProgress(0)
 		path, err := downloadVerified(ghAsset{Name: out.Asset, URL: asset.URL, Size: asset.Size}, asset.SHA256,
-			out.Version, a.logln, func(done int64) { a.updateProgress(phaseDownloading, done, asset.Size) })
+			out.Version, a.logln, checkProgress)
 		if err != nil {
 			return err
 		}

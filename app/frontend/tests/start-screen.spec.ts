@@ -166,6 +166,56 @@ test("available updates keep both paths usable and open the release notes", asyn
     .toEqual(["https://github.com/ohcnetwork/care_desktop/releases"]);
 });
 
+for (const failed of [false, true]) {
+  test(`automatic staging ${failed ? "failure" : "completion"} leaves downloading state`, async ({ page }) => {
+    await visit(page);
+    await page.evaluate(() => window.careTest.hold("CheckAppUpdate"));
+    await page.getByRole("button", { name: "Check for updates", exact: true }).click();
+    await expect.poll(() => methodCount(page, "CheckAppUpdate")).toBe(2);
+    await page.evaluate(() => window.careTest.emit("app-update-check-progress", { phase: "downloading", done: 50_000_000, total: 50_000_000 }));
+    await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+    await page.evaluate((reject) => {
+      window.careTest.setUpdate({
+        current: "0.1.5", version: "0.1.6", available: true,
+        notes_url: "https://example.test/releases", asset: "installer.dmg", size: 50_000_000,
+      });
+      if (reject) window.careTest.failNext("CheckAppUpdate", "checksum verification failed");
+      window.careTest.release("CheckAppUpdate");
+    }, failed);
+    await expect(page.getByRole("progressbar")).toHaveCount(0);
+    await expect(setup(page)).toBeEnabled();
+    await expect(connect(page)).toBeEnabled();
+    if (failed) {
+      await expect(page.getByRole("alert").first()).toContainText("Couldn't check for updates");
+      await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeEnabled();
+    } else {
+      await expect(page.getByRole("button", { name: "Update now", exact: true })).toBeEnabled();
+      expect(await methodCount(page, "InstallAppUpdate")).toBe(0);
+      await page.getByRole("button", { name: "Update now", exact: true }).click();
+      await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "62");
+      await expect(setup(page)).toBeDisabled();
+      await expect(connect(page)).toBeDisabled();
+    }
+  });
+}
+
+test("check completion cannot unlock an active native installation", async ({ page }) => {
+  await visit(page);
+  await page.evaluate(() => window.careTest.hold("CheckAppUpdate"));
+  await page.getByRole("button", { name: "Check for updates", exact: true }).click();
+  await expect.poll(() => methodCount(page, "CheckAppUpdate")).toBe(2);
+  await page.evaluate(() => {
+    window.careTest.emit("app-update-check-progress", { phase: "downloading", done: 50, total: 100 });
+    window.careTest.progress({ phase: "installing", done: 0, total: 0 });
+    window.careTest.release("CheckAppUpdate");
+  });
+  await expect(page.getByText(/Installing CARE Clinic/)).toBeVisible();
+  await expect(setup(page)).toBeDisabled();
+  await expect(connect(page)).toBeDisabled();
+  await page.evaluate(() => window.careTest.finishUpdate("installer stopped"));
+  await expect(setup(page)).toBeEnabled();
+});
+
 test("update acceptance is not completion and duplicate clicks start only one job", async ({ page }) => {
   await visit(page, "available");
   await page.evaluate(() => window.careTest.hold("InstallAppUpdate"));
