@@ -126,6 +126,36 @@ same-version automatic update. Neither merging nor local
 tests prove successful native installation/activation; check macOS and Windows
 on isolated machines before deploying to a real clinic.
 
+## Recovering a failed feed publication
+
+If a `main` Publish run built and released every component but failed in
+"Prepare atomic update publication", rerunning that job keeps the old workflow
+and code. Instead, dispatch only the final two jobs from a fixed ref:
+
+```sh
+gh workflow run publish.yml --repo praffq/care_clinic --ref <fixed-ref> \
+  -f recover_run_id=<failed-run-id>
+```
+
+With `recover_run_id` set, planning, every build and the CI gate are skipped.
+`pipeline.py recover` accepts the source only if it is a failed `push` Publish
+run on `main` in this repository; `CI` and every build job succeeded or were
+skipped; only preparation failed and deployment was skipped. The source
+preparation job's deployment record must match the trust selected by
+`UPDATES_SIGNING_ENABLED`. The fixed ref must descend from the source commit
+with an unchanged `versions.toml`. The live feed must still equal the source
+run's `previous.json`.
+
+It reuses the source `release-plan` and only the final `output-images`,
+`output-desktop` and `output-engine`/`output-engine-reused` artifacts.
+Per-architecture `images-native-*` fragments are never merged. Desktop and
+engine outputs must match published release source hashes, GitHub asset
+digests and sizes. Recovery then runs the normal manifest, signing or
+unsigned-development verification and Pages deployment. It never rebuilds,
+deletes or overwrites releases. The `github-pages` environment allows only
+`main`, so deploying from any other ref requires a temporary deployment-branch
+policy for that ref.
+
 ## Validation
 
 From `app/`, run `go test ./internal/release ./internal/compose`.

@@ -210,6 +210,149 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(resolved["tools"]["care_engine_aarch64"]["sha256"], "a" * 64)
                 self.assertEqual(resolved["tools"]["care_engine_x86_64"]["sha256"], "b" * 64)
 
+    def recovery_fixture(self):
+        repo, sha, run_id = "org/repo", "c" * 40, "123"
+        digest = "d" * 64
+        desktop = {"desktop": {"version": "0.0.1", "assets": {"darwin-universal": {
+            "url": f"https://github.com/{repo}/releases/download/v0.0.1/app.dmg", "sha256": digest, "size": 9}}}}
+        engine = {"engine": {"version": "0.1.3", "assets": {"linux-amd64": {
+            "url": f"https://github.com/{repo}/releases/download/care-engine-v0.1.3/e.tar.gz",
+            "sha256": digest, "size": 7}}}}
+        images = {"care": {"final": True}, "support_images": {"silo": "final"}}
+        state = {
+            "run": {"repository": {"full_name": repo}, "head_repository": {"full_name": repo},
+                    "event": "push", "head_branch": "main", "path": ".github/workflows/publish.yml",
+                    "status": "completed", "conclusion": "failure", "head_sha": sha},
+            "jobs": [{"name": "Engine checks / Build engine amd64", "conclusion": "success", "id": 1},
+                     {"name": "Desktop checks / Sign Windows", "conclusion": "skipped", "id": 2},
+                     {"name": "CI", "conclusion": "success", "id": 3},
+                     {"name": "Prepare atomic update publication", "conclusion": "failure", "id": 4},
+                     {"name": "Deploy update feed", "conclusion": "skipped", "id": 5}],
+            "deployment_env": "unsigned-development",
+            "log_url": f"https://github.com/{repo}/actions/runs/{run_id}/job/4",
+            "versions_diff": "",
+            "plan": {"desktop": True, "engine": True, "backend": True, "frontend": False, "support": False,
+                     "desktop_version": "0.0.1", "engine_version": "0.1.3",
+                     "hashes": {"desktop": "a" * 64, "engine": "b" * 64}},
+            "artifacts": {"release-plan": None, "output-images": ("images.json", images),
+                          "output-images-amd64": ("images.json", {"care": {"amd64": True}, "support_images": {}}),
+                          "output-desktop": ("desktop.json", desktop), "output-engine": ("engine.json", engine)},
+            "releases": {"v0.0.1": ("a" * 64, desktop), "care-engine-v0.1.3": ("b" * 64, engine)},
+            "feed": None,
+        }
+
+        def fake_run(*args):
+            if args[:2] == ("gh", "api"):
+                path = args[-1]
+                if path.endswith(f"/runs/{run_id}"):
+                    return json.dumps(state["run"])
+                if "/jobs?" in path:
+                    return json.dumps([{"jobs": state["jobs"]}])
+                if "/artifacts?" in path:
+                    return json.dumps([{"artifacts": [{"name": n, "expired": False} for n in state["artifacts"]]}])
+                if "/deployments?" in path:
+                    env = path.split("environment=")[1].split("&")[0]
+                    return json.dumps([{"id": 9}] if env == state["deployment_env"] else [])
+                if path.endswith("/deployments/9/statuses"):
+                    return json.dumps([{"log_url": state["log_url"]}])
+                if "/releases/tags/" in path:
+                    tag = path.rsplit("/", 1)[1]
+                    source_hash, output = state["releases"][tag]
+                    component = next(iter(output))
+                    return json.dumps({"draft": False, "prerelease": False, "body": f"Source hash: {source_hash}",
+                                       "assets": [{"name": a["url"].rsplit("/", 1)[1], "browser_download_url": a["url"],
+                                                   "digest": "sha256:" + a["sha256"], "size": a["size"]}
+                                                  for a in output[component]["assets"].values()]})
+            if args[:2] == ("git", "merge-base"):
+                return ""
+            if args[:2] == ("git", "diff"):
+                return state["versions_diff"]
+            if args[:3] == ("gh", "run", "download"):
+                name, directory = args[args.index("--name") + 1], Path(args[args.index("--dir") + 1])
+                if name == "release-plan":
+                    pipeline.write(directory / "plan.json", state["plan"])
+                else:
+                    filename, value = state["artifacts"][name]
+                    pipeline.write(directory / filename, value)
+                return ""
+            raise AssertionError(args)
+
+        def fake_previous():
+            if state["feed"] is not None:
+                Path("previous.json").write_text(state["feed"])
+
+        env = {"GITHUB_REPOSITORY": repo, "RECOVER_RUN_ID": run_id, "UPDATE_TRUST": "unsigned-development"}
+        return state, fake_run, fake_previous, env, (images, desktop, engine)
+
+    def test_recovery_reuses_verified_final_outputs_of_failed_main_run(self):
+        state, fake_run, fake_previous, env, (images, desktop, engine) = self.recovery_fixture()
+        with tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+            with patch.dict(os.environ, env), patch.object(pipeline, "run", side_effect=fake_run), \
+                    patch.object(pipeline, "previous", side_effect=fake_previous):
+                pipeline.recover()
+            self.assertEqual(pipeline.read("plan.json"), state["plan"])
+            self.assertEqual(sorted(p.name for p in Path("outputs").iterdir()),
+                             ["desktop.json", "engine.json", "images.json"])
+            # The final multi-arch index wins; per-arch fragments are never merged.
+            self.assertEqual(pipeline.read("outputs/images.json"), images)
+            self.assertEqual(pipeline.read("outputs/desktop.json"), desktop)
+            self.assertEqual(pipeline.read("outputs/engine.json"), engine)
+            self.assertFalse(Path("recover").exists())
+
+    def test_recovery_rejects_untrusted_incomplete_or_changed_sources(self):
+        def mutate(path, value):
+            def apply(state):
+                target = state
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+            return apply
+
+        def bad_digest(state):
+            tag, (source_hash, output) = "v0.0.1", state["releases"]["v0.0.1"]
+            changed = copy.deepcopy(output)
+            changed["desktop"]["assets"]["darwin-universal"]["sha256"] = "e" * 64
+            state["releases"][tag] = (source_hash, changed)
+
+        cases = {
+            "other repository": mutate(["run", "head_repository", "full_name"], "fork/repo"),
+            "non-main branch": mutate(["run", "head_branch"], "feature"),
+            "non-push event": mutate(["run", "event"], "workflow_dispatch"),
+            "other workflow": mutate(["run", "path"], ".github/workflows/other.yml"),
+            "successful run": mutate(["run", "conclusion"], "success"),
+            "failed build": mutate(["jobs", 0, "conclusion"], "failure"),
+            "cancelled build": mutate(["jobs", 1, "conclusion"], "cancelled"),
+            "CI not green": mutate(["jobs", 2, "conclusion"], "skipped"),
+            "deploy already ran": mutate(["jobs", 4, "conclusion"], "success"),
+            "other trust": mutate(["deployment_env"], "release-signing"),
+            "other job deployment": mutate(["log_url"], "https://github.com/org/repo/actions/runs/123/job/40"),
+            "versions changed": mutate(["versions_diff"], "versions.toml"),
+            "feed changed": mutate(["feed"], "{}"),
+            "missing final images": lambda s: s["artifacts"].pop("output-images"),
+            "duplicate engine": mutate(["artifacts", "output-engine-reused"], ("engine.json", {"engine": {}})),
+            "release source hash": lambda s: s["releases"].update(
+                {"care-engine-v0.1.3": ("f" * 64, s["releases"]["care-engine-v0.1.3"][1])}),
+            "asset digest": bad_digest,
+            "version mismatch": mutate(["plan", "desktop_version"], "0.0.2"),
+        }
+        for name, change in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+                state, fake_run, fake_previous, env, _ = self.recovery_fixture()
+                change(state)
+                with patch.dict(os.environ, env), patch.object(pipeline, "run", side_effect=fake_run), \
+                        patch.object(pipeline, "previous", side_effect=fake_previous):
+                    with self.assertRaises(ValueError):
+                        pipeline.recover()
+        for name, extra in {"bad run id": {"RECOVER_RUN_ID": "1;rm"},
+                            "signed without selector": {"UPDATE_TRUST": "signed"},
+                            "selector without signed": {"UPDATES_SIGNING_ENABLED": "true"}}.items():
+            with self.subTest(name), tempfile.TemporaryDirectory(dir=".") as directory, contextlib.chdir(directory):
+                state, fake_run, fake_previous, env, _ = self.recovery_fixture()
+                with patch.dict(os.environ, {**env, **extra}), patch.object(pipeline, "run", side_effect=fake_run) as run:
+                    with self.assertRaises(ValueError):
+                        pipeline.recover()
+                    run.assert_not_called()
+
     def test_required_checks_reject_failure_cancellation_and_skips(self):
         for name in ["plan", "care", "engine", "desktop", "desktop-package"]:
             for result in ["success", "failure", "cancelled", "skipped"]:

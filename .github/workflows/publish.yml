@@ -17,6 +17,14 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      recover_run_id:
+        description: >-
+          Recovery only: ID of a failed main Publish run whose builds and
+          releases succeeded. Reruns only update publication from its outputs.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -34,6 +42,7 @@ defaults:
 jobs:
   plan:
     name: Resolve release sources once
+    if: ${{ !inputs.recover_run_id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -148,7 +157,7 @@ jobs:
       update_trust: ${{ needs.plan.outputs.update_trust }}
   required:
     name: CI
-    if: always()
+    if: ${{ always() && !inputs.recover_run_id }}
     needs: [plan, care, engine, desktop, desktop-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -163,31 +172,51 @@ jobs:
   sign:
     name: Prepare atomic update publication
     needs: [plan, required]
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true'
+    # Recovery dispatches skip planning and every build; they reuse the
+    # verified outputs of an earlier main run instead.
+    if: >-
+      ${{ !cancelled() && (inputs.recover_run_id
+      && needs.plan.result == 'skipped' && needs.required.result == 'skipped'
+      || needs.required.result == 'success'
+      && needs.plan.outputs.publish == 'true' && needs.plan.outputs.changed == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
     env:
-      UPDATE_TRUST: ${{ needs.plan.outputs.update_trust }}
+      UPDATE_TRUST: ${{ needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development') }}
     # Only signed publication may access the protected private key. The
     # development environment has no signing secrets or approval gate.
-    environment: ${{ needs.plan.outputs.update_trust == 'signed' && 'release-signing' || 'unsigned-development' }}
+    environment: ${{ (needs.plan.outputs.update_trust || (vars.UPDATES_SIGNING_ENABLED == 'true' && 'signed' || 'unsigned-development')) == 'signed' && 'release-signing' || 'unsigned-development' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.recover_run_id && '0' || '1' }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ !inputs.recover_run_id }}
         with:
           name: release-plan
           path: .
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ !inputs.recover_run_id }}
         with:
           pattern: output-*
           merge-multiple: true
           path: outputs
+      - name: Reuse verified plan and final outputs of the recovery source run
+        if: ${{ inputs.recover_run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
+          UPDATES_SIGNING_ENABLED: ${{ vars.UPDATES_SIGNING_ENABLED }}
+        run: python3 .github/scripts/pipeline.py recover
       - name: Generate manifest using sole release configuration
         run: |
           mkdir -p ci public

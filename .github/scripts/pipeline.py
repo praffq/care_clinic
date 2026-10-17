@@ -304,6 +304,122 @@ def merge():
     write("outputs.json", result)
 
 
+RECOVERED_JOBS = {"Prepare atomic update publication": "failure", "Deploy update feed": "skipped"}
+FINAL_OUTPUTS = {
+    "images": (["output-images"], {"care", "support_images"}),
+    "desktop": (["output-desktop"], {"desktop"}),
+    "engine": (["output-engine", "output-engine-reused"], {"engine"}),
+}
+
+
+def gh_pages(path, key):
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp", path))
+    return [item for page in pages for item in page[key]]
+
+
+def verify_published(repository, component, output, source_hash):
+    tag = f"v{output['version']}" if component == "desktop" else f"care-engine-v{output['version']}"
+    release = json.loads(run("gh", "api", f"repos/{repository}/releases/tags/{tag}"))
+    if (release["draft"] or release["prerelease"]
+            or f"Source hash: {source_hash}" not in (release.get("body") or "").splitlines()):
+        raise ValueError(f"{tag} does not match the source run's {component} source hash")
+    remote = {asset["name"]: asset for asset in release["assets"]}
+    prefix = f"https://github.com/{repository}/releases/download/{tag}/"
+    for platform, asset in output["assets"].items():
+        name = asset["url"].removeprefix(prefix)
+        published = remote.get(name)
+        if (not asset["url"].startswith(prefix) or published is None
+                or published["browser_download_url"] != asset["url"]
+                or published.get("digest") != f"sha256:{asset['sha256']}"
+                or published["size"] != asset["size"]):
+            raise ValueError(f"{component} {platform} output does not match published asset {tag}/{name}")
+
+
+def recover():
+    """Finish publication for a Publish run whose builds and releases succeeded.
+
+    Reuses that run's original plan and final outputs after checking
+    provenance; never rebuilds, re-signs installers or relaxes validation.
+    """
+    repository = os.environ["GITHUB_REPOSITORY"]
+    run_id = os.environ["RECOVER_RUN_ID"]
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id):
+        raise ValueError("recover_run_id must be a workflow run ID")
+    mode = update_trust()
+    enabled = os.environ.get("UPDATES_SIGNING_ENABLED", "")
+    if enabled not in ("", "false", "true") or (enabled == "true") != (mode == "signed"):
+        raise ValueError("recovery update trust must match UPDATES_SIGNING_ENABLED")
+    for name in ("plan.json", "previous.json", "previous.json.sig", "outputs", "recover"):
+        if Path(name).exists():
+            raise ValueError("recovery workspace must start clean")
+
+    source = json.loads(run("gh", "api", f"repos/{repository}/actions/runs/{run_id}"))
+    if (source["repository"]["full_name"] != repository
+            or source["head_repository"]["full_name"] != repository
+            or source["event"] != "push" or source["head_branch"] != "main"
+            or source["path"] != ".github/workflows/publish.yml"
+            or source["status"] != "completed" or source["conclusion"] != "failure"):
+        raise ValueError("recovery source must be a failed Publish push run on main of this repository")
+    sha = source["head_sha"]
+    jobs = gh_pages(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100", "jobs")
+    for name, conclusion in {**RECOVERED_JOBS, "CI": "success"}.items():
+        if [job["conclusion"] for job in jobs if job["name"] == name] != [conclusion]:
+            raise ValueError(f"recovery source job {name!r} must have concluded {conclusion}")
+    if any(job["conclusion"] not in ("success", "skipped") for job in jobs if job["name"] not in RECOVERED_JOBS):
+        raise ValueError("every recovery source build job must have succeeded or been skipped")
+
+    # The failed preparation job recorded which trust environment it used.
+    sign_job = next(job["id"] for job in jobs if job["name"] == "Prepare atomic update publication")
+    environment = "release-signing" if mode == "signed" else "unsigned-development"
+    deployments = json.loads(run("gh", "api",
+                                 f"repos/{repository}/deployments?sha={sha}&environment={environment}&per_page=100"))
+    log_suffix = f"/actions/runs/{run_id}/job/{sign_job}"
+    if not any(status.get("log_url", "").endswith(log_suffix) for deployment in deployments
+               for status in json.loads(run("gh", "api", f"repos/{repository}/deployments/{deployment['id']}/statuses"))):
+        raise ValueError(f"recovery source run did not prepare publication with {mode} trust")
+
+    run("git", "merge-base", "--is-ancestor", sha, "HEAD")
+    if run("git", "diff", "--name-only", sha, "HEAD", "--", "versions.toml"):
+        raise ValueError("versions.toml changed since the recovery source run; run the full pipeline")
+
+    previous()
+    current = {name: Path(name).read_bytes() for name in ("previous.json", "previous.json.sig") if Path(name).exists()}
+    for name in current:
+        Path(name).unlink()
+    artifacts = {artifact["name"] for artifact in gh_pages(
+        f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100", "artifacts") if not artifact["expired"]}
+
+    def download(name, directory):
+        run("gh", "run", "download", run_id, "--repo", repository, "--name", name, "--dir", directory)
+
+    download("release-plan", ".")
+    original = {name: Path(name).read_bytes() for name in ("previous.json", "previous.json.sig") if Path(name).exists()}
+    if original != current:
+        raise ValueError("the update feed changed since the recovery source run; run the full pipeline")
+    plan = read("plan.json")
+    wanted = {"images": plan["backend"] or plan["frontend"] or plan["support"],
+              "desktop": plan["desktop"], "engine": plan["engine"]}
+    for component, (names, keys) in FINAL_OUTPUTS.items():
+        # Only final outputs: per-architecture image fragments are never merged.
+        present = [name for name in names if name in artifacts]
+        if len(present) != int(bool(wanted[component])):
+            raise ValueError(f"recovery source must provide exactly one final {component} output")
+        if not present:
+            continue
+        directory = Path("recover") / present[0]
+        download(present[0], str(directory))
+        files = sorted(directory.iterdir())
+        if [path.name for path in files] != [f"{component}.json"] or set(read(files[0])) != keys:
+            raise ValueError(f"unexpected {present[0]} artifact contents")
+        write(f"outputs/{component}.json", read(files[0]))
+        if component != "images":
+            output = read(files[0])[component]
+            if output["version"] != plan[f"{component}_version"]:
+                raise ValueError(f"{component} output version does not match the source plan")
+            verify_published(repository, component, output, plan["hashes"][component])
+    shutil.rmtree("recover", ignore_errors=True)
+
+
 def required():
     jobs = json.loads(os.environ["RESULTS"])
     if not jobs or any(job["result"] != "success" for job in jobs.values()):
@@ -313,7 +429,8 @@ def required():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["previous", "plan-outputs", "assets", "merge", "required",
-                                          "signing", "publication", "reuse-engine", "trust", "bootstrap"])
+                                          "signing", "publication", "reuse-engine", "trust", "bootstrap",
+                                          "recover"])
     parser.add_argument("--component", choices=["desktop", "engine"])
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
@@ -323,7 +440,8 @@ def main():
         {"previous": previous, "plan-outputs": plan_outputs,
          "merge": merge, "required": required, "signing": signing,
          "publication": publication, "reuse-engine": reuse_engine,
-         "trust": configure_update_trust, "bootstrap": bootstrap}[args.command]()
+         "trust": configure_update_trust, "bootstrap": bootstrap,
+         "recover": recover}[args.command]()
 
 
 if __name__ == "__main__":

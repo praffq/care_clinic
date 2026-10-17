@@ -23,7 +23,9 @@ Publication waits for both native jobs. The assembly job checks source commits,
 source hashes, compiled frontend settings and native platform metadata before
 creating multi-architecture indexes for runtime, builder and built support
 images. The final `output-images` artifact contains only verified index digests
-in the existing signed-manifest format. PR validation builds both architectures
+in the existing signed-manifest format. Per-architecture fragments are named
+`images-native-{arch}` so publication's `output-*` download can never merge
+single-architecture digests over the final indexes. PR validation builds both architectures
 without publishing. A failed native build or incomplete index cannot become a
 release output; native signing and engine publication flows are unchanged.
 
