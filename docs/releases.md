@@ -78,10 +78,14 @@ it does not overwrite existing assets. Source configuration deliberately omits
 engine bundle hashes rather than retaining checksums for deleted assets.
 
 With no previous feed or releases, PR CI builds both engine architectures and
-measures the actual bundles/native agents without publishing. Desktop builds
-wait for those outputs. `pipeline.py bootstrap` validates both bundle versions,
+measures the actual bundles/native agents without publishing. CARE, engine and
+desktop checks start together after planning. Desktop lint, Go tests and the
+frontend-only build need no engine artifacts. Only the installer workflow call
+waits for engine outputs and successful desktop checks, using explicit job
+dependencies rather than polling for artifacts.
+`pipeline.py bootstrap` validates both bundle versions,
 URLs, nonzero hashes and sizes, then resolves the build workspace's
-`versions.toml` before frontend and native build staging. Each installer embeds
+`versions.toml` before native build staging. Each installer embeds
 those measured pins; the attached `versions.toml` comes from the same resolved
 configuration. On merge, the existing workflow builds, publishes engine assets,
 packages/publishes desktop assets, then deploys the matching Pages feed.

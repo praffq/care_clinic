@@ -3,6 +3,9 @@ name: Desktop
 on:
   workflow_call:
     inputs:
+      phase:
+        type: string
+        required: true
       build:
         type: boolean
         required: true
@@ -29,6 +32,7 @@ defaults:
 jobs:
   lint:
     name: Lint
+    if: inputs.phase == 'checks'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -65,6 +69,7 @@ jobs:
 
   go:
     name: Go tests
+    if: inputs.phase == 'checks'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
@@ -105,23 +110,13 @@ jobs:
 
   frontend:
     name: Frontend
+    if: inputs.phase == 'checks'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-plan
-          path: .
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: output-engine*
-          merge-multiple: true
-          path: outputs
-      - name: Resolve deployment bootstrap from measured engine assets
-        run: python3 .github/scripts/pipeline.py bootstrap
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -132,7 +127,7 @@ jobs:
         run: npm ci
       - name: Check bindings, typecheck, and build frontend
         working-directory: app/frontend
-        run: npm run build
+        run: npm run build:frontend
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-frontend
@@ -142,8 +137,7 @@ jobs:
 
   native:
     name: Build ${{ matrix.target }}
-    if: inputs.build
-    needs: [lint, go, frontend]
+    if: inputs.phase == 'package' && inputs.build
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -285,23 +279,23 @@ jobs:
           retention-days: 7
 
   required:
-    name: Desktop checks
+    name: Desktop phase checks
     if: always()
-    needs: [lint, go, frontend, native]
+    needs: [lint, go, frontend]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every check
         env:
           RESULTS: ${{ toJSON(needs) }}
-          BUILD: ${{ inputs.build }}
+          PHASE: ${{ inputs.phase }}
         run: |
-          node -e 'const jobs = JSON.parse(process.env.RESULTS); for (const [name, job] of Object.entries(jobs)) { const optional = name === "native" && process.env.BUILD === "false" && job.result === "skipped"; if (job.result !== "success" && !optional) process.exitCode = 1; }'
+          node -e 'const {PHASE, RESULTS} = process.env; if (!["checks", "package"].includes(PHASE)) process.exit(1); for (const job of Object.values(JSON.parse(RESULTS))) { if (job.result !== (PHASE === "checks" ? "success" : "skipped")) process.exitCode = 1; }'
 
   signing:
     name: Validate signing configuration
-    if: inputs.build && inputs.publish
-    needs: required
+    if: inputs.phase == 'package' && inputs.build && inputs.publish
+    needs: native
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

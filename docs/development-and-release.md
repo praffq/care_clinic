@@ -375,6 +375,14 @@ deployment can finish. A PR branch push does not trigger a duplicate push workfl
 | Native builds | After the first three jobs pass: actual Wails macOS universal and Windows/amd64 builds for CARE Clinic. Windows must produce an NSIS installer with NSIS 3.12 from [`install-nsis`](../.github/actions/install-nsis/action.yml), and its version metadata must match `wails.json` and `.env`; the bare application and the generated installer inputs are uploaded separately so a release can sign the application before rebuilding the installer. |
 | CI | Stable aggregate check; fails if any required job failed, was cancelled, or was skipped. Configure this check in branch protection. |
 
+CARE, engine and desktop check sections start together after planning. Desktop
+lint/Go/frontend checks are independent of engine artifacts;
+`npm run build:frontend` validates/builds the UI without deployment staging.
+The separate installer call waits for engine measurements and desktop checks,
+then downloads the frontend artifact and resolves bootstrap hashes before Wails
+staging. Ordinary `npm run build` still stages the deployment first. The final
+CI gate requires both desktop checks and installer work to succeed.
+
 Go comes from `app/go.mod`, and module writes are disallowed. Native jobs reuse
 the frontend artifact rather than running npm for each platform. They use the
 Wails CLI version from `go.mod`, production build flags, and real platform

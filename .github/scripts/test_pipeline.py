@@ -211,9 +211,9 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(resolved["tools"]["care_engine_x86_64"]["sha256"], "b" * 64)
 
     def test_required_checks_reject_failure_cancellation_and_skips(self):
-        for name in ["plan", "care", "engine", "desktop"]:
+        for name in ["plan", "care", "engine", "desktop", "desktop-package"]:
             for result in ["success", "failure", "cancelled", "skipped"]:
-                jobs = {key: {"result": "success"} for key in ["plan", "care", "engine", "desktop"]}
+                jobs = {key: {"result": "success"} for key in ["plan", "care", "engine", "desktop", "desktop-package"]}
                 jobs[name]["result"] = result
                 with patch.dict(os.environ, {"RESULTS": json.dumps(jobs)}):
                     if result == "success":

@@ -118,14 +118,25 @@ jobs:
       version: ${{ needs.plan.outputs.engine_version }}
   desktop:
     name: Desktop checks
-    needs: [plan, engine]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.engine.result == 'success' }}
+    needs: plan
+    uses: ./.github/workflows/desktop.yml
+    with:
+      phase: checks
+      build: false
+      publish: false
+      version: ${{ needs.plan.outputs.desktop_version }}
+      update_trust: ${{ needs.plan.outputs.update_trust }}
+  desktop-package:
+    name: Desktop installers
+    needs: [plan, engine, desktop]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.engine.result == 'success' && needs.desktop.result == 'success' }}
     uses: ./.github/workflows/desktop.yml
     permissions:
       contents: write
       actions: read
     secrets: inherit
     with:
+      phase: package
       build: ${{ needs.plan.outputs.desktop == 'true' }}
       publish: ${{ needs.plan.outputs.publish == 'true' }}
       version: ${{ needs.plan.outputs.desktop_version }}
@@ -133,7 +144,7 @@ jobs:
   required:
     name: CI
     if: always()
-    needs: [plan, care, engine, desktop]
+    needs: [plan, care, engine, desktop, desktop-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
