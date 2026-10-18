@@ -9,8 +9,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/Code-Hex/vz/v3"
 )
@@ -320,7 +322,7 @@ func (m *vzMachine) DialVsock(ctx context.Context, port uint32) (net.Conn, error
 			ch <- result{nil, fmt.Errorf("vsock port %d: %w", port, err)}
 			return
 		}
-		ch <- result{c, nil}
+		ch <- result{withCloseWrite(c), nil}
 	}()
 	abandon := func() {
 		go func() {
@@ -339,6 +341,32 @@ func (m *vzMachine) DialVsock(ctx context.Context, port uint32) (net.Conn, error
 		abandon()
 		return nil, ErrNotRunning
 	}
+}
+
+// vsockConn adds CloseWrite to a vz connection so forwarders can pass a
+// client's half-close on to the guest: Virtualization.framework turns
+// shutdown(SHUT_WR) on its socket into a vsock shutdown, but vz keeps that
+// socket (a *net.UnixConn) in an unexported field.
+type vsockConn struct {
+	*vz.VirtioSocketConnection
+	cw interface{ CloseWrite() error }
+}
+
+func (c *vsockConn) CloseWrite() error { return c.cw.CloseWrite() }
+
+// withCloseWrite wraps c when its underlying socket supports CloseWrite, and
+// returns c unchanged otherwise (a vz upgrade renaming the field only loses
+// half-close; vz_darwin_test checks it is still found).
+func withCloseWrite(c *vz.VirtioSocketConnection) net.Conn {
+	f := reflect.ValueOf(c).Elem().FieldByName("rawConn")
+	if !f.IsValid() || f.Kind() != reflect.Interface {
+		return c
+	}
+	raw := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Interface()
+	if cw, ok := raw.(interface{ CloseWrite() error }); ok {
+		return &vsockConn{c, cw}
+	}
+	return c
 }
 
 func (m *vzMachine) Stop(ctx context.Context, timeout time.Duration) error {
