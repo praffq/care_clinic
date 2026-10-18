@@ -300,7 +300,7 @@ func (d *demo) engineAssets(version string) (map[string]feed.Asset, error) {
 
 // image pins the image tarball <name>.tar from ImagesDist when present.
 // Its digest comes from <name>.tar.digest, else the tarball's OCI index.json
-// (docker save), else the tarball's own SHA-256.
+// (docker save); a tarball with neither is an error.
 func (d *demo) image(repo, name string) (feed.ImageRef, error) {
 	if img, ok := d.images[name]; ok {
 		return img, nil
@@ -438,16 +438,16 @@ func imageDigest(path string) (protocol.Digest, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
-	if dg, err := ociIndexDigest(path); err != nil {
-		return "", err
-	} else if dg != "" {
-		return dg, nil
-	}
-	sum, _, err := hashFile(path)
+	dg, err := ociIndexDigest(path)
 	if err != nil {
 		return "", err
 	}
-	return protocol.Digest("sha256:" + sum), nil
+	if dg == "" {
+		// A hash of the tarball itself would never match the digest the
+		// engine sees after loading the image, so refuse to guess.
+		return "", fmt.Errorf("%s: no image digest: add %s.digest (sha256:<hex>) or use a tarball with an OCI index.json (docker save)", path, filepath.Base(path))
+	}
+	return dg, nil
 }
 
 // ociIndexDigest returns the first manifest digest in the tarball's

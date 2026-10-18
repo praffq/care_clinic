@@ -73,8 +73,10 @@ URLs point at `<base-url>/files/...` (default `http://localhost:8787`).
 - **Images**: `dist/images/<name>.tar` for `care-backend-A`, `care-backend-B`,
   `care-backend-C-broken`, `care-frontend-A`, `care-caddy`, `care-backup`,
   `postgres`, `redis` and `silo`. The digest is read from `<name>.tar.digest`
-  (`sha256:<hex>`), else the tarball's OCI `index.json` (`docker save`), else
-  the tarball's own SHA-256. Present tarballs get a `tar` URL in the feed.
+  (`sha256:<hex>`), else the tarball's OCI `index.json` (`docker save`). A
+  tarball with neither is an error (a hash of the file would never match the
+  digest of the loaded image). Present tarballs get a `tar` URL in the feed;
+  placeholders are used only when a tarball is absent.
 - **Desktop** installers are always placeholders.
 
 Anything missing gets a deterministic placeholder digest (SHA-256 of a fixed

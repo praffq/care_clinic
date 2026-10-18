@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -202,6 +204,9 @@ func TestDemoRealArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	idxDigest := "sha256:" + strings.Repeat("cd", 32)
+	writeTar(t, filepath.Join(images, "redis.tar"), "index.json", `{"schemaVersion":2,"manifests":[{"digest":"`+idxDigest+`"}]}`)
+
 	out := t.TempDir()
 	if _, err := runDemo(demoOptions{Key: devKey(t), Out: out, EngineDist: dist, ImagesDist: images, BaseURL: "http://localhost:8787/"}); err != nil {
 		t.Fatal(err)
@@ -223,6 +228,9 @@ func TestDemoRealArtifacts(t *testing.T) {
 	if string(img.Digest) != dg || img.Ref != demoRegistry+"care-backend@"+dg || img.Tar != "http://localhost:8787/files/images/care-backend-A.tar" {
 		t.Fatalf("backend image = %+v", img)
 	}
+	if r := m.SupportImages[protocol.ImageRoleRedis]; string(r.Digest) != idxDigest || r.Ref != "docker.io/library/redis@"+idxDigest {
+		t.Fatalf("redis image = %+v", r)
+	}
 	if m.Care[0].Images[protocol.ImageRoleFrontend].Tar != "" {
 		t.Fatal("placeholder image must not have a tar URL")
 	}
@@ -235,12 +243,38 @@ func TestDemoRealArtifacts(t *testing.T) {
 			t.Fatalf("%s is empty", f)
 		}
 	}
+	// A tarball whose digest cannot be determined is an error, not a guess.
+	writeTar(t, filepath.Join(images, "care-caddy.tar"), "manifest.json", "[]")
+	if _, err := runDemo(demoOptions{Key: devKey(t), Out: out, EngineDist: dist, ImagesDist: images, BaseURL: "http://localhost:8787"}); err == nil || !strings.Contains(err.Error(), "care-caddy.tar: no image digest") {
+		t.Fatalf("tarball without digest: %v", err)
+	}
+	if err := os.Remove(filepath.Join(images, "care-caddy.tar")); err != nil {
+		t.Fatal(err)
+	}
 	// Re-running must not truncate the sources behind the published links.
 	if _, err := runDemo(demoOptions{Key: devKey(t), Out: out, EngineDist: dist, ImagesDist: images, BaseURL: "http://localhost:8787"}); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(engine); string(b) != "engine bundle" {
 		t.Fatalf("source modified: %q", b)
+	}
+}
+
+func writeTar(t *testing.T, path, name, content string) {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
