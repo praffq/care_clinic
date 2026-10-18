@@ -24,6 +24,11 @@ images:
   redis: "redis:8.8.0-alpine"
   caddy: "caddy:2.11.4"
   silo: "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z"
+  node: "node:22.23.3-bookworm-slim"
+  nginx: "nginx:1.30.6-alpine"
+plugins:
+  care_onboarding_fe: { repo: "ohcnetwork/care_onboarding_fe", ref: "main", kind: "frontend" }
+  care_filly: { repo: "ohcnetwork/care_filly", ref: "develop", kind: "backend" }
 tools:
   qemu_windows_x86_64:
     version: "10.1.0"
@@ -61,6 +66,11 @@ func TestParse(t *testing.T) {
 		{name: "uppercase sha", old: `"c7592db7`, new: `"C7592DB7`, wantErr: "tools.qemu_windows_x86_64.sha256: must be 64 lowercase hex"},
 		{name: "short sha", old: `b4f"`, new: `"`, wantErr: "tools.qemu_windows_x86_64.sha256: must be 64 lowercase hex"},
 		{name: "http tool url", old: `"https://example.com`, new: `"http://example.com`, wantErr: "tools.qemu_windows_x86_64.url: must be an https URL"},
+		{name: "bad plugin kind", old: `kind: "backend"`, new: `kind: "both"`, wantErr: `plugins.care_filly.kind: must be "backend" or "frontend"`},
+		{name: "bad plugin id", old: "  care_filly:", new: "  Care-Filly:", wantErr: "plugins.Care-Filly: id must be"},
+		{name: "bad plugin repo", old: `"ohcnetwork/care_filly"`, new: `"care_filly"`, wantErr: "plugins.care_filly.repo: must be owner/name"},
+		{name: "empty plugin ref", old: `ref: "develop", kind`, new: `ref: "", kind`, wantErr: "plugins.care_filly.ref: required"},
+		{name: "missing node image", old: "  node: \"node:22.23.3-bookworm-slim\"\n", new: "", wantErr: "images.node: required"},
 		{name: "multiple documents", old: "schema: 1\n", new: "schema: 1\n---\nschema: 1\n", wantErr: "single YAML document"},
 	}
 	for _, tt := range tests {
@@ -108,6 +118,9 @@ func TestParseValues(t *testing.T) {
 	}
 	if !f.Care.Requires.Desktop.Check(f.Desktop.Version.Semver) {
 		t.Error("care should accept desktop 0.2.0")
+	}
+	if p := f.Plugins["care_filly"]; p.Kind != PluginBackend || p.Ref != "develop" {
+		t.Errorf("plugin decode: %+v", p)
 	}
 	if f.Care.Backend.Repo != "ohcnetwork/care" || f.Images.Silo == "" {
 		t.Errorf("unexpected decode: %+v", f.Care.Backend)

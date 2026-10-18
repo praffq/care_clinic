@@ -20,6 +20,19 @@ images:
   redis: "redis:8.8.0-alpine"
   caddy: "caddy:2.11.4"
   silo: "docker.io/pgsty/silo:RELEASE.2026-09-03T13-18-01Z"
+  node: "node:22.23.3-bookworm-slim"
+  nginx: "nginx:1.30.6-alpine"
+
+# Curated plugins built into every release. CI resolves each ref to a commit
+# and records it in the image labels and the feed. Backend plugins are
+# pip-installed into the backend image (enabled at runtime by
+# ADDITIONAL_PLUGS); frontend plugins are module-federation remotes baked
+# into care-frontend at /plugins/<id>/. Plugin repos must be public.
+plugins:
+  care_onboarding_fe: { repo: "ohcnetwork/care_onboarding_fe", ref: "main", kind: "frontend" }
+  care_multihost_files_be: { repo: "ohcnetwork/care_multihost_files_be", ref: "main", kind: "backend" }
+  # develop, as in the ohcnetwork/care_clinic catalog: main does not build with current setuptools.
+  care_filly: { repo: "ohcnetwork/care_filly", ref: "develop", kind: "backend" }
 
 tools:
   qemu_windows_x86_64:

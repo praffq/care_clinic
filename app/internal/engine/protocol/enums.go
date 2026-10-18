@@ -37,6 +37,12 @@ const (
 	ImageRolePostgres ImageRole = "postgres"
 	ImageRoleRedis    ImageRole = "redis"
 	ImageRoleSilo     ImageRole = "silo"
+
+	// Builder images: the toolchain stages of the CARE images, used by
+	// image.build to derive plugin-enabled or rebuilt images in the VM.
+	// They are not stack slots, so they are not in ImageRoles.
+	ImageRoleBackendBuilder  ImageRole = "backend-builder"
+	ImageRoleFrontendBuilder ImageRole = "frontend-builder"
 )
 
 // ImageRoles lists every valid ImageRole.
@@ -45,7 +51,10 @@ var ImageRoles = []ImageRole{
 	ImageRolePostgres, ImageRoleRedis, ImageRoleSilo,
 }
 
-func (r ImageRole) Valid() bool { return contains(ImageRoles, r) }
+// BuilderRoles lists the builder image roles.
+var BuilderRoles = []ImageRole{ImageRoleBackendBuilder, ImageRoleFrontendBuilder}
+
+func (r ImageRole) Valid() bool { return contains(ImageRoles, r) || contains(BuilderRoles, r) }
 
 // BuildKind selects which derived image the agent builds.
 type BuildKind string

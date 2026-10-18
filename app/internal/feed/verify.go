@@ -73,6 +73,9 @@ func Verify(data, sig []byte, opts VerifyOptions) (*Manifest, error) {
 
 var (
 	sha256RE = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	gitRevRE = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	repoRE   = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	pluginRE = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
 
 	desktopPlatforms = []string{PlatformDarwinARM64, PlatformDarwinAMD64, PlatformWindowsAMD64}
 	engineArches     = []string{ArchARM64, ArchAMD64}
@@ -148,6 +151,23 @@ func (m *Manifest) validate(insecure bool) error {
 		seenReleased[r.ReleasedAt.UTC()] = true
 		v.requires(p+".requires", &r.Requires, ComponentCare)
 		v.images(p+".images", r.Images, careImageRoles)
+		if len(r.Builders) > 0 {
+			v.images(p+".builders", r.Builders, protocol.BuilderRoles)
+		}
+		if s := r.Sources; s != nil {
+			v.source(p+".sources.backend", s.Backend)
+			v.source(p+".sources.frontend", s.Frontend)
+			for _, id := range slices.Sorted(maps.Keys(s.Plugins)) {
+				pp := p + ".sources.plugins." + id
+				if !pluginRE.MatchString(id) {
+					v.add(pp, "id must be a lower_snake_case Python identifier")
+				}
+				v.source(pp, s.Plugins[id].Source)
+				if k := s.Plugins[id].Kind; k != versions.PluginBackend && k != versions.PluginFrontend {
+					v.add(pp+".kind", "must be %q or %q, got %q", versions.PluginBackend, versions.PluginFrontend, k)
+				}
+			}
+		}
 		if len(r.BuildEnv) > 0 {
 			b := protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild, Base: r.Images[protocol.ImageRoleFrontend].Digest, BuildEnv: r.BuildEnv}
 			for _, fe := range fieldErrors(b.Validate()) {
@@ -261,6 +281,18 @@ func (v *validator) images(path string, imgs map[protocol.ImageRole]ImageRef, ro
 			v.add(p+"."+fe.Field, "%s", fe.Msg)
 		}
 		v.url(p+".tar", img.Tar, false)
+	}
+}
+
+func (v *validator) source(path string, s Source) {
+	if !repoRE.MatchString(s.Repo) {
+		v.add(path+".repo", "must be owner/name, got %q", s.Repo)
+	}
+	if strings.TrimSpace(s.Ref) == "" {
+		v.add(path+".ref", "required")
+	}
+	if !gitRevRE.MatchString(s.Rev) {
+		v.add(path+".rev", "must be a full 40-hex commit SHA, got %q", s.Rev)
 	}
 }
 

@@ -12,7 +12,15 @@ scripts/dev-images.sh                       # all images, host arch
 scripts/dev-images.sh --arch amd64          # for an x86_64 engine VM
 scripts/dev-images.sh --only care-backend-B # rebuild one (repeatable)
 scripts/dev-images.sh --verify              # also round-trip each tarball
+scripts/dev-images.sh --builders            # also the two builder images
+scripts/dev-images.sh --ref care_filly=my-branch --only care-backend-A
+scripts/dev-images.sh --print-sources       # resolved commits as JSON
+scripts/smoke-backend.sh care-clinic-dev/care-backend-a:arm64
 ```
+
+Refs from `versions.yml` (and `--ref` overrides) are resolved to commits
+with `git ls-remote` at the start of every run; all images of the run are
+built from those commits.
 
 Requirements: docker with buildx (Docker 29 / containerd image store), git,
 jq. No sudo. Output lands in the git-ignored `dist/`:
@@ -28,10 +36,12 @@ dist/.cache/stamps/             skip re-saving when the local image is unchanged
 
 | Name | Source |
 | --- | --- |
-| `care-backend-A` | `care.backend` repo@ref from `versions.yml`, built with its `docker/prod.Dockerfile` (as the desktop app did) |
+| `care-backend-A` | `care.backend` repo@ref from `versions.yml`, built with its `docker/prod.Dockerfile` and `ADDITIONAL_PLUGS` listing every backend plugin, so they are pip-installed (enabling them is the runtime `ADDITIONAL_PLUGS`) |
+| `care-backend-builder` | `--builders` or `--only`. The `builder` stage of the same build, for adding plugins in the engine |
 | `care-backend-B` | **Demo only.** A + one no-op `emr` migration ([`demo/images/backend-B`](../demo/images/backend-B/Dockerfile)), for an update that carries a migration |
 | `care-backend-C-broken` | **Demo only.** A whose entrypoint, `start.sh`, `celery_*.sh` and `healthcheck.sh` exit 1 ([`demo/images/backend-C-broken`](../demo/images/backend-C-broken/Dockerfile)), for failed health → rollback |
-| `care-frontend-A` | `care.frontend` repo@ref with `deployments/frontend.env` as `.env.local` |
+| `care-frontend-A` | `care.frontend` repo@ref with `deployments/frontend.env` as `.env.local`, built by [`deployments/frontend.Dockerfile`](../deployments/frontend.Dockerfile); frontend plugins are built with `care-build-remote` into `/plugins/<id>/`, served as plain files (no SPA fallback) |
+| `care-frontend-builder` | `--builders` or `--only`. care_fe with `node_modules` and `/usr/local/bin/care-build-remote SLUG GIT_URL REF OUTDIR` |
 | `care-caddy` | `deployments/caddy.Dockerfile` on `images.caddy` + `CORAZA_VERSION` from `deployments/.env` |
 | `care-backup` | `deployments/backup.Dockerfile` on `images.postgres` |
 | `postgres`, `redis`, `silo` | `docker pull --platform` of the `images.*` pins |
@@ -43,7 +53,9 @@ travels in the tarball but only the digest matters to the engine. Builds use
 Built images carry `org.opencontainers.image.source` (this repository, which
 GHCR uses to link packages), `org.opencontainers.image.title` (the registry
 repo name) and, for CARE images, `network.ohc.care.upstream` and
-`network.ohc.care.upstream.revision` (the upstream repo and commit).
+`network.ohc.care.upstream.revision` (the upstream repo and commit) and
+`network.ohc.care.sources` (the resolved backend, frontend and plugin commits
+as JSON).
 
 ## Push mode (CI)
 
@@ -52,11 +64,12 @@ scripts/dev-images.sh --push ghcr.io/praffq/care_clinic --tag sha-abc --arch arm
 ```
 
 Builds the images we own (default: `care-backend-A care-frontend-A care-caddy
-care-backup`; the demo images only via `--only`) with the same definitions,
+care-backup` and both builders; the demo images only via `--only`) with the same definitions,
 pushes `PREFIX/<repo>:<tag>-<arch>` instead of loading/saving, uses a registry
 cache at `PREFIX/<repo>:buildcache-<arch>`, and writes
 `dist/images/push/<repo>-<arch>.json` with the pushed digest. Repos:
-`care-backend`, `care-frontend`, `care-caddy`, `care-backup`,
+`care-backend`, `care-frontend`, `care-backend-builder`,
+`care-frontend-builder`, `care-caddy`, `care-backup`,
 `care-backend-demo-b`, `care-backend-demo-c-broken`. It needs a
 `docker-container` buildx builder and `docker login` to the registry.
 
