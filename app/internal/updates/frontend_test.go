@@ -211,7 +211,8 @@ func TestFrontendSettingsRejected(t *testing.T) {
 		want string
 	}{
 		{"managed", settings("REACT_CARE_API_URL", "https://evil.example"), "managed"},
-		{"unknown", settings("REACT_SENTRY_DSN", "x"), "not a supported"},
+		{"unknown", settings("REACT_"+strings.Repeat("X", 61), "x"), "not a supported"},
+		{"generic shell", settings("REACT_SENTRY_DSN", "$(id)"), "invalid value"},
 		{"bad bool", settings("REACT_ENABLE_MINIMAL_PATIENT_REGISTRATION", "yes"), "invalid value"},
 		{"injection", settings("REACT_APP_TITLE", "x\nRUN id"), "invalid value"},
 		{"markup", settings("REACT_APP_TITLE", "<script>"), "invalid value"},

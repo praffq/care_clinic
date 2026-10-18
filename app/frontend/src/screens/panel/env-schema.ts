@@ -228,8 +228,8 @@ export const MANAGED_NOTES: Record<string, string> = {
 };
 
 /**
- * The REACT_* settings CARE can rebuild its screens with (frontend.env is
- * built into CARE's frontend). Keep in sync with updates.FrontendKeys:
+ * The REACT_* settings CARE knows (each with a strict value pattern; other
+ * REACT_* keys get a generic one). Keep in sync with updates.FrontendKeys:
  * TestFrontendSettingKeysMatch checks it.
  */
 export const FRONTEND_SETTING_KEYS = new Set([

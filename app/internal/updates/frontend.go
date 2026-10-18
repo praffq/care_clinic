@@ -99,8 +99,8 @@ func checkFrontendSetting(k, v string) error {
 	if protocol.ValidFrontendBuildValue(k, v) {
 		return nil
 	}
-	if !slices.Contains(protocol.FrontendBuildKeys(), k) {
-		return &SettingError{k, "is not a supported frontend setting"}
+	if !protocol.ValidFrontendBuildKey(k) {
+		return &SettingError{k, "is not a supported frontend setting (want REACT_ and up to 60 of A-Z, 0-9, _)"}
 	}
 	return &SettingError{k, fmt.Sprintf("invalid value %q", v)}
 }

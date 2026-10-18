@@ -6,10 +6,11 @@ import (
 	"slices"
 )
 
-// Frontend build variables. The frontend-rebuild kind accepts only these
-// REACT_* keys, each with a value pattern; values reach Vite through the
-// build's environment and %REACT_APP_TITLE% is substituted into index.html,
-// so text values exclude markup and quote characters.
+// Frontend build variables. The frontend-rebuild kind accepts the known
+// REACT_* keys below, each with a strict value pattern, and any other
+// REACT_* key with a conservative generic value. Values reach Vite through
+// the build's environment and %REACT_APP_TITLE% is substituted into
+// index.html, so values exclude markup, quote and shell characters.
 var (
 	feBoolRE      = regexp.MustCompile(`^(?:true|false)?$`)
 	feTitleRE     = regexp.MustCompile(`^[\p{L}\p{M}\p{N} .,'()_:/!?#+@-]{0,80}$`)
@@ -28,6 +29,9 @@ var (
 	feCountryRE   = regexp.MustCompile(`^(?:[A-Z]{2})?$`)
 	feCodeRE      = regexp.MustCompile(`^[a-z0-9-]{0,40}$`)
 	feToastRE     = regexp.MustCompile(`^(?:(?:top|bottom)-(?:left|right|center))?$`)
+
+	feKeyRE     = regexp.MustCompile(`^REACT_[A-Z0-9_]{1,60}$`)
+	feGenericRE = regexp.MustCompile("^[^\"'<>\\\\$`\\x00-\\x1f\\x7f]{0,200}$")
 )
 
 var frontendBuildEnv = map[string]*regexp.Regexp{
@@ -67,12 +71,23 @@ var frontendBuildEnv = map[string]*regexp.Regexp{
 	"REACT_APPOINTMENTS_USE_AVAILABILITY_STATS_API":  feBoolRE,
 }
 
-// FrontendBuildKeys returns the REACT_* keys a frontend rebuild accepts.
+// FrontendBuildKeys returns the known REACT_* keys (with strict patterns).
 func FrontendBuildKeys() []string { return slices.Sorted(maps.Keys(frontendBuildEnv)) }
 
+// ValidFrontendBuildKey reports whether key may be a frontend build variable:
+// ^REACT_[A-Z0-9_]{1,60}$.
+func ValidFrontendBuildKey(key string) bool { return feKeyRE.MatchString(key) }
+
 // ValidFrontendBuildValue reports whether key is an allowed frontend build
-// variable and value matches its pattern.
+// variable and value matches its pattern: a known key's own, otherwise at
+// most 200 characters without quotes, <, >, backslash, $, backticks or
+// control characters.
 func ValidFrontendBuildValue(key, value string) bool {
-	re, ok := frontendBuildEnv[key]
-	return ok && len(value) <= MaxEnvValue && re.MatchString(value)
+	if len(value) > MaxEnvValue {
+		return false
+	}
+	if re, ok := frontendBuildEnv[key]; ok {
+		return re.MatchString(value)
+	}
+	return feKeyRE.MatchString(key) && feGenericRE.MatchString(value)
 }

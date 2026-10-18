@@ -178,13 +178,15 @@ its local image ID and labelled with a hash of the base, builder and
 settings, so the same settings reuse it. With no overrides the published
 image is used.
 
-Only an allowlist of settings can be overridden
-(`protocol.FrontendBuildKeys`, minus the keys CARE Clinic manages:
-`REACT_CARE_API_URL`, `REACT_MFE_REGISTERED_COMPONENTS`, `REACT_ENABLED_APPS`,
-`REACT_DISABLE_PATIENT_LOGIN`, `REACT_RECAPTCHA_SITE_KEY`). Values are
-checked per key (booleans, numbers, locale and visit-type lists, UUIDs, and
-plain one-line text without shell or HTML characters); anything else is
-rejected before a build.
+Any key matching `^REACT_[A-Z0-9_]{1,60}$` can be overridden, except the
+keys CARE Clinic manages (`REACT_CARE_API_URL`,
+`REACT_MFE_REGISTERED_COMPONENTS`, `REACT_ENABLED_APPS`,
+`REACT_DISABLE_PATIENT_LOGIN`, `REACT_RECAPTCHA_SITE_KEY`). Known keys
+(`protocol.FrontendBuildKeys`) are checked against their own pattern
+(booleans, numbers, locale and visit-type lists, UUIDs, and plain one-line
+text). Any other key takes a generic value: at most 200 characters, with no
+quotes, `<`, `>`, backslash, `$`, backticks or control characters. Anything
+else is rejected before a build.
 
 `Coordinator.SetFrontendSettings` runs a `frontend` journal: `preflight`,
 `build-frontend`, `write-env`, `start-stack`, `health`. A failure rolls back
@@ -196,7 +198,8 @@ release's base and builder.
 **Panel**: Advanced → Clinic settings (and the support editor). Saving a
 change to `frontend.env` runs **ApplySettings**, which rebuilds and restarts
 CARE (a backend-only change just restarts). The saved file is the clinic's
-setting: the panel replaces the overrides with its contents.
+setting: a panel save replaces the overrides with its contents, including
+any set with `ctl frontend` (which does not edit `frontend.env`).
 
 **Command line**:
 

@@ -60,8 +60,9 @@ which the tests sign and verify.
   side-load locally built images; it must be saved under the `ref`'s
   repository (its `index.json` image name), which the coordinator checks.
 - `build_env` is the `REACT_*` settings the release's frontend was built with
-  (CI publishes `deployments/frontend.env`); keys and values follow the
-  engine's frontend allowlist (`protocol.FrontendBuildKeys`). The desktop
+  (CI publishes `deployments/frontend.env`); keys match
+  `^REACT_[A-Z0-9_]{1,60}$`; known keys (`protocol.FrontendBuildKeys`) follow
+  their own value pattern, others a generic one. The desktop
   rebuilds the frontend only when a clinic's settings differ from it.
 - `blocked` entries are `<desktop|engine|care>:<version>`; the update resolver treats them as withdrawn and never
   selects them (see [Update plans](#update-plans)).

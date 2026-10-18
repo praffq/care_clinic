@@ -89,7 +89,11 @@ export function effectiveSetting(setting: Setting, value: string | undefined): s
 
 export function validateExtraSetting(key: string, value: string): string | null {
   if (/[\r\n\0]/.test(value)) return "Keep this value on one line.";
-  if (key.startsWith("REACT_") && !FRONTEND_SETTING_KEYS.has(key)) return "CARE can't apply this screen setting. Ask support for a supported one.";
+  if (key.startsWith("REACT_") && !FRONTEND_SETTING_KEYS.has(key)) {
+    if (!/^REACT_[A-Z0-9_]{1,60}$/.test(key)) return "CARE can't apply this screen setting: use REACT_ and up to 60 capital letters, digits or underscores.";
+    if (!genericFrontendValueOK(value)) return GENERIC_SCREEN_PROBLEM;
+    return null;
+  }
   if (key.startsWith("REACT_") && !frontendValueOK(key, value)) return SCREEN_TEXT_PROBLEM;
   if (key === "REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG") {
     const uuid = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
@@ -125,6 +129,13 @@ export function validateSetting(setting: Setting, value: string | undefined): st
 }
 
 const SCREEN_TEXT_PROBLEM = "Use only letters, numbers, spaces and simple punctuation (. , ' ( ) _ : / ! ? # + @ -).";
+
+const GENERIC_SCREEN_PROBLEM = "Use at most 200 characters, without quotes, <, >, \\, $ or `.";
+
+/** The engine's rule for REACT_* settings it has no specific pattern for. */
+function genericFrontendValueOK(value: string): boolean {
+  return [...value].length <= 200 && !/["'<>\\$`\u0000-\u001f\u007f]/.test(value);
+}
 
 /** Characters the engine accepts in frontend text settings (see protocol.frontendBuildEnv). */
 function frontendValueOK(key: string, value: string): boolean {
