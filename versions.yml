@@ -2,7 +2,7 @@
 schema: 1
 
 desktop:
-  version: "0.2.1"
+  version: "0.2.2"
   requires: { engine: ">=0.1.0 <0.2.0" }
 
 engine:
