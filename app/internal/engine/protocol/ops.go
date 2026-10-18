@@ -40,7 +40,6 @@ var (
 	pluginNameRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 	pkgNameRE    = regexp.MustCompile(`^@?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$`)
 	pkgGitRE     = regexp.MustCompile(`^git\+https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._-]+)+(?:@[A-Za-z0-9._/-]+)?$`)
-	slugRE       = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	// CARE Plug versions are appended to the package: "@<ref>" for git
 	// URLs, a pip specifier for index packages.
 	gitRefVersionRE = regexp.MustCompile(`^@[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
