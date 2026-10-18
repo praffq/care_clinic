@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	releasesAPI = "https://api.github.com/repos/ohcnetwork/care_desktop/releases/latest"
+	releasesAPI = "https://api.github.com/repos/praffq/care_clinic/releases/latest"
 
 	maxDownloadBytes = 512 << 20
 
@@ -67,6 +67,18 @@ type ghRelease struct {
 	Assets  []ghAsset `json:"assets"`
 }
 
+// releaseVersion is the desktop version of a release tag: desktop-vX.Y.Z,
+// as release.yml creates it, or a legacy vX.Y.Z.
+func releaseVersion(tag string) (string, error) {
+	tag = strings.TrimSpace(tag)
+	for _, prefix := range []string{"desktop-v", "v"} {
+		if v, ok := strings.CutPrefix(tag, prefix); ok && v != "" {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("the latest release %q is not a CARE Clinic desktop release", tag)
+}
+
 func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 	defer a.logError(&err)
 	out := AppUpdate{Current: a.pins.AppVersion}
@@ -77,7 +89,10 @@ func (a *App) CheckAppUpdate() (update AppUpdate, err error) {
 	if err != nil {
 		return out, err
 	}
-	out.Version = strings.TrimPrefix(strings.TrimSpace(rel.Tag), "v")
+	out.Version, err = releaseVersion(rel.Tag)
+	if err != nil {
+		return out, err
+	}
 	out.NotesURL = rel.HTMLURL
 	asset, ok := platformAsset(rel)
 	if !ok {
@@ -97,7 +112,10 @@ func (a *App) InstallAppUpdate() error {
 		if err != nil {
 			return err
 		}
-		version := strings.TrimPrefix(strings.TrimSpace(rel.Tag), "v")
+		version, err := releaseVersion(rel.Tag)
+		if err != nil {
+			return err
+		}
 		if !newerVersion(a.pins.AppVersion, version) {
 			return errors.New("this is already the newest published version of CARE Clinic")
 		}

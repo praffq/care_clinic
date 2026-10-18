@@ -6,7 +6,7 @@ storage — and staff connect from other computers using CARE Clinic in client m
 the clinic Wi-Fi. The core clinic can run without internet after installation.
 App updates and configured online services still need connectivity.
 
-**Download:** [releases](https://github.com/ohcnetwork/care_desktop/releases)
+**Download:** [releases](https://github.com/praffq/care_clinic/releases)
 — `.dmg` for macOS, `-setup.exe` for Windows 64-bit. Setting up a clinic server
 needs a Mac with Apple silicon; Windows can connect as a client but cannot host
 a clinic yet.

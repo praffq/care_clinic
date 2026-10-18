@@ -158,9 +158,16 @@ assert.deepEqual(manifest.signing, {
   windows: windowsSigning,
 });
 assert.equal(manifest.versions_sha256, hash(files.get("versions.yml")));
+const base = "https://github.com/ohcnetwork/care_desktop/releases/download/desktop-v1.2.3/";
+const asset = name => ({url: base + name, sha256: hash(files.get(name)), size: files.get(name).length});
+assert.deepEqual(JSON.parse(files.get("desktop.json")), {desktop: {assets: {
+  "darwin-arm64": asset("CARE-Clinic-1.2.3-macos.dmg"),
+  "darwin-amd64": asset("CARE-Clinic-1.2.3-macos.dmg"),
+  "windows-amd64": asset("CARE-Clinic-1.2.3-windows-amd64-setup.exe"),
+}}});
 assert.equal(manifest.run_url, "https://github.com/ohcnetwork/care_desktop/actions/runs/123");
 const lines = files.get("SHA256SUMS").trim().split("\n");
-assert.equal(lines.length, 4);
+assert.equal(lines.length, 5);
 for (const name of [...files.keys()].filter(name => name !== "SHA256SUMS")) {
   assert.ok(lines.includes(hash(files.get(name)) + "  " + name), "Missing checksum for " + name);
 }
@@ -212,6 +219,9 @@ func TestUnsignedReleaseStillCreatesDraft(t *testing.T) {
 	job := regexp.MustCompile(`(?ms)^  publish:\n.*?(?:^  \S|\z)`).FindString(string(data))
 	if job == "" {
 		t.Fatal("the draft release job is missing")
+	}
+	if !strings.Contains(job, "--draft --latest ") || strings.Contains(job, "--prerelease") {
+		t.Error("desktop releases must be drafted as the latest release, not a prerelease")
 	}
 	for _, required := range []string{"!cancelled()", "needs.package.result == 'success'"} {
 		if !strings.Contains(job, required) {

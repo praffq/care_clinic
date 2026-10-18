@@ -184,3 +184,16 @@ func TestSwapScriptReplacesBundleOrKeepsTheOldOne(t *testing.T) {
 		t.Fatalf("the swap left extra entries behind: %v", left)
 	}
 }
+
+func TestReleaseVersionFromTag(t *testing.T) {
+	for tag, want := range map[string]string{"desktop-v0.2.0": "0.2.0", "v1.2.3": "1.2.3", " desktop-v1.0.0 ": "1.0.0"} {
+		if got, err := releaseVersion(tag); err != nil || got != want {
+			t.Errorf("releaseVersion(%q) = %q, %v; want %q", tag, got, err, want)
+		}
+	}
+	for _, tag := range []string{"engine-v0.1.2", "desktop-v", "", "care-engine-v0.1.3"} {
+		if v, err := releaseVersion(tag); err == nil {
+			t.Errorf("releaseVersion(%q) = %q, want an error", tag, v)
+		}
+	}
+}
