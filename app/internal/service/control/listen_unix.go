@@ -15,9 +15,12 @@ import (
 // ListenConfig describes the control socket.
 type ListenConfig struct {
 	Path string
-	// Group, when set, owns the socket (mode 0660) and its members may
-	// connect. Without it (dev mode) the socket is 0600 and only the
-	// service's own user (and root) may connect.
+	// Group, when set, owns the socket and its members may connect. The
+	// socket is then 0666 and the peer check is the gate: it also reads
+	// membership from the user database, so a user added to the group can
+	// connect at once, without logging in again (a 0660 socket would refuse
+	// them until their next login). Without it (dev mode) the socket is 0600
+	// and only the service's own user (and root) may connect.
 	Group string
 	Log   *slog.Logger
 }
@@ -72,7 +75,7 @@ func Listen(cfg ListenConfig) (net.Listener, error) {
 	}
 	mode := os.FileMode(0o600)
 	if gid >= 0 {
-		mode = 0o660
+		mode = 0o666
 		if err := os.Chown(tmp, -1, gid); err != nil {
 			return fail(err)
 		}

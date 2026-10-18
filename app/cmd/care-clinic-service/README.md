@@ -5,6 +5,10 @@ owns the engine VM (installs engine slots, restarts the VM after crashes or
 an unresponsive agent), forwards the host's ports into the VM, advertises
 `<name>.local`, and serves the control API on
 `/var/run/care-clinic/control.sock` (members of the `care-clinic` group).
+The socket file is `0666`; the service itself admits only root and members of
+the group, checking the caller's uid (`LOCAL_PEERCRED`) against both its
+login groups and the user database. A user just added to the group can
+therefore connect at once, without logging in again.
 
 | Host listener      | Guest (vsock) | Used for                |
 |--------------------|---------------|-------------------------|

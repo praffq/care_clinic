@@ -13,9 +13,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -206,6 +209,40 @@ func TestSocketMode(t *testing.T) {
 	if _, err := control.Listen(control.ListenConfig{Path: e.sock}); err == nil || !strings.Contains(err.Error(), "in use") {
 		t.Fatalf("second Listen: %v", err)
 	}
+}
+
+// With a group the socket is world-connectable (0666) and the peer check is
+// the gate, so a newly added member needs no fresh login session.
+func TestSocketModeWithGroup(t *testing.T) {
+	g, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Skip(err)
+	}
+	dir := filepath.Join(shortDir(t), "run")
+	sock := filepath.Join(dir, "c.sock")
+	ln, err := control.Listen(control.ListenConfig{Path: sock, Group: g.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	st, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o666 {
+		t.Fatalf("socket mode %v, want 0666", st.Mode())
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Gid) != os.Getgid() {
+		t.Fatalf("socket gid %d, want %d", sys.Gid, os.Getgid())
+	}
+	if d, _ := os.Stat(dir); d.Mode().Perm() != 0o755 {
+		t.Fatalf("socket dir mode %v", d.Mode())
+	}
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
 }
 
 func TestListenReplacesStaleSocketAndRejectsFiles(t *testing.T) {

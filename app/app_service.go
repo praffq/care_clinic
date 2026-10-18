@@ -101,7 +101,8 @@ func summarize(s ServiceState) Summary {
 				Detail: "It runs the clinic in the background. Install it from setup."}
 		}
 		return Summary{Level: levelError, Title: "CARE Clinic can't reach its service",
-			Detail: strings.TrimSpace(s.Error + ". If you were just added to the care-clinic group, log out and back in.")}
+			Detail: strings.TrimSpace(s.Error + ". Only members of the care-clinic group can use it; " +
+				"if this Mac account isn't one, reinstall the service from setup while logged in as it.")}
 	}
 	st := s.Status
 	e := st.Engine
