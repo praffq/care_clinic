@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
-import { continueServerChecks, saveRecoveryCodes } from "./helpers/setup";
+import { completeBackups, continueServerChecks, saveRecoveryCodes } from "./helpers/setup";
 
 const password = "ClinicTest123";
 const reminder = (page: Page) => page.getByLabel("Recovery codes reminder", { exact: true });
@@ -131,7 +131,7 @@ async function setupAdmin(page: Page, platform = "darwin") {
   await page.getByLabel("Clinic address", { exact: true }).fill("care");
   await expect(forward(page)).toBeEnabled();
   await forward(page).click();
-  await expect(page.locator("#setup-title")).toHaveText("Creating the admin password");
+  await completeBackups(page);
 }
 async function fillSetupPassword(page: Page, value = password) {
   await page.getByLabel("Password", { exact: true }).fill(value);

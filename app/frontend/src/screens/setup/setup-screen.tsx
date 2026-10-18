@@ -9,13 +9,13 @@ import { bridge } from "@/lib/bridge";
 import { errorText, normaliseHost } from "@/lib/format";
 import { useCare } from "@/state/care-store";
 import type { SetupForm } from "@/state/forms";
-import type { HostReport, ResidueReport, SetupPage } from "@/types";
+import type { BackupSpace, HostReport, ResidueReport, SetupPage } from "@/types";
 import { CleanupStep, type CleanupProblem } from "./cleanup-step";
-import { AddressStep, AdminStep, ComputerStep, ReviewStep, type AddressResult, type SetupIssue } from "./configuration-steps";
+import { AddressStep, AdminStep, BackupStep, ComputerStep, ReviewStep, type AddressResult, type SetupIssue } from "./configuration-steps";
 import { SetupLayout } from "./setup-layout";
-import { EMPTY_RECOVERY, installServiceProblem, recoveryProblem } from "./setup-model";
+import { backupProblem, codesProblem, EMPTY_BACKUP_RECOVERY, EMPTY_RECOVERY, installServiceProblem, recoveryProblem } from "./setup-model";
 
-const STEPS: SetupPage[] = ["computer", "cleanup", "address", "admin", "review", "install"];
+const STEPS: SetupPage[] = ["computer", "cleanup", "address", "backup", "admin", "review", "install"];
 
 export function SetupScreen({ form, patch }: { form: SetupForm; patch: (values: Partial<SetupForm>) => void }) {
   const { clearRole, log } = useCare();
@@ -75,6 +75,10 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const addressTimer = useRef(0);
   const addressTasks = useRef(new Set<Promise<boolean>>());
   const addressWrite = useRef(Promise.resolve());
+  const [backupKey, setBackupKey] = useState(EMPTY_BACKUP_RECOVERY);
+  const [backupKeyError, setBackupKeyError] = useState("");
+  const [space, setSpace] = useState<BackupSpace | null>(null);
+  const [folderError, setFolderError] = useState("");
   const [issues, setIssues] = useState<SetupIssue[]>([]);
   const [verified, setVerified] = useState(false);
   const formRef = useRef(form);
@@ -88,6 +92,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const cleanupReady = residue?.clean === true && !cleanupProblem;
   const adminReady = strength.strong && !!form.adminConfirm && form.adminPassword === form.adminConfirm && !passwordError
     && recovery.codes_saved && !recovery.codes_problem && !recoveryError;
+  const backupReady = !!space && !folderError && backupKey.backup_verified && !backupKey.backup_problem && !backupKeyError;
   const addressReady = address.state === "ready" && address.name === normaliseHost(form.hostInput) && isClinicName(form.hostInput);
   const syncBusy = useCallback(() => {
     onBusy(workRef.current || addressQueuedRef.current || addressTasks.current.size > 0);
@@ -113,6 +118,24 @@ function SetupWizard({ form, patch, update, onBusy }: {
     patch(values);
     setVerified(false);
     if (values.adminPassword !== undefined || values.adminConfirm !== undefined) setPasswordError("");
+  };
+
+  const loadBackupKey = async () => {
+    const status = await bridge.GetSetupBackupStatus();
+    if (mounted.current) { setBackupKey(status); setBackupKeyError(""); }
+    return status;
+  };
+
+  const checkFolder = async (dir: string) => {
+    try {
+      const [raw, result] = await Promise.all([bridge.ValidateBackupDir(dir), bridge.BackupDirSpace(dir)]);
+      if (raw) care.log(`backup location: ${raw}`);
+      if (mounted.current) { setFolderError(backupProblem(raw)); setSpace(result); }
+      return raw === "";
+    } catch (e) {
+      if (mounted.current) { setSpace(null); setFolderError("That location couldn't be checked. Check it again, or choose a different location."); }
+      throw e;
+    }
   };
 
   const checkComputer = async () => {
@@ -195,6 +218,10 @@ function SetupWizard({ form, patch, update, onBusy }: {
     if (!isClinicName(latest.hostInput) || (await bridge.ValidateDomain(latest.hostInput.trim()))) {
       result.push({ step: "address", message: "Choose a valid clinic name before installing." });
     }
+    const folderOk = await checkFolder(latest.backupDir);
+    const status = await loadBackupKey();
+    if (!folderOk) result.push({ step: "backup", message: "Choose a backup location that is available and has room." });
+    else if (!status.backup_verified || status.backup_problem) result.push({ step: "backup", message: "Save and check the backup recovery file before installing." });
     const invalid = await bridge.ValidatePassword(latest.adminPassword);
     if (invalid) {
       care.log(`admin password: ${invalid}`);
@@ -223,20 +250,24 @@ function SetupWizard({ form, patch, update, onBusy }: {
     if (target === "computer") { await checkComputer(); return; }
     if (target === "cleanup") { await checkCleanup(); return; }
     if (target === "address") { await checkAddress(formRef.current.hostInput); return; }
+    if (target === "backup") { await loadBackupKey(); await checkFolder(formRef.current.backupDir); return; }
     if (target === "admin") { await loadRecovery(); return; }
     if (target === "review") { await validateReview(); return; }
   };
 
-  const execute = async (name: string, fn: () => Promise<void>, recoveryAction = false) => {
+  const execute = async (name: string, fn: () => Promise<void>, recoveryAction: false | "codes" | "backup" = false) => {
     if (workRef.current || addressQueuedRef.current || addressTasks.current.size || update.isActive() || care.busy) return;
     workRef.current = true;
     onBusy(true);
     setOperation(name);
     setProblem("");
-    if (recoveryAction) setRecoveryError("");
+    if (recoveryAction === "codes") setRecoveryError("");
+    if (recoveryAction === "backup") setBackupKeyError("");
     try { await fn(); } catch (e) {
       care.log(`setup ${name}: ${errorText(e)}`);
-      if (recoveryAction) setRecoveryError(recoveryProblem(errorText(e)));
+      if (name === "verify-backup") setBackupKey((previous) => ({ ...previous, backup_verified: false }));
+      if (recoveryAction === "codes") setRecoveryError(codesProblem(errorText(e)));
+      else if (recoveryAction === "backup") setBackupKeyError(recoveryProblem(errorText(e)));
       else setProblem("This step couldn't finish. Try again. If it keeps happening, share the log file with your support contact.");
     } finally {
       workRef.current = false;
@@ -325,6 +356,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
         await care.startInstall({
           host: normaliseHost(latest.hostInput),
           adminPassword: latest.adminPassword,
+          backupDir: latest.backupDir.trim(),
           pages: STEPS,
         });
       } catch (e) {
@@ -338,6 +370,12 @@ function SetupWizard({ form, patch, update, onBusy }: {
     if (target === "computer") ok = await checkComputer();
     else if (target === "cleanup") ok = await checkCleanup();
     else if (target === "address") ok = await checkAddress(latest.hostInput);
+    else if (target === "backup") {
+      const folderOk = await checkFolder(latest.backupDir);
+      const status = await loadBackupKey();
+      ok = folderOk && status.backup_verified && !status.backup_problem;
+      if (!ok && folderOk) setBackupKeyError("Save and check the correct recovery file before continuing.");
+    }
     else if (target === "admin") {
       const invalid = await bridge.ValidatePassword(latest.adminPassword);
       const status = await loadRecovery();
@@ -357,27 +395,49 @@ function SetupWizard({ form, patch, update, onBusy }: {
       return;
     }
     if (await bridge.SaveSetupRecoveryCodes()) await loadRecovery();
-  }, true);
-  const reloadRecovery = () => void execute("read-recovery", async () => { await loadRecovery(); }, true);
+  }, "codes");
+  const reloadRecovery = () => void execute("read-recovery", async () => { await loadRecovery(); }, "codes");
   const edit = (target: SetupPage) => void execute("edit", () => visit(target, "edit"));
+
+  const chooseFolder = () => void execute("choose-folder", async () => {
+    const chosen = await bridge.ChooseFolder("Choose backup folder");
+    if (!chosen) return;
+    changeForm({ backupDir: chosen });
+    setSpace(null);
+    markDone("backup", false);
+    await checkFolder(chosen);
+  });
+
+  const saveBackupKey = (kind: "save-backup" | "verify-backup" | "replace-backup") => void execute(kind, async () => {
+    const latest = formRef.current;
+    if (!(await checkFolder(latest.backupDir))) return;
+    const changed = kind === "save-backup" ? await bridge.SaveSetupBackupRecovery(latest.backupDir)
+      : kind === "replace-backup" ? await bridge.ReplaceSetupBackupRecovery(latest.backupDir)
+      : await bridge.VerifySetupBackupRecovery(latest.backupDir);
+    if (changed) { setVerified(false); markDone("backup", false); await loadBackupKey(); }
+  }, "backup");
+
+  const reloadBackupKey = () => void execute("read-backup-key", async () => { await loadBackupKey(); }, "backup");
 
   const titles: Record<SetupPage, [string, string]> = {
     computer: ["Checking this computer", "CARE runs in the background on this computer. Make sure it has what the clinic needs."],
     cleanup: ["Removing stale files from an earlier setup", "CARE checks for files or settings from an earlier setup before installing a new clinic here."],
     address: ["Choosing the clinic address", "Staff type this into their browser to open CARE. Short and easy to say out loud works best."],
+    backup: ["Setting up backups", "CARE makes an encrypted backup automatically, once every 24 hours. Choose where the backups go, then save the file that unlocks them."],
     admin: ["Creating the admin password", "This password protects CARE Clinic on this computer and is the first sign-in for CARE itself."],
     review: ["Review before installing", "Here's what CARE will set up."],
     install: ["Installing CARE", ""],
   };
   const ready = page === "computer" ? computerReady : page === "cleanup" ? cleanupReady
-    : page === "address" ? addressReady : page === "admin" ? adminReady
+    : page === "address" ? addressReady : page === "backup" ? backupReady : page === "admin" ? adminReady
     : verified && issues.length === 0;
   const note = busy ? operation === "install-service" ? "Installing the CARE Clinic service…" : operation === "cleanup" ? "Keep this window open while the cleanup finishes…" : page === "review" ? "Checking everything before installation…" : "Checking…"
     : problem ? "Check this step again before continuing."
     : editing ? "Choose Continue to return to Review when this step is ready."
     : page === "computer" ? computerReady ? "This computer is ready." : "Fix the computer checks to continue."
     : page === "cleanup" ? cleanupReady ? "Nothing from an earlier setup is left." : "Remove what an earlier setup left to continue."
-    : page === "address" ? addressReady ? "Next: the admin password." : "Pick an address that is free to continue."
+    : page === "address" ? addressReady ? "Next: backups." : "Pick an address that is free to continue."
+    : page === "backup" ? backupReady ? "Next: the admin password." : "Save and check your recovery file to continue."
     : page === "admin" ? adminReady ? "Almost done — one last look before installing." : "Choose a password and save your recovery codes to continue."
     : issues.length ? "Fix the highlighted step; you come back to this screen." : "Nothing has been installed yet.";
   const blocked = issues.map((issue) => issue.step);
@@ -393,11 +453,15 @@ function SetupWizard({ form, patch, update, onBusy }: {
         : page === "cleanup" ? <CleanupStep report={residue} before={cleanupBefore} checking={operation !== ""} removing={operation === "cleanup"} problem={cleanupProblem} busy={locked}
           onRemove={removeLeftovers} onCheck={() => void execute("checking", async () => { await checkCleanup(); })} />
         : page === "address" ? <AddressStep value={form.hostInput} result={address} disabled={operation !== "" || update.active || care.busy} onChange={changeHost} onCheck={() => void checkAddress(formRef.current.hostInput)} />
+        : page === "backup" ? <BackupStep form={form} space={space} folderProblem={folderError} recovery={backupKey} recoveryError={backupKeyError} busy={locked} action={operation}
+          onOpenFolder={() => void execute("open-backup-folder", () => bridge.OpenSetupBackupRecoveryFolder(), "backup")}
+          onChoose={chooseFolder} onCheck={() => void execute("check-folder", async () => { await checkFolder(formRef.current.backupDir); })}
+          onSave={() => saveBackupKey("save-backup")} onVerify={() => saveBackupKey("verify-backup")} onReplace={() => saveBackupKey("replace-backup")} onReload={reloadBackupKey} />
         : page === "admin" ? <AdminStep form={form} patch={changeForm} strength={strength} passwordError={passwordError} recovery={recovery} recoveryError={recoveryError} busy={locked} action={operation}
           onSave={saveCodes} onReload={reloadRecovery}
-          onPrint={() => void execute("open-codes", () => bridge.OpenSetupRecoveryCodes(), true)}
-          onOpenFolder={() => void execute("open-codes-folder", () => bridge.OpenSetupRecoveryFolder(), true)} />
-        : <ReviewStep steps={STEPS} form={form} report={report} issues={issues} verified={verified} busy={locked} onEdit={edit} />}
+          onPrint={() => void execute("open-codes", () => bridge.OpenSetupRecoveryCodes(), "codes")}
+          onOpenFolder={() => void execute("open-codes-folder", () => bridge.OpenSetupRecoveryFolder(), "codes")} />
+        : <ReviewStep steps={STEPS} form={form} report={report} backupPath={space?.dir || form.backupDir} issues={issues} verified={verified} busy={locked} onEdit={edit} />}
       {problem ? <Callout tone="danger" title={page === "review" ? "Nothing has been installed yet" : "This step couldn't finish"}>{problem}
         <div className="on-actions"><Button disabled={locked} onClick={() => void execute("checking", () => visit(pageRef.current, editingRef.current ? "edit" : "back"))}>Try again</Button><LogButton /></div>
       </Callout> : null}

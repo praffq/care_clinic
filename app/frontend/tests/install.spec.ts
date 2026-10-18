@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
-import { continueServerChecks, reachReview } from "./helpers/setup";
+import { continueServerChecks, reachReview, saveRecoveryCodes } from "./helpers/setup";
 import { applyProgress, currentStep, failActiveStep, SETUP_STEPS, stepsForRetry } from "../src/lib/run-steps";
 import type { AppUpdate } from "../src/types";
 
@@ -181,7 +181,7 @@ test("a reused engine shows as skipped with its version", async ({ page }) => {
   await capture(page, "install-engine-skipped");
 });
 
-for (const [platform, count] of [["windows", 6], ["darwin", 6]] as const) {
+for (const [platform, count] of [["windows", 7], ["darwin", 7]] as const) {
   test(`installation and failure keep the ${count}-step rail on ${platform} and fit both window sizes`, async ({ page }) => {
     const labels = await begin(page, { platform });
     expect(labels).toHaveLength(count);
@@ -316,6 +316,8 @@ for (const [error, friendly] of [
     await expect(page.getByRole("heading", { name: "Choosing the clinic address", exact: true })).toBeVisible();
     await expect(page.getByLabel("Clinic address", { exact: true })).toHaveValue(clinicName);
     await forward(page).click();
+    await expect(page.locator("#setup-title")).toHaveText("Setting up backups");
+    await forward(page).click();
     await expect(page.getByLabel("Password", { exact: true })).toHaveValue("");
     await expect(page.getByLabel("Confirm password", { exact: true })).toHaveValue("");
     expect(await calls(page, "RunSetup")).toBe(1);
@@ -330,6 +332,8 @@ test("Back to setup returns quietly without cleanup or discarding saved choices"
   await expect(page.getByRole("heading", { name: "Choosing the clinic address", exact: true })).toBeVisible();
   expect(await calls(page, "CleanupFailedInstall")).toBe(0);
   await expect(page.getByLabel("Clinic address", { exact: true })).toHaveValue(clinicName);
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Setting up backups");
   await forward(page).click();
   await expect(page.getByLabel("Password", { exact: true })).toHaveValue(password);
 });
@@ -609,4 +613,85 @@ test("small installation text and destructive actions retain readable contrast",
   for (const result of await contrast([".install-update-primary", ".install-retry-action", ".install-failure-card p", ".install-update p"])) {
     expect(result.ratio, result.selector).toBeGreaterThanOrEqual(4.5);
   }
+});
+
+async function backupStep(page: Page, platform = "darwin") {
+  await page.goto(`/tests/fixtures/index.html?scenario=current&role=server&platform=${platform}`);
+  await continueServerChecks(page);
+  await page.getByLabel("Clinic address", { exact: true }).fill(clinicName);
+  await expect(forward(page)).toBeEnabled();
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Setting up backups");
+}
+
+test("the backup step blocks Continue until the recovery file is saved and checked", async ({ page }) => {
+  await backupStep(page);
+  await expect(page.getByText("CARE makes an encrypted backup automatically, once every 24 hours.", { exact: false })).toBeVisible();
+  await expect(page.getByText("/Library/Application Support/CARE Clinic/backups", { exact: true })).toBeVisible();
+  await expect(page.getByText("418 GB free · backups need at least 1.0 GB", { exact: true })).toBeVisible();
+  await expect(forward(page)).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Select saved file", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Change folder", exact: true }).click();
+  await expect(page.getByText("/Volumes/ClinicBackup/CARE", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
+  await expect(page.getByText("/Volumes/KEYS/CARE-care-backup-recovery-key.pem", { exact: true })).toBeVisible();
+  await expect(forward(page)).toBeDisabled();
+  await page.evaluate(() => { window.careTest.fixtures.recoveryPickPath = "/Volumes/KEYS/old.pem"; });
+  await page.getByRole("button", { name: "Select saved file", exact: true }).click();
+  await expect(page.getByText("That file doesn't match this clinic.", { exact: false }).first()).toBeVisible();
+  await expect(forward(page)).toBeDisabled();
+  await page.evaluate(() => { window.careTest.fixtures.recoveryPickPath = ""; });
+  await page.getByRole("button", { name: "Select saved file", exact: true }).click();
+  await expect(page.getByText("Recovery file checked", { exact: true })).toBeVisible();
+  await expect(page.getByText("Keep this file safe, and don't share it with anyone", { exact: true })).toBeVisible();
+  await expect(forward(page)).toBeEnabled();
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Creating the admin password");
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password", { exact: true }).fill(password);
+  await saveRecoveryCodes(page);
+  await forward(page).click();
+  await expect(page.getByRole("region", { name: "Backups" })).toContainText("/Volumes/ClinicBackup/CARE");
+  await page.evaluate(() => window.careTest.respond("RunSetup", undefined));
+  await install(page).click();
+  await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.careTest.calls.find((call) => call.method === "RunSetup")?.args))
+    .toEqual([`${clinicName}.local`, password, "/Volumes/ClinicBackup/CARE"]);
+});
+
+test("a backup folder problem blocks saving the recovery file", async ({ page }) => {
+  await page.goto("/tests/fixtures/index.html?scenario=setup-backup-readonly&role=server");
+  await continueServerChecks(page);
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Setting up backups");
+  await expect(page.getByRole("alert").filter({ hasText: "read-only" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Choose where to save", exact: true })).toBeDisabled();
+  await expect(forward(page)).toBeDisabled();
+  await page.evaluate(() => { window.careTest.fixtures.setupFolderProblem = ""; });
+  await page.getByRole("button", { name: "Check again", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Choose where to save", exact: true })).toBeEnabled();
+});
+
+test("Review sends a lost recovery file back to the backup step", async ({ page }) => {
+  await review(page);
+  await expect(page.getByRole("region", { name: "Backups" })).toContainText("recovery file saved and checked");
+  await page.evaluate(() => {
+    window.careTest.fixtures.setupBackup.backup_problem = "missing";
+    window.careTest.fixtures.setupBackup.backup_verified = false;
+  });
+  await install(page).click();
+  await expect(page.getByRole("region", { name: "Backups" })).toContainText("Save and check the backup recovery file before installing.");
+  expect(await calls(page, "RunSetup")).toBe(0);
+  await page.getByRole("button", { name: "Fix Backups" }).click();
+  await expect(page.locator("#setup-title")).toHaveText("Setting up backups");
+  await expect(page.getByText("The recovery file isn't ready", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save a new recovery file", exact: true })).toBeEnabled();
+});
+
+test("Windows offers to open the recovery file's folder and warns about OneDrive", async ({ page }) => {
+  await backupStep(page, "windows");
+  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
+  await page.getByRole("button", { name: "Open folder", exact: true }).click();
+  await expect.poll(() => calls(page, "OpenSetupBackupRecoveryFolder")).toBe(1);
+  await expect(page.getByText("Desktop may sync to OneDrive", { exact: false })).toBeVisible();
 });

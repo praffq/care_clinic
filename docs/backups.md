@@ -18,7 +18,7 @@ Overview and Advanced actions).
 flowchart LR
   VM["engine VM<br/>/var/lib/care/backups/&lt;id&gt;/<br/>(at most 2 sets)"] -->|"copy, verify, rename<br/>then delete in the VM"| Host["host backup folder<br/>backup_dir/&lt;id&gt;/"]
   Host -->|"copy, verify, rename<br/>(optional)"| Extra["extra copy<br/>USB drive or network share"]
-  Key["recovery key<br/>(saved from Advanced)"] -.->|"decrypts"| Host
+  Key["recovery key<br/>(saved and checked during setup)"] -.->|"decrypts"| Host
   Key -.-> Extra
 ```
 
@@ -32,8 +32,12 @@ flowchart LR
    `<id>/` and only then deletes it in the VM. The previous host set is
    deleted only after the new one is verified, so there is always one good
    set on the host. The default `backup_dir` is
-   `/Library/Application Support/care-clinic/backups`. Change it with
-   `ctl config backup_dir=<folder>`.
+   `/Library/Application Support/care-clinic/backups`. Onboarding's
+   **Setting up backups** step chooses it before install
+   ([onboarding](onboarding.md#4-backups)); afterwards change it on the
+   Backups tab or with `ctl config backup_dir=<folder>`. The service runs as
+   root (LocalSystem on Windows); on macOS it can't write to Desktop,
+   Documents, Downloads or iCloud Drive, so setup refuses those folders.
 3. **Extra copy (optional).** The newest host set is also copied to a second
    folder, usually on a USB drive or a network share, in the same way:
    `<id>.partial`, verify, rename, then remove older sets there.
@@ -82,11 +86,15 @@ B='/Library/Application Support/care-clinic/bin/care-clinic-service'
 ## The recovery key
 
 Backups are encrypted to the clinic's backup certificate. Only its
-**recovery key** can decrypt them. The key is created at install
-(`backup-recovery-key.pem` next to `secrets.env`), so it is lost along with
-the computer.
+**recovery key** can decrypt them. Onboarding makes the pair in the
+**Setting up backups** step: the operator saves the recovery file somewhere
+of their choosing and selects it again so the app can check it matches.
+`RunSetup` then installs that same pair as `backup-cert.pem` and
+`backup-recovery-key.pem` next to `secrets.env`, before the clinic is
+configured, so the file saved during setup unlocks every backup the clinic
+makes. The copy on the computer is lost along with it.
 
-Save a copy right after setup: **Advanced → Backup recovery → Save recovery
+Save another copy at any time: **Advanced → Backup recovery → Save recovery
 key…** (this needs the CARE Clinic admin password). Store it on a USB drive
 or print it, and keep it **apart from the backups**. Anyone with the key and
 a backup can read the clinic's records. The app refuses to save the key inside

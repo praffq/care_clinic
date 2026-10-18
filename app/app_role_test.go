@@ -232,7 +232,7 @@ func TestClientRejectsServerMutations(t *testing.T) {
 	}
 	for name, action := range map[string]func() error{
 		"setup": func() error {
-			return a.RunSetup("clinic", settingsPassword)
+			return a.RunSetup("clinic", settingsPassword, "")
 		},
 		"set address": func() error { return a.SetMDNSName("clinic") },
 		"cleanup":     a.CleanupFailedInstall,

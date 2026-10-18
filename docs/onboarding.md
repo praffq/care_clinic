@@ -2,9 +2,9 @@
 
 [Documentation index](README.md)
 
-Setting up a Mac as the clinic server takes four steps in the desktop app:
-**computer checks**, **cleanup of an earlier setup**, **clinic name and admin
-password**, and **install**. The
+Setting up a Mac as the clinic server takes these steps in the desktop app:
+**computer checks**, **cleanup of an earlier setup**, **clinic name**,
+**backups**, **admin password**, a **review** and **install**. The
 app only drives the steps; the engine VM and the clinic containers belong to
 the boot-time [`care-clinic-service`](../app/cmd/care-clinic-service/README.md).
 Nothing is installed on the host besides that service: no Docker, Rancher
@@ -28,9 +28,12 @@ sequenceDiagram
     App->>Svc: wait until the control socket answers
     UI->>App: ScanResidue (PurgeResidue if anything is left)
     App->>Svc: engine status, stack status, uploaded config
-    UI->>App: RunSetup(name, adminPassword)
+    UI->>App: ValidateBackupDir, SaveSetupBackupRecovery, VerifySetupBackupRecovery
+    UI->>App: RunSetup(name, adminPassword, backupDir)
     App->>Svc: engine install + activate (bundled engine, if newer)
     Svc->>VM: boot engine, forward 80/443/8480, advertise name.local
+    App->>Svc: backup_dir = backupDir
+    App->>App: install the checked backup key in the clinic state folder
     App->>VM: load images, upload config, migrate, stack up, create admin
     App-->>UI: setup-done, care-done(0, "setup")
 ```
@@ -121,13 +124,59 @@ the backup key, admin recovery codes and the log stay. Approval prompts are the
 same as for Uninstall: the in-window confirmation for the hosts file, and the
 operating system's own password prompt.
 
-## 3. Clinic name and admin password
+## 3. Clinic name
 
 The clinic name becomes `<name>.local` (default `care`). `MDNSStatus` and
 `ValidateDomain` check it before setup; `RunSetup` checks again that no other
 computer on the network advertises it, unless this Mac's service already does.
 Keep other clinic servers awake during setup: an offline computer cannot be
 detected.
+
+## 4. Backups
+
+The **Setting up backups** step chooses where the service exports the
+nightly backups and makes the key that unlocks them. Continue stays disabled
+until the folder checks out and the recovery file is saved and checked.
+
+**Folder.** It starts at the service's current `backup_dir` (by default
+`/Library/Application Support/care-clinic/backups`); **Change folder**
+(`ChooseFolder`) picks another. `ValidateBackupDir` returns a problem, or
+`""`, and `BackupDirSpace` the free space shown under the path. A chosen
+folder must:
+
+- be an absolute path that is not the top of a drive (the service's own rule);
+- not be inside CARE's install, settings, clinic state or log folders, and not
+  hold the saved recovery file;
+- exist and be a folder, and be writable (a probe file is created and
+  removed), so read-only drives such as NTFS on a Mac are refused;
+- not already hold backup sets: the service prunes older sets in its folder,
+  so another installation's backups there would be deleted;
+- on macOS, not be in Desktop, Documents, Downloads, iCloud Drive or
+  `~/Library/CloudStorage`: privacy protection keeps the root
+  `care-clinic-service` LaunchDaemon out of them;
+- have at least 1 GB free.
+
+The service's current folder (left unchanged) is root-owned, so only the path,
+CARE-folder and space rules apply to it; the service creates it under an
+existing parent.
+
+**Recovery file.** **Choose where to save** (`SaveSetupBackupRecovery`)
+generates the clinic's backup certificate and its RSA recovery key
+(`stack.GenerateBackupKey`), writes the key where the operator chooses
+(never over an existing file, never inside CARE's folders or the backup
+folder) and keeps both in `setup-backup.json` (`0600`) in the clinic state
+folder, unchecked. **Select saved file** (`VerifySetupBackupRecovery`) reads
+the chosen file and checks that its key matches the certificate; cancelling
+keeps an earlier check, any other failure clears it. **Save a new recovery
+file** (`ReplaceSetupBackupRecovery`) makes a new pair, which must be checked
+again; the old file then unlocks nothing this clinic makes.
+`GetSetupBackupStatus` also re-reads the saved file, so a moved, damaged or
+different file (`missing`, `unreadable`, `mismatch`) needs checking again
+before installing. On Windows, **Open folder**
+(`OpenSetupBackupRecoveryFolder`) shows the file in File Explorer. Once
+installation starts (the admin password hash is saved) these calls refuse.
+
+## 5. Admin password
 
 The CARE Clinic admin password must be 8 to 20 characters with an uppercase
 letter, a lowercase letter and a digit (`ValidatePassword`). It protects the
@@ -158,10 +207,11 @@ Advanced and need the admin password. Review checks the codes again before
 installing. Cleaning up a failed install keeps the saved codes for the next
 attempt; Uninstall deletes them.
 
-## 4. Install
+## 6. Install
 
-`RunSetup(name, adminPassword)` validates its input synchronously, then runs
-the `setup` job:
+`RunSetup(name, adminPassword, backupDir)` validates its input synchronously
+(including the backup folder, and that the recovery file is saved, checked
+and still matches), then runs the `setup` job:
 
 1. Save the name and password hash in `config.json`.
 2. Wait for the service, then **install the engine** if needed. The app uses
@@ -172,9 +222,18 @@ the `setup` job:
    bundle, an already installed engine is used; otherwise setup fails.
 3. Wait up to 5 minutes for the engine to be ready, starting it if stopped,
    and tell the service the clinic name to advertise.
-4. Copy the deployment kit to the install folder, then `Clinic.Setup` loads the
+4. Set the service's `backup_dir` to the chosen folder (an empty `backupDir`
+   keeps the service's own), then install the checked certificate and key as
+   `backup-cert.pem` and `backup-recovery-key.pem` in the clinic state folder
+   and delete `setup-backup.json`. A different pair already there (from an
+   earlier clinic on this computer) is kept beside them as
+   `*.replaced-<time>`, since it still unlocks that clinic's backups. Because
+   the host certificate now exists, `Clinic.Setup` uploads it to the engine
+   instead of generating or adopting another, so every backup is encrypted to
+   the key the operator saved.
+5. Copy the deployment kit to the install folder, then `Clinic.Setup` loads the
    CARE images into the engine and uploads the rendered configuration.
-5. `Clinic.Start` migrates the database, brings the stack up, creates the
+6. `Clinic.Start` migrates the database, brings the stack up, creates the
    `admin` login and offers to set up this Mac's browser for
    `https://<name>.local/` (hosts entry and certificate trust; skipping it
    doesn't stop the clinic).

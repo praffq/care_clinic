@@ -184,7 +184,18 @@ func TestSetupRecoveryCodesSurviveRunSetup(t *testing.T) {
 	a := setupRecoveryApp(t)
 	a.nameCheck = func(string) error { return nil }
 	_, codes := saveSetupCodes(t, a)
-	if err := a.RunSetup("care", "ChosenLater123"); err != nil {
+	old := generateBackupKey
+	generateBackupKey = smallBackupKey
+	t.Cleanup(func() { generateBackupKey = old })
+	d := &setupDialogs{}
+	a.backupDialogs = &backupDialogs{
+		save: func(wruntime.SaveDialogOptions) (string, error) { return d.save, nil },
+		dir:  func(wruntime.OpenDialogOptions) (string, error) { return "", nil },
+		file: func(wruntime.OpenDialogOptions) (string, error) { return d.file, nil },
+	}
+	backups := t.TempDir()
+	saveAndVerify(t, a, d, backups)
+	if err := a.RunSetup("care", "ChosenLater123", backups); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
