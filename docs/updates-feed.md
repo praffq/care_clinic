@@ -19,7 +19,7 @@ which the tests sign and verify.
                 "assets": { "darwin-arm64": { "url": "https://...", "sha256": "<64 hex>", "size": 1 } } }],
   "engine":  [{ "version": "0.1.1", "requires": { "desktop": ">=0.2.0" }, "data_schema": 1,
                 "assets": { "arm64": { "url": "https://...", "sha256": "<64 hex>", "size": 1 } } }],
-  "care":    [{ "version": "3.1.0+be.4f2a1c.fe.9b33d0",
+  "care":    [{ "version": "3.1.0+be.4f2a1c.fe.9b33d0", "released_at": "2026-09-28T10:00:00Z",
                 "requires": { "desktop": ">=0.2.0", "engine": ">=0.1.0" },
                 "migrations": true,
                 "images": { "backend":  { "ref": "ghcr.io/...@sha256:<hex>", "digest": "sha256:<hex>" },
@@ -32,8 +32,16 @@ which the tests sign and verify.
 
 - `schema` must be `1`. `revision` is a positive integer that increases with
   every published feed. `published_at` must not be after `expires`.
-- Versions are strict semver (`+build` allowed). Within one component no two
-  entries may have the same precedence (build metadata is ignored for that check).
+- Versions are strict semver (`+build` allowed). Desktop and engine versions
+  must be bumped for every release: no two entries may have the same precedence
+  (build metadata is ignored for that check).
+- CARE entries are versioned `<core>+be.<sha>.fe.<sha>` and CI adds one per
+  commit without bumping the core, so several entries may share precedence
+  (e.g. `3.1.0+be.A…` and `3.1.0+be.B…`). Each CARE entry therefore has a
+  required `released_at` (RFC 3339, not after `published_at`) that is unique
+  among CARE entries, and only the exact version string must be unique.
+  CARE releases are ordered by semver precedence, then `released_at`
+  (`CareRelease.Newer`).
 - `requires` uses the comparator ranges from `versions.yml`. Desktop entries
   must require `engine`, engine entries must require `desktop`, CARE entries
   must require both; no component may require itself.

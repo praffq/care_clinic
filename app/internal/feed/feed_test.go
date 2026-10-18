@@ -226,6 +226,50 @@ func TestVerify(t *testing.T) {
 			contains: "care[0].build_env.PATH",
 		},
 		{
+			name:     "duplicate care version string",
+			edit:     func(d []byte) []byte { return replace(t, d, "be.7c91e0.fe.9b33d0", "be.4f2a1c.fe.9b33d0") },
+			wantErr:  ErrInvalid,
+			contains: `care[1].version: duplicate version "3.1.0+be.4f2a1c.fe.9b33d0"`,
+		},
+		{
+			name:     "equal care released_at",
+			edit:     func(d []byte) []byte { return replace(t, d, "2026-09-30T16:30:00Z", "2026-09-28T15:30:00+05:30") },
+			wantErr:  ErrInvalid,
+			contains: "care[1].released_at: duplicate",
+		},
+		{
+			name:     "missing care released_at",
+			edit:     func(d []byte) []byte { return replace(t, d, `"released_at": "2026-09-30T16:30:00Z",`, "") },
+			wantErr:  ErrInvalid,
+			contains: "care[1].released_at: required",
+		},
+		{
+			name:     "care released_at after published_at",
+			edit:     func(d []byte) []byte { return replace(t, d, "2026-09-30T16:30:00Z", "2026-10-02T00:00:00Z") },
+			wantErr:  ErrInvalid,
+			contains: "care[1].released_at: must not be after published_at",
+		},
+		{
+			name: "desktop build metadata only is duplicate",
+			edit: func(d []byte) []byte {
+				var m map[string]any
+				if err := json.Unmarshal(d, &m); err != nil {
+					t.Fatal(err)
+				}
+				e := m["desktop"].([]any)
+				dup := map[string]any{}
+				for k, v := range e[0].(map[string]any) {
+					dup[k] = v
+				}
+				dup["version"] = "0.2.0+rebuild"
+				m["desktop"] = append(e, dup)
+				out, _ := json.Marshal(m)
+				return out
+			},
+			wantErr:  ErrInvalid,
+			contains: `desktop[1].version: duplicate version "0.2.0+rebuild"`,
+		},
+		{
 			name:     "trailing data",
 			edit:     func(d []byte) []byte { return append(d, []byte(`{}`)...) },
 			wantErr:  ErrInvalid,
@@ -292,6 +336,27 @@ func TestVerifyParsesValues(t *testing.T) {
 	}
 	if m.SupportImages[protocol.ImageRoleRedis].Digest != protocol.Digest("sha256:"+strings.Repeat("f", 64)) {
 		t.Error("support image digest not decoded")
+	}
+}
+
+func TestCareNewer(t *testing.T) {
+	k := newKey(t)
+	data := fixture(t)
+	m, err := Verify(data, Sign(data, k).Marshal(), VerifyOptions{Keys: NewTrustedKeys(pub(k)), Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Care) != 2 {
+		t.Fatalf("want 2 care entries at 3.1.0, got %d", len(m.Care))
+	}
+	older, newer := m.Care[0], m.Care[1]
+	if !newer.Newer(older) || older.Newer(newer) || older.Newer(older) {
+		t.Fatal("same precedence must be ordered by released_at")
+	}
+	v, _ := NewVersion("3.2.0")
+	bumped := CareRelease{Version: v, ReleasedAt: older.ReleasedAt.Add(-time.Hour)}
+	if !bumped.Newer(newer) || newer.Newer(bumped) {
+		t.Fatal("semver precedence must win over released_at")
 	}
 }
 

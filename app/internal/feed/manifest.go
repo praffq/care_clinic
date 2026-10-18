@@ -63,13 +63,27 @@ type EngineRelease struct {
 	Assets     map[string]Asset `json:"assets"` // keyed by Arch*
 }
 
-// CareRelease is one CARE application version and its pinned images.
+// CareRelease is one CARE application version and its pinned images. CI
+// publishes a new entry per commit without bumping the semver core, so
+// entries may share precedence (e.g. 3.1.0+be.A and 3.1.0+be.B); ReleasedAt
+// orders them. See Newer.
 type CareRelease struct {
 	Version    Version                         `json:"version"`
+	ReleasedAt time.Time                       `json:"released_at"`
 	Requires   Requires                        `json:"requires"`
 	Migrations bool                            `json:"migrations"`
 	Images     map[protocol.ImageRole]ImageRef `json:"images"`
 	BuildEnv   map[string]string               `json:"build_env,omitempty"`
+}
+
+// Newer reports whether c sorts after other: higher semver precedence first,
+// then, for equal precedence, a later ReleasedAt. Verify guarantees
+// ReleasedAt is unique among a manifest's CARE entries, so the order is total.
+func (c CareRelease) Newer(other CareRelease) bool {
+	if r := c.Version.Compare(other.Version.Semver); r != 0 {
+		return r > 0
+	}
+	return c.ReleasedAt.After(other.ReleasedAt)
 }
 
 // Requires lists version constraints on sibling components.

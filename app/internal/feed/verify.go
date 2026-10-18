@@ -127,11 +127,25 @@ func (m *Manifest) validate(insecure bool) error {
 		}
 		v.assets(p+".assets", r.Assets, engineArches)
 	}
-	seen = nil
+	seenCare := map[string]bool{}
+	seenReleased := map[time.Time]bool{}
 	for i := range m.Care {
 		r := &m.Care[i]
 		p := fmt.Sprintf("care[%d]", i)
-		seen = v.version(p+".version", &r.Version, seen)
+		v.version(p+".version", &r.Version, nil)
+		if seenCare[r.Version.raw] {
+			v.add(p+".version", "duplicate version %q", r.Version.raw)
+		}
+		seenCare[r.Version.raw] = true
+		switch {
+		case r.ReleasedAt.IsZero():
+			v.add(p+".released_at", "required")
+		case !m.PublishedAt.IsZero() && r.ReleasedAt.After(m.PublishedAt):
+			v.add(p+".released_at", "must not be after published_at")
+		case seenReleased[r.ReleasedAt.UTC()]:
+			v.add(p+".released_at", "duplicate %s", r.ReleasedAt.Format(time.RFC3339Nano))
+		}
+		seenReleased[r.ReleasedAt.UTC()] = true
 		v.requires(p+".requires", &r.Requires, ComponentCare)
 		v.images(p+".images", r.Images, careImageRoles)
 		if len(r.BuildEnv) > 0 {
@@ -164,8 +178,8 @@ func (m *Manifest) validate(insecure bool) error {
 	return errors.Join(v.errs...)
 }
 
-// version parses ver and rejects one with the same precedence as an earlier
-// entry of the same component; it returns the updated seen list.
+// version parses ver and rejects one with the same precedence as an entry in
+// seen (desktop and engine must bump their version); it returns seen plus ver.
 func (v *validator) version(path string, ver *Version, seen []versions.Semver) []versions.Semver {
 	sv, err := versions.ParseSemver(ver.raw)
 	if err != nil {

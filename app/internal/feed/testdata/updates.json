@@ -27,6 +27,7 @@
   "care": [
     {
       "version": "3.1.0+be.4f2a1c.fe.9b33d0",
+      "released_at": "2026-09-28T10:00:00Z",
       "requires": { "desktop": ">=0.2.0", "engine": ">=0.1.0" },
       "migrations": true,
       "images": {
@@ -36,6 +37,18 @@
         "backup": { "ref": "ghcr.io/praffq/care_clinic/backup@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
       },
       "build_env": { "REACT_CARE_API_URL": "https://care.local" }
+    },
+    {
+      "version": "3.1.0+be.7c91e0.fe.9b33d0",
+      "released_at": "2026-09-30T16:30:00Z",
+      "requires": { "desktop": ">=0.2.0", "engine": ">=0.1.0" },
+      "migrations": false,
+      "images": {
+        "backend": { "ref": "ghcr.io/praffq/care_clinic/care-backend@sha256:3333333333333333333333333333333333333333333333333333333333333333", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" },
+        "frontend": { "ref": "ghcr.io/praffq/care_clinic/care-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        "caddy": { "ref": "ghcr.io/praffq/care_clinic/caddy@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        "backup": { "ref": "ghcr.io/praffq/care_clinic/backup@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+      }
     }
   ],
   "support_images": {
