@@ -1,0 +1,12 @@
+#!/bin/sh
+# Build care-clinic-service and ad-hoc sign it with the virtualization
+# entitlement, which Virtualization.framework requires.
+# Usage: app/cmd/care-clinic-service/build.sh [output]
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+out=${1:-$here/../../../dist/care-clinic-service}
+mkdir -p "$(dirname "$out")"
+cd "$here"
+CGO_ENABLED=1 go build -o "$out" .
+codesign --force -s - --entitlements "$here/care-clinic-service.entitlements" "$out"
+echo "built $out"
