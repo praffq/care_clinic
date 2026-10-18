@@ -35,7 +35,7 @@ func TestResolve(t *testing.T) {
 	resolve := func() (*logdir.Dir, []string, error) {
 		d, notes, err := Resolve(root, fallback)
 		if d != nil {
-			t.Cleanup(func() { d.Close() })
+			t.Cleanup(func() { _ = d.Close() })
 		}
 		return d, notes, err
 	}
