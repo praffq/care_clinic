@@ -27,6 +27,7 @@ type fakeAPI struct {
 	starts    int
 	copies    int
 	installFn func(data []byte, sha string) (slots.Slot, error)
+	slotList  api.SlotList
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -71,7 +72,11 @@ func (f *fakeAPI) Start(context.Context) (api.EngineStatus, error) {
 	return f.status.Engine, nil
 }
 
-func (f *fakeAPI) Slots(context.Context) (api.SlotList, error) { return api.SlotList{}, nil }
+func (f *fakeAPI) Slots(context.Context) (api.SlotList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.slotList, nil
+}
 
 func (f *fakeAPI) InstallEngine(_ context.Context, r io.Reader, size int64, sha string) (slots.Slot, error) {
 	data, err := io.ReadAll(r)

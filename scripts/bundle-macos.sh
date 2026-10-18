@@ -41,8 +41,9 @@ service=$app/Contents/MacOS/care-clinic-service
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+version=$(sed -n '/^desktop:/,/^[^ ]/s/^ *version: *"\(.*\)".*/\1/p' "$repo/versions.yml" | head -n 1)
 build() {
-	(cd "$src" && CGO_ENABLED=1 GOOS=darwin GOARCH="$1" go build -trimpath -ldflags "-s -w" -o "$2" .)
+	(cd "$src" && CGO_ENABLED=1 GOOS=darwin GOARCH="$1" go build -trimpath -ldflags "-s -w -X main.version=${version:-dev}" -o "$2" .)
 }
 
 if [ -n "${CARE_CLINIC_SERVICE_BINARY:-}" ]; then

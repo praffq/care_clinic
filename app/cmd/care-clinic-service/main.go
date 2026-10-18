@@ -46,6 +46,9 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/service/supervisor"
 )
 
+// version is set at build time with -ldflags "-X main.version=<version>".
+var version = "dev"
+
 const (
 	systemRoot   = "/Library/Application Support/care-clinic"
 	systemSocket = control.SystemSocket
@@ -197,6 +200,7 @@ func serve(args []string) error {
 		MDNS:       adv.Status,
 		Settings:   cfg,
 		Backups:    exp,
+		Version:    version,
 	}), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -97,6 +97,10 @@ type App struct {
 	prepared    *preparedUpdate
 	handoff     *updateHandoff
 	outcome     AppUpdateOutcome
+	// hooks replaces the update coordinator, backups and dialogs (tests).
+	hooks panelHooks
+	// lastCheck is the clinic update check the panel last ran.
+	lastCheck clinicCheck
 }
 
 func NewApp(installFS fs.FS, log *applog.Logger) (*App, error) {
@@ -137,6 +141,9 @@ func (a *App) logln(msg string) {
 }
 
 func (a *App) emit(event string, data ...any) {
+	if a.hooks.event != nil {
+		a.hooks.event(event, data...)
+	}
 	if a.ctx != nil {
 		wruntime.EventsEmit(a.ctx, event, data...)
 	}

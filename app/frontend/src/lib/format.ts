@@ -50,3 +50,11 @@ export function when(at?: string): string {
   const date = new Date(at);
   return Number.isNaN(date.getTime()) || date.getTime() <= 0 ? "never" : date.toLocaleString();
 }
+
+/** An ISO time as "12 Mar 2026, 14:05" in the computer's locale; "" for none. */
+export function dateTime(iso?: string): string {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime()) || at.getTime() <= 0) return "";
+  return at.toLocaleString([], { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}

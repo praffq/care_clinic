@@ -179,3 +179,4 @@
 .plugin-source { margin-top: 3px; color: #697f75; font-family: "IBM Plex Mono", monospace; font-size: 12px; overflow-wrap: anywhere; }
 .plugin-configs { width: 100%; min-height: 84px; padding: 9px 11px; border: 1px solid #dce5df; border-radius: 10px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; resize: vertical; }
 .plugin-configs:disabled { background: #f6f8f7; }
+.plugin-progress { margin-top: 14px; padding: 12px 14px; border: 1px solid #dce5df; border-radius: 12px; background: #f9fbfa; }

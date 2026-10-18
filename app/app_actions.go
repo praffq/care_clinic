@@ -174,6 +174,12 @@ func failureTitle(label string) string {
 		return "The backup couldn't be restored"
 	case pruneJob:
 		return "Unused images couldn't be removed"
+	case updatesJob:
+		return "The clinic update didn't finish"
+	case updateCheckJob:
+		return "Couldn't check for clinic updates"
+	case backupJob:
+		return "The backup didn't finish"
 	}
 	return "CARE couldn't finish that"
 }

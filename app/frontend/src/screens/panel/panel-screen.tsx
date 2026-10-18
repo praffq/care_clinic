@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useAppUpdate, type AppUpdateController } from "@/hooks/use-app-update";
 import { useCare } from "@/state/care-store";
 import { AdvancedTab } from "./advanced-tab";
+import { BackupsTab } from "./backups-tab";
 import { HomeAccessTab } from "./home-access";
 import { OverviewTab } from "./overview-tab";
 import { DismissButton, PanelLogButton, useDismissed, usePanelTask } from "./panel-ui";
@@ -60,6 +61,7 @@ function PanelContent({ appUpdate }: { appUpdate: AppUpdateController }) {
         <div hidden={care.tab !== "overview"}><OverviewTab /></div>
         <div hidden={care.tab !== "home-access"}><HomeAccessTab locked={locked} /></div>
         <div hidden={care.tab !== "updates"}><UpdatePanel appUpdate={appUpdate} /></div>
+        <div hidden={care.tab !== "backups"}><BackupsTab locked={locked} /></div>
         <div data-panel-tab="advanced" hidden={care.tab !== "advanced"}><AdvancedTab disabled={locked} /></div>
       </ScreenBody>
     </Screen>

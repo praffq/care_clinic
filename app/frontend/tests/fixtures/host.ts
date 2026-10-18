@@ -1,7 +1,7 @@
 import type {
-  AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupStatus, CareHealth, ClientPreflight, ClientReachability,
-  ConfirmationRequest, HomeAccess, HostCheck, HostReport, NetworkStatus, Plugin, PluginPreset, QuitRequest, RestoreChoice, Section,
-  ServiceState, StorageState,
+  AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupSet, BackupStatus, CareHealth, CheckResult, ClientPreflight,
+  ClientReachability, ClinicUpdates, ConfirmationRequest, HistoryEntry, HomeAccess, HostCheck, HostReport, Journal, NetworkStatus,
+  Plugin, PluginPreset, QuitRequest, RestoreChoice, Section, ServiceState, StepRecord, StorageState, SystemInfo,
   UpdateChecks,
 } from "../../src/types";
 
@@ -41,6 +41,12 @@ type Fixtures = {
   backups: BackupStatus;
   restoreChoice: RestoreChoice | null;
   copyFolder: string;
+  clinicUpdates: ClinicUpdates;
+  nextCheck: CheckResult;
+  /** The sets ListBackups returns; its dir and status come from backups. */
+  backupSets: BackupSet[];
+  backupFolder: string;
+  system: SystemInfo;
 };
 
 declare global {
@@ -63,6 +69,7 @@ declare global {
       setOutcome: (value: AppUpdateOutcome) => void;
       setUpdate: (value: AppUpdate) => void;
       finishJob: (action: string, error?: string) => void;
+      journal: (journal: Journal | null) => void;
       requestQuit: (action: string) => void;
       requestConfirmation: (title: string, message: string) => void;
       cancelConfirmation: () => void;
@@ -99,6 +106,40 @@ export function installTestHost() {
   const sampleCodes = (generation: number) => Array.from({ length: 6 }, (_, index) =>
     `AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-${generation.toString(16).padStart(4, "0")}-${(index + 1).toString(16).padStart(4, "0")}`.toUpperCase());
   const GB = 2 ** 30;
+  const at = (day: number, hour = 2) => new Date(Date.UTC(2026, 2, day, hour, 30)).toISOString();
+  const clinicUpdates: ClinicUpdates = {
+    installed: {
+      desktop: "0.1.5",
+      engine: { version: "1.2.3", data_schema: 1 },
+      care: { version: "2026.3.0", released_at: at(2), images: [] },
+      updated_at: at(4),
+    },
+    verified_at: at(10, 9),
+    history: [
+      { id: "op-2", component: "engine", from: "1.2.2", to: "1.2.3", revision: 7, result: "applied", started_at: at(4), finished_at: at(4, 3) },
+      { id: "op-1", component: "care", from: "2026.2.1", to: "2026.3.0", revision: 6, result: "rolled_back",
+        error: "CARE didn't answer its health check within 5 minutes", failed_step: "health", started_at: at(3), finished_at: at(3, 3) },
+    ],
+  };
+  const nextCheck: CheckResult = { revision: 8, available: false, reason: "everything is up to date", prefetched: false };
+  const backupFolder = "/Volumes/ClinicBackup/CARE";
+  const backupDir = "/Library/Application Support/CARE Clinic/backups";
+  const backupSets: BackupSet[] = [
+    { id: "daily-20261018T000000Z", created_at: "2026-10-18T00:00:00Z", size: 412 * 2 ** 20, dir: `${backupDir}/daily-20261018T000000Z`,
+      copied: true, latest: true, verified_at: "2026-10-18T00:05:00Z" },
+    { id: "daily-20261017T000000Z", created_at: "2026-10-17T00:00:00Z", size: 405 * 2 ** 20, dir: `${backupDir}/daily-20261017T000000Z`, copied: true },
+  ];
+  const system: SystemInfo = {
+    desktop_version: "0.1.5",
+    service_version: "0.1.5",
+    engine: { state: "ready", engine_version: "1.2.3", restarts: 0, uptime_seconds: 3 * 86400 + 4 * 3600 },
+    current: "1.2.3",
+    fallback: "1.2.2",
+    slots: [
+      { version: "1.2.3", arch: "arm64", data_schema: 1, current: true },
+      { version: "1.2.2", arch: "arm64", data_schema: 1, fallback: true },
+    ],
+  };
   const fixtures: Fixtures = {
     checks: [
       { id: "virtualization", title: "Virtualization", level: "ok", detail: "This computer can run the CARE engine." },
@@ -167,7 +208,56 @@ export function installTestHost() {
       id: "care_multihost_files_be", package: "git+https://github.com/ohcnetwork/care_multihost_files_be.git", version: "@main",
       configs: { ALLOWED_HOSTS: ["*.local", "*.ts.net"] }, bundled: true,
     }],
+    clinicUpdates, nextCheck, backupSets, backupFolder, system,
   };
+  const careSteps = ["preflight", "backup", "images", "stop-app", "write-env", "migrate", "start-stack", "health"];
+  const steps = (names: string[], done: number, failed = -1): StepRecord[] => names.map((name, index) => ({
+    name, attempts: index <= done ? 1 : 0,
+    status: index === failed ? "failed" : index < done ? "done" : index === done ? "running" : "pending",
+    ...(index === failed ? { error: "migration 0142 failed: column already exists" } : {}),
+  }));
+  const journalFor = (state: Journal["state"], done: number, failed = -1): Journal => ({
+    id: "op-3", component: "care", from: "2026.3.0", to: "2026.4.0", revision: 8, state, started_at: at(11), updated_at: at(11),
+    steps: steps(careSteps, done, failed),
+  });
+  if (scenario === "panel-update-available") {
+    fixtures.clinicUpdates.unsigned = true;
+    fixtures.nextCheck = {
+      revision: 8, unsigned: true, available: true, prefetched: true,
+      steps: [{ component: "engine", from: "1.2.3", to: "1.3.0" }, { component: "care", from: "2026.3.0", to: "2026.4.0" }],
+    };
+  }
+  if (scenario === "panel-update-needs-desktop") {
+    fixtures.nextCheck = { revision: 8, available: false, prefetched: false,
+      reason: "no compatible update path: CARE 2026.4.0 requires desktop 0.3.0 (installed 0.1.5)" };
+  }
+  if (scenario === "panel-update-interrupted") fixtures.clinicUpdates.journal = journalFor("uncertain", 5);
+  if (scenario === "panel-update-rollback-failed") {
+    fixtures.clinicUpdates.journal = {
+      ...journalFor("failed", 5, 5), error: "migration 0142 failed: column already exists", failed_step: "migrate",
+      rollback_steps: [
+        { name: "rollback-stop-app", status: "done", attempts: 1 },
+        { name: "rollback-restore-db", status: "failed", attempts: 2, error: "the backup couldn't be read: disk I/O error" },
+      ],
+    };
+  }
+  if (scenario === "panel-plugin-rolled-back") {
+    fixtures.clinicUpdates.history.unshift({
+      id: "op-p", component: "plugins", from: "2026.3.0", to: "2026.3.0", revision: 7, result: "rolled_back", failed_step: "build",
+      error: "image build failed: pip couldn't find care_filly@v9 (rolled back)", started_at: at(10, 4), finished_at: at(10, 5),
+    });
+  }
+  if (scenario === "panel-backups-alert") {
+    fixtures.backups = {
+      ...fixtures.backups, critical: true, pending: 2, oldest_pending_at: "2026-10-18T00:00:00Z",
+      message: "Backups haven't been copied out since 17 Oct.", last_error: "copy to the backup folder: no space left on device",
+      last_error_at: "2026-10-18T00:05:00Z", verified_at: "2026-10-17T00:05:00Z", last_exported: "daily-20261017T000000Z",
+    };
+    fixtures.backupSets = [
+      { id: "daily-20261018T000000Z", created_at: "2026-10-18T00:00:00Z", size: 412 * 2 ** 20, copied: false },
+      { ...fixtures.backupSets[1], latest: true, verified_at: "2026-10-17T00:05:00Z" },
+    ];
+  }
   const recoveryCodeCount = params.get("recoveryCodes");
   if (recoveryCodeCount !== null) {
     fixtures.recoveryCodes = fixtures.recoveryCodes.map((code, index) => index < Number(recoveryCodeCount) ? code : "");
@@ -305,6 +395,52 @@ export function installTestHost() {
   const acceptJob = (action: string) => {
     if (fixtures.finishJobs) window.setTimeout(() => finishJob(action), 350);
   };
+  const blockerFor = (check: CheckResult): ClinicUpdates["blocker"] => check.available ? undefined
+    : check.reason === "everything is up to date" ? "up_to_date"
+      : /is not a release in the update feed/.test(check.reason ?? "") ? "unknown_care"
+        : /is blocked/.test(check.reason ?? "") ? "blocked" : /requires desktop/.test(check.reason ?? "") ? "needs_desktop" : "no_path";
+  const notesFor = (check: CheckResult) => (check.steps ?? []).map((step) => ({
+    component: step.component, version: step.to, released_at: at(10),
+    migrations: step.component === "care",
+    links: step.component === "care"
+      ? [{ label: "CARE backend", url: `https://github.com/ohcnetwork/care/tree/v${step.to}` }]
+      : [{ label: "Release notes", url: `https://github.com/praffq/care_clinic/releases/tag/${step.component}-v${step.to}` }],
+  }));
+  const record = (entry: Omit<HistoryEntry, "id" | "revision" | "started_at" | "finished_at">) => {
+    const now = new Date().toISOString();
+    fixtures.clinicUpdates.history = [
+      { id: `op-${Date.now()}`, revision: 8, started_at: now, finished_at: now, ...entry },
+      ...fixtures.clinicUpdates.history,
+    ];
+  };
+  const runUpdate = (journal: Journal) => {
+    if (!fixtures.finishJobs) return;
+    void (async () => {
+      for (let done = 0; done <= journal.steps.length; done++) {
+        emit("update-journal", { ...journal, steps: journal.steps.map((step, index) => ({
+          ...step, status: index < done ? "done" : index === done ? "running" : "pending", attempts: index <= done ? 1 : 0,
+        })) });
+        await wait(60);
+      }
+      emit("update-journal", null);
+      fixtures.clinicUpdates.journal = undefined;
+      fixtures.clinicUpdates.check = undefined;
+      fixtures.clinicUpdates.blocker = undefined;
+      fixtures.clinicUpdates.notes = undefined;
+      record({ component: journal.component, from: journal.from, to: journal.to, result: "applied" });
+      if (journal.component === "care") fixtures.clinicUpdates.installed.care = { ...fixtures.clinicUpdates.installed.care!, version: journal.to };
+      finishJob("updates");
+    })();
+  };
+  const pluginJournal = () => {
+    if (!fixtures.finishJobs) return;
+    const names = ["preflight", "backup", "build", "stop-app", "write-env", "migrate", "start-stack", "health"];
+    [0, 2, 5].forEach((done, index) => window.setTimeout(() => emit("update-journal", {
+      id: "op-plugins", component: "plugins", from: "2026.3.0", to: "2026.3.0", revision: 8, state: "running",
+      started_at: at(11), updated_at: at(11), steps: steps(names, done),
+    }), index * 90));
+    window.setTimeout(() => emit("update-journal", null), 340);
+  };
   const finishUpdate = (error?: string) => {
     if (error) {
       emit("care-log", `error: ${error}`);
@@ -405,12 +541,14 @@ export function installTestHost() {
         [key, value === "********" ? old?.configs?.[key] : value]));
       const next = { ...plugin, configs };
       fixtures.plugins = old ? fixtures.plugins.map((current) => current.id === plugin.id ? next : current) : [...fixtures.plugins, next];
+      pluginJournal();
       acceptJob("plugins");
     },
     DisablePlugin: async (id: string, password: string) => {
       requireAdmin(password);
       if (!fixtures.plugins.some((plugin) => plugin.id === id)) throw new Error(`plugin ${id} is not enabled`);
       fixtures.plugins = fixtures.plugins.filter((plugin) => plugin.id !== id);
+      pluginJournal();
       acceptJob("plugins");
     },
     ClinicAction: async (action: "start" | "stop" | "restart") => {
@@ -495,9 +633,14 @@ export function installTestHost() {
       const choice = structuredClone(fixtures.restoreChoice);
       return otherKey ? { ...choice, key_path: "/Volumes/KEYS/old-clinic-key.pem" } : choice;
     },
-    RestoreBackup: async (_setDir: string, _keyPath: string, password: string) => {
+    RestoreBackup: async (setDir: string, _keyPath: string, password: string) => {
       requireAdmin(password);
-      acceptJob("restore");
+      if (!fixtures.finishJobs) return;
+      void (async () => {
+        emit("backup-progress", { job: "restore", state: "restoring", message: `Restoring ${setDir.split("/").pop()}` });
+        await wait(200);
+        finishJob("restore");
+      })();
     },
     SetBackupCopyDir: async (password: string) => {
       requireAdmin(password);
@@ -519,6 +662,80 @@ export function installTestHost() {
       requireServer();
       acceptJob("prune-images");
     },
+    ClinicUpdateStatus: async () => {
+      requireServer();
+      return structuredClone(fixtures.clinicUpdates);
+    },
+    CheckClinicUpdates: async () => {
+      requireServer();
+      if (!fixtures.finishJobs) return;
+      window.setTimeout(() => {
+        const check = structuredClone(fixtures.nextCheck);
+        Object.assign(fixtures.clinicUpdates, {
+          check, check_error: undefined, checked_at: new Date().toISOString(), blocker: blockerFor(check),
+          notes: check.available ? notesFor(check) : undefined, verified_at: new Date().toISOString(),
+        });
+        finishJob("update-check");
+      }, 250);
+    },
+    ApplyClinicUpdates: async (password: string) => {
+      requireAdmin(password);
+      const step = fixtures.clinicUpdates.check?.steps?.find((candidate) => candidate.component === "care")
+        ?? fixtures.clinicUpdates.check?.steps?.[0];
+      if (!step) throw new Error("check for updates first");
+      runUpdate({ ...journalFor("running", 0), component: step.component, from: step.from, to: step.to });
+    },
+    ResumeClinicUpdate: async (password: string) => {
+      requireAdmin(password);
+      const journal = fixtures.clinicUpdates.journal;
+      if (!journal) throw new Error("no unfinished update operation");
+      if (journal.state === "failed") throw new Error("the rollback failed; use Rollback to retry it");
+      runUpdate({ ...journal, state: "running" });
+    },
+    RollBackClinicUpdate: async (password: string) => {
+      requireAdmin(password);
+      const journal = fixtures.clinicUpdates.journal;
+      if (!journal) throw new Error("no unfinished update operation");
+      if (!fixtures.finishJobs) return;
+      window.setTimeout(() => {
+        fixtures.clinicUpdates.journal = undefined;
+        emit("update-journal", null);
+        record({ component: journal.component, from: journal.from, to: journal.to, result: "rolled_back",
+          error: journal.error ?? "rolled back on request", failed_step: journal.failed_step });
+        finishJob("updates");
+      }, 250);
+    },
+    ListBackups: async () => {
+      requireServer();
+      return structuredClone({ dir: fixtures.backups.dir, sets: fixtures.backupSets, status: fixtures.backups });
+    },
+    BackUpNow: async () => {
+      requireServer();
+      if (!fixtures.finishJobs) return;
+      void (async () => {
+        const total = 420 * 2 ** 20;
+        for (const bytes of [0, total / 2, total]) {
+          emit("backup-progress", { job: "backup", state: "copying", bytes, total, message: "Copying to the backup folder" });
+          await wait(80);
+        }
+        const now = new Date().toISOString();
+        const id = `daily-${now.replace(/[-:]/g, "").replace(/\.\d+/, "")}`;
+        fixtures.backupSets = [{ id, created_at: now, size: total, dir: `${fixtures.backups.dir}/${id}`, copied: true, latest: true, verified_at: now },
+          ...fixtures.backupSets.map((set) => ({ ...set, latest: false }))];
+        fixtures.backups = { ...fixtures.backups, last_exported: id, verified_at: now, checked_at: now,
+          pending: 0, critical: false, message: undefined, last_error: undefined, last_error_at: undefined };
+        emitService();
+        finishJob("backup");
+      })();
+    },
+    ChooseBackupFolder: async (password: string) => {
+      requireAdmin(password);
+      if (!fixtures.backupFolder) return "";
+      fixtures.backups.dir = fixtures.backupFolder;
+      emitService();
+      return fixtures.backupFolder;
+    },
+    SystemInfo: async () => structuredClone(fixtures.system),
     CheckCareHealth: async () => structuredClone(fixtures.health),
     RunUninstall: async (_removeData: boolean, password: string) => {
       requireAdmin(password);
@@ -680,6 +897,7 @@ export function installTestHost() {
   };
   window.careTest = {
     calls, logs, state, emit, emitService, fixtures, finishJob,
+    journal: (journal) => emit("update-journal", journal),
     requestQuit: (action) => {
       quitRequest = { id: ++quitSequence, title: "CARE is still working", message: `CARE is still ${action}. Quitting now stops it before it finishes. Commands that already started may keep running in the background for a few minutes.` };
       emit("quit-requested", { ...quitRequest });

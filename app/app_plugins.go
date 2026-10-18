@@ -91,6 +91,8 @@ func (a *App) changePlugins(fn func(context.Context, *updates.Coordinator) error
 	if err != nil {
 		return err
 	}
+	stop := a.watchJournal(u)
+	defer stop()
 	return fn(ctx, u)
 }
 

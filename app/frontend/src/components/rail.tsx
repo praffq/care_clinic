@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { ArrowDownToLine, ArrowUpRight, House, LayoutDashboard, ScrollText, Settings } from "lucide-react";
+import { ArrowDownToLine, ArrowUpRight, DatabaseBackup, House, LayoutDashboard, ScrollText, Settings } from "lucide-react";
 
 import logoMark from "@/assets/care-logo-mark.svg";
 import { bridge } from "@/lib/bridge";
@@ -11,6 +11,7 @@ const CLINIC_TABS: { id: PanelTab; label: string; icon: typeof LayoutDashboard }
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "home-access", label: "Home access", icon: House },
   { id: "updates", label: "Updates", icon: ArrowDownToLine },
+  { id: "backups", label: "Backups", icon: DatabaseBackup },
   { id: "advanced", label: "Advanced", icon: Settings },
 ];
 

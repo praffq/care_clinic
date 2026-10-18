@@ -8,7 +8,8 @@ out=${1:-$here/../../../dist/care-clinic-service}
 mkdir -p "$(dirname "$out")"
 # ctl embeds the deployment kit (app/install): stage the current one.
 node "$here/../../frontend/scripts/stage-install.mjs"
+version=$(sed -n '/^desktop:/,/^[^ ]/s/^ *version: *"\(.*\)".*/\1/p' "$here/../../../versions.yml" | head -n 1)
 cd "$here"
-CGO_ENABLED=1 go build -o "$out" .
+CGO_ENABLED=1 go build -ldflags "-X main.version=${version:-dev}" -o "$out" .
 codesign --force -s - --entitlements "$here/care-clinic-service.entitlements" "$out"
 echo "built $out"
