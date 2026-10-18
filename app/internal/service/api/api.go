@@ -56,13 +56,6 @@ type SlotList struct {
 	Slots []slots.Slot `json:"slots"`
 }
 
-// InstallRequest is POST /v1/engine/install. Path is a tarball the service
-// can read; SHA256 is the hex digest the update feed lists for it.
-type InstallRequest struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-}
-
 // ActivateRequest is POST /v1/engine/activate.
 type ActivateRequest struct {
 	Version string `json:"version"`
@@ -88,6 +81,7 @@ const (
 	CodeIsCurrent         = "is_current"
 	CodeInvalidBundle     = "invalid_bundle"
 	CodeBadRequest        = "bad_request"
+	CodeTooLarge          = "too_large"
 	CodeNotFound          = "not_found"
 	CodeAgentUnreachable  = "agent_unreachable"
 	CodeInternal          = "internal"

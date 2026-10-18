@@ -5,6 +5,8 @@ package control_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -31,6 +33,7 @@ import (
 type env struct {
 	cl      *control.Client
 	sock    string
+	staging string
 	store   *slots.Store
 	factory *supervisortest.Factory
 }
@@ -69,7 +72,14 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &http.Server{Handler: control.NewServer(sup, store, slog.New(slog.DiscardHandler)), ReadHeaderTimeout: time.Second}
+	staging := filepath.Join(dir, "staging")
+	srv := &http.Server{Handler: control.NewServer(control.Config{
+		Engine:     sup,
+		Slots:      store,
+		StagingDir: staging,
+		MaxUpload:  maxUpload,
+		Log:        slog.New(slog.DiscardHandler),
+	}), ReadHeaderTimeout: time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
 		_ = srv.Close()
@@ -79,16 +89,48 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 			t.Error("two machines ran at once")
 		}
 	})
-	return &env{cl: control.NewClient(sock), sock: sock, store: store, factory: f}
+	return &env{cl: control.NewClient(sock), sock: sock, staging: staging, store: store, factory: f}
+}
+
+// maxUpload caps uploads in tests; test bundles are a few KiB.
+const maxUpload = 1 << 20
+
+func upload(t *testing.T, cl *control.Client, path, sum string) (slots.Slot, error) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cl.InstallEngine(t.Context(), bytes.NewReader(b), int64(len(b)), sum)
+}
+
+// assertStagingEmpty waits for the service to remove staged uploads.
+func (e *env) assertStagingEmpty(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ents, err := os.ReadDir(e.staging)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if len(ents) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("staging not cleaned up: %v", ents)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (e *env) install(t *testing.T, version string) {
 	t.Helper()
 	path, sum := slotstest.WriteTestBundle(t, slotstest.BundleEntries(version, "arm64"))
-	sl, err := e.cl.Install(t.Context(), path, sum)
+	sl, err := upload(t, e.cl, path, sum)
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.assertStagingEmpty(t)
 	if sl.Version != version || sl.TarballSHA256 != sum {
 		t.Fatalf("installed %+v", sl)
 	}
@@ -206,11 +248,8 @@ func TestNoEngine(t *testing.T) {
 	if _, err := e.cl.Activate(t.Context(), "9.9.9"); !errors.Is(err, slots.ErrNotInstalled) {
 		t.Fatalf("Activate: %v", err)
 	}
-	if _, err := e.cl.Install(t.Context(), "relative.tar.gz", strings.Repeat("0", 64)); err == nil {
-		t.Fatal("relative install path accepted")
-	}
 	var ae *control.APIError
-	if _, err := e.cl.Install(t.Context(), "/x.tar.gz", "00"); !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
+	if _, err := e.cl.InstallEngine(t.Context(), strings.NewReader("x"), 1, "00"); !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
 		t.Fatalf("short sha: %v", err)
 	}
 }
@@ -218,10 +257,6 @@ func TestNoEngine(t *testing.T) {
 func TestInstallActivateRelayStop(t *testing.T) {
 	e := newEnv(t, nil)
 	e.install(t, "1.0.0")
-	path, _ := slotstest.WriteTestBundle(t, slotstest.BundleEntries("1.0.1", "arm64"))
-	if _, err := e.cl.Install(t.Context(), path, strings.Repeat("0", 64)); !errors.Is(err, slots.ErrChecksum) {
-		t.Fatalf("bad sha: %v", err)
-	}
 
 	if _, err := e.cl.Activate(t.Context(), "1.0.0"); err != nil {
 		t.Fatal(err)
@@ -298,6 +333,84 @@ func TestRelayStreams(t *testing.T) {
 	}
 }
 
+func TestInstallUploadRejects(t *testing.T) {
+	e := newEnv(t, nil)
+	path, sum := slotstest.WriteTestBundle(t, slotstest.BundleEntries("1.0.0", "arm64"))
+
+	wrong := strings.Repeat("0", 64)
+	_, err := upload(t, e.cl, path, wrong)
+	var ae *control.APIError
+	if !errors.Is(err, slots.ErrChecksum) || !errors.As(err, &ae) || ae.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong sha: %v", err)
+	}
+	if strings.Contains(err.Error(), sum) {
+		t.Fatalf("response leaks the tarball hash: %v", err)
+	}
+	e.assertStagingEmpty(t)
+
+	garbage := []byte("not a tarball")
+	gsum := sha256.Sum256(garbage)
+	_, err = e.cl.InstallEngine(t.Context(), bytes.NewReader(garbage), int64(len(garbage)), hex.EncodeToString(gsum[:]))
+	if !errors.As(err, &ae) || ae.Code != api.CodeInvalidBundle {
+		t.Fatalf("garbage: %v", err)
+	}
+	e.assertStagingEmpty(t)
+
+	big := &countingReader{r: bytes.NewReader(make([]byte, maxUpload+1))}
+	_, err = e.cl.InstallEngine(t.Context(), big, maxUpload+1, wrong)
+	if !errors.As(err, &ae) || ae.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized upload: %v", err)
+	}
+	if big.n > 0 {
+		t.Fatalf("client sent %d bytes of a refused upload", big.n)
+	}
+	e.assertStagingEmpty(t)
+
+	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return e.cl.Dial(ctx)
+	}}}
+	resp, err := hc.Post("http://x/v1/engine/install?sha256="+wrong, "application/gzip", io.MultiReader(strings.NewReader("chunked")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusLengthRequired {
+		t.Fatalf("chunked upload: %d", resp.StatusCode)
+	}
+
+	if st, err := os.Stat(e.staging); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("staging dir: %v %v", st.Mode(), err)
+	}
+}
+
+func TestInstallUploadCancelled(t *testing.T) {
+	e := newEnv(t, nil)
+	pr, pw := io.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.cl.InstallEngine(ctx, pr, maxUpload, strings.Repeat("0", 64))
+		done <- err
+	}()
+	if _, err := pw.Write(make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the service is staging the upload, then hang up.
+	deadline := time.Now().Add(2 * time.Second)
+	for ents, _ := os.ReadDir(e.staging); len(ents) == 0; ents, _ = os.ReadDir(e.staging) {
+		if time.Now().After(deadline) {
+			t.Fatal("upload never staged")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	_ = pw.CloseWithError(context.Canceled)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled upload: %v", err)
+	}
+	e.assertStagingEmpty(t)
+}
+
 func TestRelayAllowlist(t *testing.T) {
 	e := newEnv(t, nil)
 	e.install(t, "1.0.0")
@@ -358,4 +471,15 @@ func TestWatch(t *testing.T) {
 			t.Fatal("watch never reported ready")
 		}
 	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }

@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
@@ -61,6 +64,8 @@ func NewClient(socket string) *Client {
 	c.hc = &http.Client{Transport: &http.Transport{
 		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return c.Dial(ctx) },
 		DisableKeepAlives: true,
+		// Uploads wait for the service to accept their size before sending.
+		ExpectContinueTimeout: 10 * time.Second,
 	}}
 	return c
 }
@@ -77,7 +82,20 @@ func (c *Client) Agent(opts ...client.Option) *client.Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
-	resp, err := c.send(ctx, method, path, in)
+	var body io.Reader
+	size := int64(0)
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body, size = bytes.NewReader(b), int64(len(b))
+	}
+	return c.doBody(ctx, method, path, body, size, "application/json", out)
+}
+
+func (c *Client) doBody(ctx context.Context, method, path string, body io.Reader, size int64, ctype string, out any) error {
+	resp, err := c.send(ctx, method, path, body, size, ctype)
 	if err != nil {
 		return err
 	}
@@ -92,21 +110,18 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 }
 
 // send returns a 2xx response; anything else becomes an *APIError.
-func (c *Client) send(ctx context.Context, method, path string, in any) (*http.Response, error) {
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(b)
-	}
+// A nil body sends none; a sized body waits for 100 Continue.
+func (c *Client) send(ctx context.Context, method, path string, body io.Reader, size int64, ctype string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, clientBaseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.ContentLength = size
+		if ctype != "application/json" {
+			req.Header.Set("Expect", "100-continue")
+		}
+		req.Header.Set("Content-Type", ctype)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -134,7 +149,7 @@ func (c *Client) Status(ctx context.Context) (api.ServiceStatus, error) {
 // Watch calls fn with the current status and after every change until ctx
 // ends or the connection fails.
 func (c *Client) Watch(ctx context.Context, fn func(api.ServiceStatus)) error {
-	resp, err := c.send(ctx, http.MethodGet, "/v1/service/status?watch=1", nil)
+	resp, err := c.send(ctx, http.MethodGet, "/v1/service/status?watch=1", nil, 0, "")
 	if err != nil {
 		return err
 	}
@@ -179,11 +194,15 @@ func (c *Client) Slots(ctx context.Context) (api.SlotList, error) {
 	return l, err
 }
 
-// Install installs the engine tarball at path (readable by the service),
-// which must have the given SHA-256.
-func (c *Client) Install(ctx context.Context, path, sha256 string) (slots.Slot, error) {
+// InstallEngine uploads an engine tarball of the given size, which must have
+// the given SHA-256, and installs it.
+func (c *Client) InstallEngine(ctx context.Context, tarball io.Reader, size int64, sha256 string) (slots.Slot, error) {
 	var sl slots.Slot
-	err := c.do(ctx, http.MethodPost, "/v1/engine/install", api.InstallRequest{Path: path, SHA256: sha256}, &sl)
+	if size <= 0 {
+		return sl, errors.New("care-clinic-service: install engine: tarball size required")
+	}
+	path := "/v1/engine/install?" + url.Values{"sha256": {sha256}}.Encode()
+	err := c.doBody(ctx, http.MethodPost, path, tarball, size, "application/gzip", &sl)
 	return sl, err
 }
 

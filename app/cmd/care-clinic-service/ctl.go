@@ -23,7 +23,7 @@ commands:
   status                    service and engine status
   watch                     stream status changes
   slots                     installed engine slots
-  install <tarball> <sha256>
+  install <tarball> <sha256> upload and install an engine bundle
   activate <version>        switch to an installed engine and boot it
   start | stop | restart    control the engine VM
   prune                     delete slots other than current and previous
@@ -84,7 +84,7 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	case "slots":
 		v, err = c.Slots(ctx)
 	case "install":
-		v, err = c.Install(ctx, args[0], args[1])
+		v, err = install(ctx, c, args[0], args[1])
 	case "activate":
 		v, err = c.Activate(ctx, args[0])
 	case "start":
@@ -126,6 +126,19 @@ func agentOp(ctx context.Context, c *control.Client, args []string) (any, error)
 		res = json.RawMessage("null")
 	}
 	return res, err
+}
+
+func install(ctx context.Context, c *control.Client, path, sha256 string) (any, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	return c.InstallEngine(ctx, f, st.Size(), sha256)
 }
 
 func printJSON(v any) error {

@@ -115,7 +115,12 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: control.NewServer(sup, store, log), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: control.NewServer(control.Config{
+		Engine:     sup,
+		Slots:      store,
+		StagingDir: filepath.Join(rootDir, "staging"),
+		Log:        log,
+	}), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

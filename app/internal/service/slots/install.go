@@ -22,6 +22,10 @@ var maxFileBytes = map[string]int64{
 	"system.img": 4 << 30,
 }
 
+// MaxTarballBytes caps an engine tarball: the file caps plus gzip and tar
+// overhead.
+const MaxTarballBytes = 5 << 30
+
 // maxTrailerBytes bounds decompressed data after the tar end marker.
 const maxTrailerBytes = 1 << 20
 

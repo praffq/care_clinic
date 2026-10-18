@@ -7,7 +7,7 @@
 //	GET  /v1/service/status[?watch=1]   api.ServiceStatus (NDJSON stream with watch)
 //	POST /v1/vm/{start,stop,restart}    api.EngineStatus
 //	GET  /v1/engine/slots               api.SlotList
-//	POST /v1/engine/install             api.InstallRequest -> slots.Slot
+//	POST /v1/engine/install?sha256=hex  body: engine tarball -> slots.Slot
 //	POST /v1/engine/activate            api.ActivateRequest -> api.EngineStatus
 //	POST /v1/engine/prune               api.PruneResult
 //	*    /v1/agent/v1/...               agent routes (status, ops, files, backups, diagnostics)
@@ -19,12 +19,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
@@ -52,21 +53,38 @@ type Slots interface {
 
 const maxRequestBody = 64 << 10
 
-// Server is the control API's http.Handler.
-type Server struct {
-	engine Engine
-	slots  Slots
-	log    *slog.Logger
-	mux    *http.ServeMux
-	relay  *httputil.ReverseProxy
+// Config configures a Server.
+type Config struct {
+	Engine Engine
+	Slots  Slots
+	// StagingDir receives engine uploads; it is created 0700 and should be
+	// on the same filesystem as the slots.
+	StagingDir string
+	MaxUpload  int64 // slots.MaxTarballBytes when 0
+	Log        *slog.Logger
 }
 
-// NewServer returns the control API for engine and store.
-func NewServer(engine Engine, store Slots, log *slog.Logger) *Server {
+// Server is the control API's http.Handler.
+type Server struct {
+	engine    Engine
+	slots     Slots
+	staging   string
+	maxUpload int64
+	log       *slog.Logger
+	mux       *http.ServeMux
+	relay     *httputil.ReverseProxy
+}
+
+// NewServer returns the control API.
+func NewServer(cfg Config) *Server {
+	engine, log := cfg.Engine, cfg.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	s := &Server{engine: engine, slots: store, log: log, mux: http.NewServeMux()}
+	if cfg.MaxUpload == 0 {
+		cfg.MaxUpload = slots.MaxTarballBytes
+	}
+	s := &Server{engine: engine, slots: cfg.Slots, staging: cfg.StagingDir, maxUpload: cfg.MaxUpload, log: log, mux: http.NewServeMux()}
 	s.relay = &httputil.ReverseProxy{
 		Rewrite: s.rewrite,
 		Transport: &http.Transport{
@@ -180,31 +198,78 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// handleInstall stages the uploaded tarball in a directory only the service
+// can read and installs it from there. Clients never name a path: the
+// service must not open files on their behalf.
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
-	var req api.InstallRequest
-	if !decode(w, r, &req) {
-		return
-	}
-	if !filepath.IsAbs(req.Path) {
-		writeError(w, http.StatusBadRequest, api.CodeBadRequest, "path must be absolute")
-		return
-	}
-	if b, err := hex.DecodeString(req.SHA256); err != nil || len(b) != sha256.Size {
+	want := r.URL.Query().Get("sha256")
+	if b, err := hex.DecodeString(want); err != nil || len(b) != sha256.Size {
 		writeError(w, http.StatusBadRequest, api.CodeBadRequest, "sha256 must be 64 hex digits")
 		return
 	}
-	s.log.Info("installing engine", "path", req.Path, "sha256", req.SHA256)
-	sl, err := s.slots.Install(r.Context(), req.Path, req.SHA256)
+	if r.ContentLength < 0 {
+		writeError(w, http.StatusLengthRequired, api.CodeBadRequest, "engine upload needs a Content-Length")
+		return
+	}
+	if r.ContentLength > s.maxUpload {
+		writeError(w, http.StatusRequestEntityTooLarge, api.CodeTooLarge, "engine tarball too large")
+		return
+	}
+	staged, got, err := s.stage(w, r.Body)
+	if staged != "" {
+		defer func() { _ = os.Remove(staged) }()
+	}
+	if err != nil {
+		if mbe := (*http.MaxBytesError)(nil); errors.As(err, &mbe) {
+			writeError(w, http.StatusRequestEntityTooLarge, api.CodeTooLarge, "engine tarball too large")
+			return
+		}
+		s.log.Warn("engine upload failed", "err", err)
+		writeError(w, http.StatusBadRequest, api.CodeBadRequest, "engine upload failed")
+		return
+	}
+	if got != want {
+		s.log.Warn("engine upload checksum mismatch", "sha256", got, "want", want)
+		writeError(w, http.StatusUnprocessableEntity, api.CodeChecksumMismatch, "engine tarball does not match sha256")
+		return
+	}
+	s.log.Info("installing engine", "sha256", want)
+	sl, err := s.slots.Install(r.Context(), staged, want)
 	switch {
 	case err == nil:
 		s.log.Info("installed engine", "version", sl.Version)
 		writeJSON(w, http.StatusOK, sl)
-	case errors.Is(err, slots.ErrChecksum), errors.Is(err, slots.ErrIsCurrent):
+	case errors.Is(err, slots.ErrIsCurrent):
 		s.commandError(w, err)
 	default:
 		s.log.Warn("engine install failed", "err", err)
-		writeError(w, http.StatusUnprocessableEntity, api.CodeInvalidBundle, err.Error())
+		code := api.CodeInvalidBundle
+		if errors.Is(err, slots.ErrChecksum) {
+			code = api.CodeChecksumMismatch
+		}
+		writeError(w, http.StatusUnprocessableEntity, code, "engine tarball rejected (see the service log)")
 	}
+}
+
+// stage writes body to a new file in the staging directory and returns its
+// path (also on error, for cleanup) and SHA-256.
+func (s *Server) stage(w http.ResponseWriter, body io.Reader) (string, string, error) {
+	if err := os.MkdirAll(s.staging, 0o700); err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(s.staging, 0o700); err != nil {
+		return "", "", err
+	}
+	f, err := os.CreateTemp(s.staging, "engine-*.tar.gz")
+	if err != nil {
+		return "", "", err
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(f, h), http.MaxBytesReader(w, io.NopCloser(body), s.maxUpload))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return f.Name(), hex.EncodeToString(h.Sum(nil)), err
 }
 
 func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
