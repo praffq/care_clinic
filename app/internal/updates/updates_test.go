@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
@@ -543,5 +544,56 @@ func TestDownloadRejectsBadChecksum(t *testing.T) {
 	}
 	if len(h.w.Slots) != 0 {
 		t.Fatal("a bad bundle was installed")
+	}
+}
+
+// A clinic installed without the coordinator (installed.json absent) is
+// adopted when its stack runs a release in the feed, so the update takes a
+// backup like any other.
+func TestAdoptInstalledClinic(t *testing.T) {
+	h := newHarness(t)
+	h.installCare("A")
+	if err := os.Remove(filepath.Join(h.dir, updates.InstalledFile)); err != nil {
+		t.Fatal(err)
+	}
+	h.restart()
+	h.publish(revB)
+	if r := h.check(); steps(r) != "care "+careVersion("A")+"->"+careVersion("B") {
+		t.Fatalf("check = %+v", r)
+	}
+	st := h.status()
+	if st.Installed.Engine == nil || st.Installed.Engine.Version != "0.1.0" || st.Installed.Care == nil || st.Installed.Care.Version != careVersion("A") || len(st.Installed.Care.Images) == 0 {
+		t.Fatalf("adopted = %+v", st.Installed)
+	}
+	h.mustApply()
+	h.wantOn("0.1.0", "B")
+	if e := h.lastHistory(); e.BackupID == "" {
+		t.Fatalf("adopted clinic updated without a backup: %+v", e)
+	}
+}
+
+func TestUnknownClinicIsNotUpdated(t *testing.T) {
+	h := newHarness(t)
+	h.installCare("A")
+	if err := os.Remove(filepath.Join(h.dir, updates.InstalledFile)); err != nil {
+		t.Fatal(err)
+	}
+	h.w.Lock()
+	h.w.Env["backend"] = protocol.Digest("sha256:" + strings.Repeat("e", 64))
+	h.w.Unlock()
+	h.restart()
+	h.publish(revB)
+	r := h.check()
+	if r.Available || !strings.Contains(r.Reason, "not a release in the update feed") {
+		t.Fatalf("check = %+v", r)
+	}
+	before := len(h.w.CallLog())
+	if _, err := h.apply(); !errors.Is(err, updates.ErrNotAvailable) || !errors.Is(err, updates.ErrUnknownCare) {
+		t.Fatalf("apply = %v", err)
+	}
+	for _, c := range h.w.CallLog()[before:] {
+		if c != "Slots" && !strings.HasPrefix(c, "op stack.status") {
+			t.Fatalf("apply touched the clinic: %q", h.w.CallLog()[before:])
+		}
 	}
 }

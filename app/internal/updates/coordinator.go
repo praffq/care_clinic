@@ -378,6 +378,12 @@ func (c *Coordinator) Check(ctx context.Context) (*CheckResult, error) {
 		return nil, err
 	}
 	res := &CheckResult{Revision: m.Revision}
+	if in, err = c.adopt(ctx, m, in); errors.Is(err, ErrUnknownCare) {
+		res.Reason = err.Error()
+		return res, nil
+	} else if err != nil {
+		return nil, err
+	}
 	p, err := c.resolve(m, in)
 	var np *feed.NoPathError
 	switch {
@@ -476,6 +482,11 @@ func (c *Coordinator) Apply(ctx context.Context) (*ApplyResult, error) {
 	}
 	in, err := c.installed()
 	if err != nil {
+		return nil, err
+	}
+	if in, err = c.adopt(ctx, m, in); errors.Is(err, ErrUnknownCare) {
+		return nil, fmt.Errorf("%w: %w", ErrNotAvailable, err)
+	} else if err != nil {
 		return nil, err
 	}
 	p, err := c.resolve(m, in)

@@ -251,6 +251,14 @@ func (w *World) Status(ctx context.Context) (protocol.Status, error) {
 	}, nil
 }
 
+// serviceRoles maps a service to the image role it runs.
+var serviceRoles = map[protocol.Service]protocol.ImageRole{
+	protocol.ServiceBackend: protocol.ImageRoleBackend, protocol.ServiceCeleryWorker: protocol.ImageRoleBackend,
+	protocol.ServiceCeleryBeat: protocol.ImageRoleBackend, protocol.ServiceFrontend: protocol.ImageRoleFrontend,
+	protocol.ServiceCaddy: protocol.ImageRoleCaddy, protocol.ServiceDB: protocol.ImageRolePostgres,
+	protocol.ServiceRedis: protocol.ImageRoleRedis, protocol.ServiceMinio: protocol.ImageRoleSilo,
+}
+
 // Backup implements updates.Agent (logged as "op db.dump").
 func (w *World) Backup(ctx context.Context) (string, error) {
 	w.mu.Lock()
@@ -305,6 +313,16 @@ func (w *World) Op(ctx context.Context, op protocol.Op, result any) error {
 		return errors.New("engine not ready")
 	}
 	switch o := op.(type) {
+	case protocol.StackStatus:
+		r, ok := result.(*protocol.StackStatusResult)
+		if !ok {
+			return errors.New("fake: stack.status needs a *StackStatusResult")
+		}
+		r.Services = nil
+		for _, s := range slices.Sorted(maps.Keys(w.Running)) {
+			role := serviceRoles[s]
+			r.Services = append(r.Services, protocol.ServiceState{Name: s, State: "running", Image: w.Env[role]})
+		}
 	case protocol.StackStop:
 		if len(o.Services) == 0 {
 			clear(w.Running)

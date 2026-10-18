@@ -125,11 +125,18 @@ the [demo feed](../demo/README.md).
   rolled back via the database restore, a replayed revision and a tampered
   signature rejected, and "update not available" with its reason.
 
+## Adoption
+
+A clinic installed without the coordinator (e.g. `ctl clinic install`) has an
+empty `installed.json`. On `Check` and `Apply` the coordinator adopts it: the
+engine from the service's current slot, and CARE by matching the running
+backend and frontend image digests (`stack.status`) against the feed's CARE
+releases. If the running images match no release, the update is refused
+(`ErrUnknownCare`, reported as "not available") instead of overwriting an
+unknown stack. A stack with no CARE services is a fresh install.
+
 ## Known gaps
 
-- A clinic installed before the coordinator (e.g. `ctl clinic install`) is not
-  adopted: `installed.json` starts empty, so the first CARE apply is treated
-  as a fresh install (no backup).
 - The database size is estimated from the newest complete backup set.
 - Support-image-only changes (postgres, redis, silo) are applied with the next
   CARE update, not on their own.
