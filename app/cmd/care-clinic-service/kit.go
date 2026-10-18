@@ -68,7 +68,7 @@ func resolveKit(dir string, embedded func() (fs.FS, error), clinicDir func() (st
 	if len(used) > 0 {
 		msg += fmt.Sprintf(", with the clinic's %s from %s", strings.Join(used, " and "), cd)
 	}
-	fmt.Fprintln(log, msg)
+	_, _ = fmt.Fprintln(log, msg)
 	return overlayKit{kit: kit, dir: os.DirFS(cd), names: used}, nil
 }
 
