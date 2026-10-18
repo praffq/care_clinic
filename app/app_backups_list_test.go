@@ -170,12 +170,13 @@ func TestChooseBackupFolder(t *testing.T) {
 	if dir, err := a.ChooseBackupFolder(settingsPassword); err != nil || dir != "" || asked != "/Backups/care" {
 		t.Fatalf("cancelled = %q, %v (asked from %q)", dir, err, asked)
 	}
-	pick = "/Volumes/Clinic/backups"
+	vol := filepath.Join(t.TempDir(), "Clinic", "backups") // absolute on every OS
+	pick = vol
 	if dir, err := a.ChooseBackupFolder(settingsPassword); err != nil || dir != pick || b.cfg.BackupDir != pick {
 		t.Fatalf("chose = %q, %v", dir, err)
 	}
 	pick = "relative"
-	if _, err := a.ChooseBackupFolder(settingsPassword); err == nil || b.cfg.BackupDir != "/Volumes/Clinic/backups" {
+	if _, err := a.ChooseBackupFolder(settingsPassword); err == nil || b.cfg.BackupDir != vol {
 		t.Fatalf("accepted a relative folder: %v", err)
 	}
 }
