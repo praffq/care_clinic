@@ -556,11 +556,13 @@ func (s *Supervisor) stopStack(ctx context.Context, c *client.Client) {
 	s.setStack(nil, api.StackStopping, nil)
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.StackStopTimeout)
 	defer cancel()
+	start := time.Now()
 	if err := opWhenIdle(ctx, c, protocol.StackStop{}); err != nil {
 		s.cfg.Log.Warn("stopping the clinic stack", "err", err)
 		s.setStack(nil, api.StackFailed, err)
 		return
 	}
+	s.cfg.Log.Info("clinic stack stopped", "took", time.Since(start).Round(time.Millisecond))
 	s.setStack(nil, api.StackStopped, nil)
 }
 
