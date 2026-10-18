@@ -16,6 +16,9 @@ const (
 	CodeDigestMismatch = "digest_mismatch"
 	CodeOpFailed       = "op_failed"
 	CodeCanceled       = "canceled"
+	// CodeNotInstalled: the op needs the clinic stack, which has no compose
+	// file yet.
+	CodeNotInstalled = "not_installed"
 )
 
 // ErrNotImplemented is returned by executors for ops they do not support yet.

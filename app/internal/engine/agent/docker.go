@@ -73,6 +73,8 @@ type DockerExecutor struct {
 	Run Runner
 	// Now returns the current time; nil uses time.Now.
 	Now func() time.Time
+	// Stat stats files; nil uses os.Stat.
+	Stat func(name string) (os.FileInfo, error)
 }
 
 var _ Executor = (*DockerExecutor)(nil)
@@ -89,6 +91,19 @@ func (d *DockerExecutor) now() time.Time {
 		return d.Now()
 	}
 	return time.Now()
+}
+
+func (d *DockerExecutor) stat(name string) (os.FileInfo, error) {
+	if d.Stat != nil {
+		return d.Stat(name)
+	}
+	return os.Stat(name)
+}
+
+// noStack reports whether the clinic stack has no compose file yet.
+func (d *DockerExecutor) noStack() bool {
+	_, err := d.stat(ComposeFile)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func compose(args ...string) []string {
@@ -231,7 +246,11 @@ func (d *DockerExecutor) StackUp(ctx context.Context, op protocol.StackUp, em Em
 	return err
 }
 
+// StackStop succeeds without doing anything when there is no stack yet.
 func (d *DockerExecutor) StackStop(ctx context.Context, op protocol.StackStop, em Emitter) error {
+	if d.noStack() {
+		return nil
+	}
 	args := []string{"stop"}
 	if op.TimeoutSec != 0 {
 		args = append(args, "--timeout", strconv.Itoa(op.TimeoutSec))
@@ -240,7 +259,11 @@ func (d *DockerExecutor) StackStop(ctx context.Context, op protocol.StackStop, e
 	return err
 }
 
+// StackDown succeeds without doing anything when there is no stack yet.
 func (d *DockerExecutor) StackDown(ctx context.Context, op protocol.StackDown, em Emitter) error {
+	if d.noStack() {
+		return nil
+	}
 	args := []string{"down", "--remove-orphans"}
 	if op.RemoveVolumes && op.ConfirmPurge == protocol.PurgeConfirmation {
 		args = append(args, "--volumes")
@@ -258,6 +281,10 @@ type composePS struct {
 
 func (d *DockerExecutor) StackStatus(ctx context.Context) (protocol.StackStatusResult, error) {
 	res := protocol.StackStatusResult{Services: []protocol.ServiceState{}}
+	// A fresh engine has no stack yet: report it as empty, not as a failure.
+	if d.noStack() {
+		return res, nil
+	}
 	out, err := d.capture(ctx, "compose ps", Command{Args: compose("ps", "--all", "--format", "json"), Dir: ComposeDir})
 	if err != nil {
 		return res, err
@@ -306,6 +333,9 @@ func parseComposePS(out []byte) ([]composePS, error) {
 }
 
 func (d *DockerExecutor) StackLogs(ctx context.Context, op protocol.StackLogs, em Emitter) error {
+	if d.noStack() {
+		return &protocol.OpError{Code: CodeNotInstalled, Message: "the clinic stack is not installed"}
+	}
 	args := []string{"logs", "--no-color", "--no-log-prefix", "--tail", strconv.Itoa(op.TailLines)}
 	if op.Since != nil {
 		args = append(args, "--since", op.Since.UTC().Format(time.RFC3339))

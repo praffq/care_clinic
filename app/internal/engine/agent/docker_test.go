@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -71,7 +73,11 @@ func (e *recEmitter) Log(l protocol.LogLine) { e.mu.Lock(); e.logs = append(e.lo
 
 func newDocker(respond func(Command) fakeRun) (*DockerExecutor, *fakeRunner) {
 	r := &fakeRunner{respond: respond}
-	return &DockerExecutor{Run: r.run, Now: func() time.Time { return time.Date(2026, 10, 18, 5, 4, 3, 0, time.UTC) }}, r
+	return &DockerExecutor{
+		Run:  r.run,
+		Now:  func() time.Time { return time.Date(2026, 10, 18, 5, 4, 3, 0, time.UTC) },
+		Stat: func(string) (os.FileInfo, error) { return nil, nil },
+	}, r
 }
 
 var composePrefix = []string{"docker", "compose", "--project-name", "care", "--file", "/var/lib/care/clinic/docker-compose.yml", "--project-directory", "/var/lib/care/clinic"}
@@ -200,6 +206,34 @@ func TestDockerStackStatus(t *testing.T) {
 	d, _ := newDocker(func(Command) fakeRun { return fakeRun{stdout: ""} })
 	if res, err := d.StackStatus(context.Background()); err != nil || len(res.Services) != 0 || res.Services == nil {
 		t.Fatalf("empty: %+v %v", res, err)
+	}
+
+}
+
+func TestDockerWithoutComposeFile(t *testing.T) {
+	d, r := newDocker(func(Command) fakeRun { return fakeRun{err: errors.New("must not run")} })
+	d.Stat = func(name string) (os.FileInfo, error) {
+		if name != ComposeFile {
+			t.Errorf("stat %q", name)
+		}
+		return nil, fs.ErrNotExist
+	}
+	ctx, em := context.Background(), &recEmitter{}
+	if res, err := d.StackStatus(ctx); err != nil || len(res.Services) != 0 || res.Services == nil {
+		t.Fatalf("stack.status: %+v %v", res, err)
+	}
+	if err := d.StackStop(ctx, protocol.StackStop{}, em); err != nil {
+		t.Fatalf("stack.stop: %v", err)
+	}
+	if err := d.StackDown(ctx, protocol.StackDown{}, em); err != nil {
+		t.Fatalf("stack.down: %v", err)
+	}
+	var oe *protocol.OpError
+	if err := d.StackLogs(ctx, protocol.StackLogs{Service: "backend", TailLines: 10}, em); !errors.As(err, &oe) || oe.Code != CodeNotInstalled {
+		t.Fatalf("stack.logs: %v", err)
+	}
+	if len(r.argv()) != 0 {
+		t.Fatalf("ran %v without a compose file", r.argv())
 	}
 }
 
