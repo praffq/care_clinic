@@ -10,7 +10,7 @@ import (
 
 func good() Probes {
 	return Probes{
-		Virtualization:    func() (Virtualization, error) { return Virtualization{Supported: true, Arm64: true}, nil },
+		Virtualization:    func() (Virtualization, error) { return Virtualization{Supported: true}, nil },
 		Memory:            func() (uint64, error) { return 16 * gib, nil },
 		Disk:              func() (diskspace.Usage, error) { return diskspace.Usage{Free: 100 * gib}, nil },
 		ServiceInstalled:  func() bool { return true },
@@ -50,10 +50,17 @@ func TestFailures(t *testing.T) {
 		ready  bool
 	}{
 		{"intel", func(p *Probes) {
-			p.Virtualization = func() (Virtualization, error) { return Virtualization{Supported: true}, nil }
+			p.Virtualization = func() (Virtualization, error) { return Virtualization{Problem: "needs Apple silicon"}, nil }
 		}, CheckVirtualization, LevelFail, "", false},
 		{"no hv", func(p *Probes) {
-			p.Virtualization = func() (Virtualization, error) { return Virtualization{Arm64: true}, nil }
+			p.Virtualization = func() (Virtualization, error) { return Virtualization{}, nil }
+		}, CheckVirtualization, LevelFail, "", false},
+		{"whpx off", func(p *Probes) {
+			p.Virtualization = func() (Virtualization, error) { return Virtualization{Problem: "turn it on", Fixable: true}, nil }
+		}, CheckVirtualization, LevelFail, "install-service", false},
+		{"whpx off, can't install", func(p *Probes) {
+			p.Virtualization = func() (Virtualization, error) { return Virtualization{Problem: "turn it on", Fixable: true}, nil }
+			p.CanInstallService = false
 		}, CheckVirtualization, LevelFail, "", false},
 		{"low mem", func(p *Probes) { p.Memory = func() (uint64, error) { return 4 * gib, nil } }, CheckMemory, LevelFail, "", false},
 		{"mem err", func(p *Probes) { p.Memory = func() (uint64, error) { return 0, errors.New("x") } }, CheckMemory, LevelWarn, "", true},

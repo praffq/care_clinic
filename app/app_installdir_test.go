@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 
@@ -47,7 +48,8 @@ func TestEnsureInstallDirKeepsSettings(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(dest, "plugins.json")); string(data) != "[]\n" {
 		t.Fatalf("operator plugin choices were overwritten: %q", data)
 	}
-	if info, err := os.Stat(filepath.Join(dest, "scripts", "backup.sh")); err != nil || info.Mode()&0o111 == 0 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if info, err := os.Stat(filepath.Join(dest, "scripts", "backup.sh")); err != nil || (runtime.GOOS != "windows" && info.Mode()&0o111 == 0) {
 		t.Fatalf("shell script lost its execute bit: %v", err)
 	}
 	for _, name := range []string{".gitkeep", "kit.go"} {

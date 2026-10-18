@@ -18,7 +18,7 @@ type probesFake struct{ hostcheck.Probes }
 func hostProbesFake() *probesFake {
 	return &probesFake{hostcheck.Probes{
 		Virtualization: func() (hostcheck.Virtualization, error) {
-			return hostcheck.Virtualization{Supported: true, Arm64: true}, nil
+			return hostcheck.Virtualization{Supported: true}, nil
 		},
 		Memory:            func() (uint64, error) { return 16 << 30, nil },
 		Disk:              func() (diskspace.Usage, error) { return diskspace.Usage{Free: 100 << 30, Total: 500 << 30}, nil },
@@ -52,10 +52,10 @@ func TestHostChecksUseTheProbes(t *testing.T) {
 
 func TestInstallServiceUsesTheBundledBinary(t *testing.T) {
 	a, _ := serviceApp(t)
-	if err := os.MkdirAll(a.layout.MacOSDir, 0o755); err != nil {
+	if err := os.MkdirAll(a.layout.ExeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(a.layout.MacOSDir, "care-clinic-service")
+	bin := filepath.Join(a.layout.ExeDir, "care-clinic-service")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -84,10 +84,10 @@ func TestInstallServiceFailsWithoutTheBundledBinary(t *testing.T) {
 
 func TestInstallServiceReportsTheInstallerError(t *testing.T) {
 	a, _ := serviceApp(t)
-	if err := os.MkdirAll(a.layout.MacOSDir, 0o755); err != nil {
+	if err := os.MkdirAll(a.layout.ExeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(a.layout.MacOSDir, "care-clinic-service"), nil, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(a.layout.ExeDir, "care-clinic-service"), nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	a.installService = func(install.Plan) error { return errors.New("User canceled.") }
@@ -129,4 +129,19 @@ func onboardingJobUnlocked(t *testing.T, a *App) {
 		t.Fatal("operation retained the job lock")
 	}
 	a.jobMu.Unlock()
+}
+
+func TestInstallServiceAsksForARestart(t *testing.T) {
+	a, _ := serviceApp(t)
+	if err := os.MkdirAll(a.layout.ExeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.layout.ExeDir, "care-clinic-service"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a.installService = func(install.Plan) error { return install.ErrRestartRequired }
+	if err := a.InstallService(); err == nil || err.Error() != install.ErrRestartRequired.Error() {
+		t.Fatalf("err = %v", err)
+	}
+	onboardingJobUnlocked(t, a)
 }

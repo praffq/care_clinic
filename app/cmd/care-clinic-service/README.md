@@ -4,7 +4,8 @@ The root host service that keeps CARE running without the desktop app. It
 owns the engine VM (installs engine slots, restarts the VM after crashes or
 an unresponsive agent), forwards the host's ports into the VM, advertises
 `<name>.local`, and serves the control API on
-`/var/run/care-clinic/control.sock` (members of the `care-clinic` group).
+`/var/run/care-clinic/control.sock` (members of the `care-clinic` group; see
+[Windows service](#windows-service) for Windows).
 The socket file is `0666`; the service itself admits only root and members of
 the group, checking the caller's uid (`LOCAL_PEERCRED`) against both its
 login groups and the user database. A user just added to the group can
@@ -157,6 +158,78 @@ A process started from a terminal is subject to macOS Local Network privacy,
 so mDNS fails with `sendto: no route to host` unless the terminal app is
 allowed under System Settings → Privacy & Security → Local Network. The
 LaunchDaemon is not subject to it.
+
+## Windows service
+
+On Windows the same binary (`care-clinic-service.exe`) runs as the
+`CareClinic` Windows service: LocalSystem, automatic (delayed) start,
+restarted by the SCM after a failure, with a pre-shutdown window so the
+engine stops cleanly. The OS-specific pieces sit behind build tags
+(`platform_windows.go`, `winsvc_windows.go`, `servicecmd_windows.go`,
+`firewall_windows.go`); the supervisor, slots, mDNS, port forwarding and
+backup export are shared with macOS.
+
+| | macOS | Windows |
+| --- | --- | --- |
+| State root | `/Library/Application Support/care-clinic` | `%ProgramData%\CARE Clinic` (SYSTEM and Administrators only) |
+| Logs | `/Library/Logs/care-clinic/service.log` | `%ProgramData%\CARE Clinic\logs\service.log` (same rotation) |
+| Control | `/var/run/care-clinic/control.sock` | named pipe `\\.\pipe\care-clinic-control` |
+| Engine VM | Virtualization.framework, vsock | QEMU + WHPX, mutual TLS over `hostfwd` (see `engine/README.md`) |
+
+The control pipe has a protected DACL: full access for SYSTEM and
+Administrators, read/write (but not "create pipe instance") for the local
+`care-clinic` group and each of its members, re-read when the pipe is
+created. The protocol and `ctl` client are the same as on macOS.
+
+```powershell
+care-clinic-service.exe service install [--root dir] [--group care-clinic]
+care-clinic-service.exe service start | stop | status
+care-clinic-service.exe service uninstall   # keeps the clinic's data
+```
+
+`install` (elevated) copies the binary and `qemu\` to
+`%ProgramData%\CARE Clinic\bin`, registers or updates the service, and adds
+the program-scoped Windows Firewall rule "CARE Clinic" for TCP 80/443 and
+UDP 5353. `uninstall` removes the service, the rule and `bin`.
+
+The desktop app installs it during onboarding with one UAC prompt
+(`app/internal/service/install`): it creates the `care-clinic` group, adds
+the signed-in user, enables the Windows Hypervisor Platform feature if
+needed, and installs and starts the service. If enabling the feature needs a
+restart, onboarding asks for one; installing again after it finishes the job. setup.exe carries the
+service, the pinned QEMU and the amd64 engine bundle; its uninstaller runs
+`service uninstall`.
+
+### Developer install (Windows)
+
+```powershell
+scripts\service-windows.ps1 install          # builds as you, then one UAC prompt
+scripts\service-windows.ps1 status
+scripts\service-windows.ps1 uninstall        # keeps data
+scripts\service-windows.ps1 uninstall -Purge # deletes %ProgramData%\CARE Clinic too
+```
+
+`install` stages the payload with `go run ./cmd/bundle-windows` (service,
+pinned QEMU, newest `dist/care-engine-*-amd64.tar.gz`) and then runs the
+elevated steps above. It needs 7-Zip to unpack QEMU on first use.
+
+### Still to test on a real Windows machine (S23)
+
+CI only runs unit tests with fakes and a build of setup.exe. Check by hand:
+
+- setup.exe install, onboarding UAC prompt, the reboot after enabling WHPX,
+  and that the service starts at boot without anyone logging in.
+- QEMU with WHPX boots the engine (`kernel-irqchip=off`, `-machine pc`), and
+  a machine without WHPX gets the error instead of TCG.
+- `hostfwd` loopback ports, the agent and the 80/443/8480 relays over mTLS,
+  and LAN access to `https://<name>.local/`.
+- mDNS on UDP 5353 next to the Windows DNS client's own responder, and the
+  firewall rule on public/private/domain networks.
+- Pipe access for a group member (also an Azure AD / Microsoft account user)
+  and denial for other users.
+- Engine slot install/activate, backup export to the host folder, service
+  stop and Windows shutdown stopping the VM cleanly.
+- Uninstall from Apps & features removes the service and firewall rule.
 
 ## mDNS: one advertiser per Mac
 

@@ -118,7 +118,7 @@ jobs:
             echo "::error::Engine release $ENGINE_TAG (versions.yml engine.version) does not exist. Release the engine first (engine.yml)."
             exit 1
           }
-          for asset in "care-engine-$version-arm64.tar.gz" SHA256SUMS; do
+          for asset in "care-engine-$version-arm64.tar.gz" "care-engine-$version-amd64.tar.gz" SHA256SUMS; do
             if ! grep -qxF "$asset" <<<"$assets"; then
               echo "::error::Engine release $ENGINE_TAG has no $asset."
               exit 1
@@ -197,7 +197,7 @@ jobs:
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: "3600"
           output-artifact-directory: signed-app
-      - run: test -s "signed-app/CARE Clinic.exe" && test -s signed-app/uninstall.exe
+      - run: test -s "signed-app/CARE Clinic.exe" && test -s signed-app/uninstall.exe && test -s signed-app/care-clinic-service.exe
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: desktop-windows-app-signed
@@ -224,6 +224,10 @@ jobs:
         with:
           name: desktop-windows-installer-inputs
           path: app/build/windows
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: desktop-windows-payload
+          path: app/build/bin/payload
       - uses: ./.github/actions/install-nsis
       - name: Build the installer with the signed application
         shell: pwsh
@@ -235,16 +239,20 @@ jobs:
           if ($env:WINDOWS_SIGNING -eq 'signpath-test') { $accepted += 'UnknownError', 'NotTrusted' }
           $app = Join-Path $env:GITHUB_WORKSPACE "signed-app\CARE Clinic.exe"
           $uninstaller = Join-Path $env:GITHUB_WORKSPACE "signed-app\uninstall.exe"
-          foreach ($file in @($app, $uninstaller)) {
+          $service = Join-Path $env:GITHUB_WORKSPACE "signed-app\care-clinic-service.exe"
+          foreach ($file in @($app, $uninstaller, $service)) {
             $signature = Get-AuthenticodeSignature $file
             if ($signature.Status -notin $accepted -or -not $signature.SignerCertificate) { throw "$file signature is $($signature.Status): $($signature.StatusMessage)" }
             "$file signed by $($signature.SignerCertificate.Subject)"
           }
           git diff --exit-code -- app/build/windows/installer/project.nsi
           if ($LASTEXITCODE -ne 0) { throw "Installer inputs do not match the checked-out project.nsi" }
+          $engine = Get-ChildItem "app/build/bin/payload/engine/care-engine-*-amd64.tar.gz"
+          if ($engine.Count -ne 1) { throw "Expected one amd64 engine bundle in the payload, found $($engine.Count)" }
+          if (-not (Test-Path app/build/bin/payload/qemu/qemu-system-x86_64.exe)) { throw "QEMU is missing from the payload" }
           New-Item -ItemType Directory -Force app/build/bin, installer | Out-Null
           Push-Location app/build/windows/installer
-          makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DSIGNED_UNINSTALLER=$uninstaller" project.nsi
+          makensis "-DARG_WAILS_AMD64_BINARY=$app" "-DSIGNED_UNINSTALLER=$uninstaller" "-DCARE_SERVICE_BINARY=$service" project.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           Pop-Location
           $built = Get-ChildItem app/build/bin/*installer.exe
@@ -567,7 +575,7 @@ jobs:
           See release-manifest.json for each platform's signing status.
 
           - Source commit: $GITHUB_SHA
-          - Bundled engine: ${ENGINE_TAG} (macOS)
+          - Bundled engine: ${ENGINE_TAG} (macOS arm64, Windows amd64)
           - Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           - Release pins: versions.yml
           - Build identity: release-manifest.json

@@ -1,19 +1,16 @@
-//go:build unix
-
 // Package logfile is the service's size-rotated log. The file is installed
 // as the process's stderr (fd 2), so Go runtime crash output (panics, fatal
 // errors) lands in the same file as the structured log and survives the
-// restart launchd does next. When the file grows past MaxBytes it is renamed
-// to <path>.1 (older ones shift up to <path>.<Keep>) and a new file takes
-// over fd 2.
+// restart launchd (or the Windows service manager) does next. When the file
+// grows past MaxBytes it is renamed to <path>.1 (older ones shift up to
+// <path>.<Keep>) and a new file takes over fd 2. On Windows the file becomes
+// the process's standard error handle (SetStdHandle) and os.Stderr.
 package logfile
 
 import (
 	"fmt"
 	"os"
 	"sync"
-
-	"golang.org/x/sys/unix"
 )
 
 // File writes to stderr and rotates the file behind it.
@@ -24,6 +21,7 @@ type File struct {
 
 	mu   sync.Mutex
 	size int64
+	out  *os.File
 }
 
 // Open opens (appending) path as the process's stderr and returns a writer
@@ -42,15 +40,17 @@ func (f *File) reopen() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = fd.Close() }()
 	st, err := fd.Stat()
 	if err != nil {
+		_ = fd.Close()
 		return err
 	}
-	if err := unix.Dup2(int(fd.Fd()), int(os.Stderr.Fd())); err != nil {
+	out, err := attachStderr(fd)
+	if err != nil {
+		_ = fd.Close()
 		return fmt.Errorf("redirect stderr to %s: %w", f.path, err)
 	}
-	f.size = st.Size()
+	f.out, f.size = out, st.Size()
 	return nil
 }
 
@@ -65,12 +65,19 @@ func (f *File) Write(p []byte) (int, error) {
 			f.size = 0
 		}
 	}
-	n, err := os.Stderr.Write(p)
+	n, err := f.out.Write(p)
 	f.size += int64(n)
 	return n, err
 }
 
-func (f *File) rotate() error {
+func (f *File) rotate() (err error) {
+	if detachStderr(f.out) {
+		defer func() {
+			if err != nil {
+				_ = f.reopen() // keep a writable file after a failed rename
+			}
+		}()
+	}
 	for i := f.keep - 1; i >= 1; i-- {
 		if err := os.Rename(fmt.Sprintf("%s.%d", f.path, i), fmt.Sprintf("%s.%d", f.path, i+1)); err != nil && !os.IsNotExist(err) {
 			return err

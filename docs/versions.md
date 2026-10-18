@@ -33,6 +33,12 @@ tools:
   qemu_windows_x86_64: { version: "10.1.0", url: "https://...", sha256: "..." }
 ```
 
+`tools.qemu_windows_x86_64` is the QEMU build bundled into setup.exe for the
+Windows service. `app/cmd/bundle-windows` (a Wails post-build hook, also used
+by `scripts/service-windows.ps1`) downloads it resumably to `dist/cache`,
+checks the sha256 and unpacks the subset it needs; CI caches `dist/cache` on
+the hash of this file. To bump it, change all three fields together.
+
 Every `version` is a [semantic version](https://semver.org) without a leading
 `v` (`+build` metadata is allowed) and **must be quoted**: YAML reads `0.2` as a
 float, so unquoted versions are rejected. `requires` entries are ranges made of

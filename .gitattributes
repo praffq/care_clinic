@@ -1,3 +1,7 @@
+# Check out text files with LF everywhere: files are embedded into the app
+# and shipped into the Linux VM, and tests parse YAML with line-anchored
+# regexps.
+* text=auto eol=lf
 # minio/entrypoint.sh and scripts/backup.sh run inside Linux containers — keep
 # them LF so a Windows checkout can't introduce CRLF that the container shell trips on.
 *.sh text eol=lf

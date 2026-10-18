@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 )
 
@@ -172,10 +173,5 @@ func writeAtomic(path string, cfg api.ServiceConfig) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	return d.Sync()
+	return atomicfile.SyncDir(dir)
 }

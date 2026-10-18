@@ -46,6 +46,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
 )
 
@@ -689,12 +690,7 @@ func writeJSONFile(path string, v any) error {
 }
 
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
+	if err := atomicfile.SyncDir(dir); err != nil && !errors.Is(err, os.ErrInvalid) {
 		return err
 	}
 	return nil

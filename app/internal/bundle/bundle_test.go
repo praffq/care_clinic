@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func appLayout(t *testing.T) (Layout, string) {
 	if err := os.MkdirAll(macos, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return Layout{MacOSDir: macos}, root
+	return Layout{ExeDir: macos, OS: "darwin"}, root
 }
 
 func TestServicePath(t *testing.T) {
@@ -23,11 +24,11 @@ func TestServicePath(t *testing.T) {
 	if _, err := l.ServicePath(); err == nil {
 		t.Fatal("found a missing binary")
 	}
-	bin := filepath.Join(l.MacOSDir, ServiceBinaryName)
+	bin := filepath.Join(l.ExeDir, ServiceBinaryName)
 	if err := os.WriteFile(bin, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.ServicePath(); err == nil {
+	if _, err := l.ServicePath(); err == nil && runtime.GOOS != "windows" {
 		t.Fatal("accepted a non-executable binary")
 	}
 	_ = os.Chmod(bin, 0o755)
@@ -64,5 +65,35 @@ func TestEngine(t *testing.T) {
 	l.EngineBundle = filepath.Join(t.TempDir(), "engine.tgz")
 	if _, err := l.Engine(); err == nil {
 		t.Fatal("accepted a badly named bundle")
+	}
+}
+
+func TestWindowsLayout(t *testing.T) {
+	dir := t.TempDir()
+	l := Layout{ExeDir: dir, OS: "windows"}
+	if l.EngineArch() != "amd64" {
+		t.Fatalf("arch %s", l.EngineArch())
+	}
+	bin := filepath.Join(dir, "care-clinic-service.exe")
+	if err := os.WriteFile(bin, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := l.ServicePath(); err != nil || got != bin {
+		t.Fatalf("service %q %v", got, err)
+	}
+	eng := filepath.Join(dir, "engine")
+	_ = os.MkdirAll(eng, 0o755)
+	for _, n := range []string{"care-engine-0.3.0-arm64.tar.gz", "care-engine-0.3.0-amd64.tar.gz"} {
+		if err := os.WriteFile(filepath.Join(eng, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e, err := l.Engine()
+	if err != nil || e.Version != "0.3.0" || filepath.Base(e.Path) != "care-engine-0.3.0-amd64.tar.gz" {
+		t.Fatalf("engine %+v %v", e, err)
+	}
+	l.EngineBundle = filepath.Join(eng, "care-engine-0.3.0-arm64.tar.gz")
+	if _, err := l.Engine(); err == nil {
+		t.Fatal("accepted an arm64 engine on Windows")
 	}
 }

@@ -12,19 +12,6 @@ import (
 	"time"
 )
 
-// ListenConfig describes the control socket.
-type ListenConfig struct {
-	Path string
-	// Group, when set, owns the socket and its members may connect. The
-	// socket is then 0666 and the peer check is the gate: it also reads
-	// membership from the user database, so a user added to the group can
-	// connect at once, without logging in again (a 0660 socket would refuse
-	// them until their next login). Without it (dev mode) the socket is 0600
-	// and only the service's own user (and root) may connect.
-	Group string
-	Log   *slog.Logger
-}
-
 // Listen creates the control socket and returns a listener that drops
 // connections from peers the policy rejects. A stale socket is replaced; a
 // live one (another service instance) is an error. A missing parent

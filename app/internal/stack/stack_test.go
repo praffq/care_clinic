@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -173,7 +174,8 @@ func TestSecretsFile(t *testing.T) {
 		t.Errorf("second save = %v, want ErrExist", err)
 	}
 	fi, err := os.Stat(path)
-	if err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("mode = %v, %v", fi.Mode(), err)
 	}
 	got, ok, err := LoadSecrets(path)
@@ -305,7 +307,8 @@ func TestInstall(t *testing.T) {
 	if _, err := ReadRecoveryKey(filepath.Join(state, BackupRecoveryKey)); err != nil {
 		t.Error(err)
 	}
-	if fi, err := os.Stat(filepath.Join(state, BackupRecoveryKey)); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if fi, err := os.Stat(filepath.Join(state, BackupRecoveryKey)); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("recovery key mode = %v, %v", fi, err)
 	}
 

@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/Code-Hex/vz/v3 v3.8.0
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/compose-spec/compose-go/v2 v2.15.0
 	github.com/hashicorp/mdns v1.0.7
 	github.com/miekg/dns v1.1.72

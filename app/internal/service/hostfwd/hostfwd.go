@@ -10,16 +10,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/forward"
@@ -204,9 +201,9 @@ func (f *Forwarder) Status() api.ForwardStatus {
 }
 
 // describeBindError names the process holding addr's port when it is in use
-// and lsof can tell.
+// and the OS can tell.
 func describeBindError(addr string, err error) error {
-	if !errors.Is(err, syscall.EADDRINUSE) {
+	if !addrInUse(err) {
 		return err
 	}
 	_, port, _ := net.SplitHostPort(addr)
@@ -214,15 +211,6 @@ func describeBindError(addr string, err error) error {
 		return fmt.Errorf("%s is already in use by %s: %w", addr, owner, err)
 	}
 	return fmt.Errorf("%s is already in use: %w", addr, err)
-}
-
-// portOwner returns "command (pid N)" for the process listening on TCP
-// port, or "" when lsof is missing or finds nothing.
-func portOwner(port string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, "lsof", "-nP", "-iTCP:"+port, "-sTCP:LISTEN", "-Fpc").Output()
-	return parseLsof(out)
 }
 
 // parseLsof reads lsof -Fpc output: "p<pid>" then "c<command>" per process.

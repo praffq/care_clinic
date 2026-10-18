@@ -7,11 +7,7 @@ import (
 )
 
 func restrictPrivateFile(path string) error {
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return fmt.Errorf("could not identify the settings owner: %w", err)
-	}
-	defer token.Close()
+	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
 	if err != nil {
 		return fmt.Errorf("could not identify the settings owner: %w", err)

@@ -3,6 +3,7 @@ package vm
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -48,7 +49,8 @@ func TestConsoleLogOversizedWrite(t *testing.T) {
 	}
 	assertFile(t, path+".1", "long line")
 	assertFile(t, path, "more")
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if st, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
 		t.Errorf("console log mode: %v %v", st, err)
 	}
 }

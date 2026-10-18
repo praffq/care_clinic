@@ -10,7 +10,8 @@
     "*/*": "node ../../frontend/scripts/stage-install.mjs"
   },
   "postBuildHooks": {
-    "darwin/*": "sh ../../../scripts/bundle-macos.sh ${bin} ${platform}"
+    "darwin/*": "sh ../../../scripts/bundle-macos.sh ${bin} ${platform}",
+    "windows/*": "go run ../../cmd/bundle-windows ${bin} ${platform}"
   },
   "author": {
     "name": "Open Healthcare Network Foundation"

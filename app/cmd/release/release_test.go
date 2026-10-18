@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -317,7 +318,8 @@ func TestCommands(t *testing.T) {
 	if err := run([]string{"keygen", "--out", p("k.key")}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(p("k.key")); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if fi, err := os.Stat(p("k.key")); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("key mode: %v %v", fi, err)
 	}
 	if err := run([]string{"keygen", "--out", p("k.key")}, io.Discard); err == nil {

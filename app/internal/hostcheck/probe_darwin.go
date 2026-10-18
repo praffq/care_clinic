@@ -8,8 +8,10 @@ func HostVirtualization() (Virtualization, error) {
 	if err != nil {
 		return Virtualization{}, err
 	}
-	arm, err := unix.SysctlUint32("hw.optional.arm64")
-	return Virtualization{Supported: hv == 1, Arm64: err == nil && arm == 1}, nil
+	if arm, err := unix.SysctlUint32("hw.optional.arm64"); err != nil || arm != 1 {
+		return Virtualization{Problem: "CARE Clinic needs a Mac with Apple silicon (M1 or later)."}, nil
+	}
+	return Virtualization{Supported: hv == 1}, nil
 }
 
 // HostMemory is the physical memory.

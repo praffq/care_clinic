@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -209,7 +210,8 @@ func TestExport(t *testing.T) {
 	if err != nil || VerifySet(filepath.Join(e.dir, m.ID), m) != nil {
 		t.Fatalf("host manifest: %+v %v", m, err)
 	}
-	if fi, err := os.Stat(filepath.Join(e.dir, m.ID, m.Files[0].Name)); err != nil || fi.Mode().Perm() != 0o644 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if fi, err := os.Stat(filepath.Join(e.dir, m.ID, m.Files[0].Name)); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644) {
 		t.Fatalf("file mode = %v %v", fi, err)
 	}
 	noPartials(t, e.dir)

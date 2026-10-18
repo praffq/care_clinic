@@ -4,12 +4,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
 
-var defs = api.ServiceConfig{BackupDir: "/Library/Application Support/care-clinic/backups"}
+var defs = api.ServiceConfig{BackupDir: abs("/Library/Application Support/care-clinic/backups")}
+
+// abs makes a slash path absolute on this OS (on a C: drive on Windows).
+func abs(p string) string {
+	if runtime.GOOS == "windows" {
+		return `C:` + filepath.FromSlash(p)
+	}
+	return p
+}
 
 func TestDefaultsAndPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -28,7 +37,7 @@ func TestDefaultsAndPersist(t *testing.T) {
 	if got.MDNSName != "clinic-2" || s.Get().MDNSName != "clinic-2" || len(applied) != 1 || applied[0].MDNSName != "clinic-2" {
 		t.Fatalf("set = %+v, get = %+v, applied = %+v", got, s.Get(), applied)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o644 {
+	if fi, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644) {
 		t.Fatalf("config.json: %v %v", fi, err)
 	}
 	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".config-*")); len(left) != 0 {
@@ -84,11 +93,11 @@ func TestBackupDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr("/Volumes/USB/care//backups/")})
-	if err != nil || got.BackupDir != "/Volumes/USB/care/backups" {
+	got, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr(abs("/Volumes/USB/care//backups/"))})
+	if err != nil || got.BackupDir != abs("/Volumes/USB/care/backups") {
 		t.Fatalf("set = %+v, %v", got, err)
 	}
-	for _, d := range []string{"", "relative/dir", "/", "/a\nb"} {
+	for _, d := range []string{"", "relative/dir", abs("/"), abs("/a\nb")} {
 		if _, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr(d)}); !errors.Is(err, api.ErrInvalidConfig) {
 			t.Errorf("Update(%q) = %v", d, err)
 		}
@@ -107,17 +116,17 @@ func TestBackupCopyDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr("/Volumes/USB/care-copy/")})
-	if err != nil || got.BackupCopyDir != "/Volumes/USB/care-copy" {
+	got, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr(abs("/Volumes/USB/care-copy/"))})
+	if err != nil || got.BackupCopyDir != abs("/Volumes/USB/care-copy") {
 		t.Fatalf("set = %+v, %v", got, err)
 	}
-	for _, d := range []string{"relative", "/", defs.BackupDir, defs.BackupDir + "/copy", "/Library/Application Support/care-clinic"} {
+	for _, d := range []string{"relative", abs("/"), defs.BackupDir, filepath.Join(defs.BackupDir, "copy"), abs("/Library/Application Support/care-clinic")} {
 		if _, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr(d)}); !errors.Is(err, api.ErrInvalidConfig) {
 			t.Errorf("Update(%q) = %v", d, err)
 		}
 	}
 	// The backup folder may not move into the copy folder either.
-	if _, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr("/Volumes/USB/care-copy/b")}); !errors.Is(err, api.ErrInvalidConfig) {
+	if _, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr(abs("/Volumes/USB/care-copy/b"))}); !errors.Is(err, api.ErrInvalidConfig) {
 		t.Errorf("backup_dir inside the copy folder = %v", err)
 	}
 	if got, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr("")}); err != nil || got.BackupCopyDir != "" {

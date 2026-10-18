@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -82,7 +83,8 @@ func TestAdminRecoverySingleUseAndPersistence(t *testing.T) {
 			}
 		}
 	}
-	if fi, err := os.Stat(file); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if fi, err := os.Stat(file); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("recovery file mode: %v, %v", fi, err)
 	}
 }

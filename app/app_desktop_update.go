@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ohcnetwork/care_desktop/app/cmd/care-clinic-service/launchd"
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/install"
@@ -158,7 +157,7 @@ func (d appDesktop) UpdateService(context.Context) error {
 }
 
 // updateServiceIfNeeded reinstalls care-clinic-service from this app when
-// the installed binary or LaunchDaemon plist differs, behind one
+// the installed binary (or, on macOS, LaunchDaemon plist) differs, behind one
 // administrator prompt. The install script swaps the binary and restarts
 // the service, which stops the clinic VM cleanly and boots it again; the
 // engine data and slots are not touched.
@@ -175,7 +174,7 @@ func (a *App) updateServiceIfNeeded() error {
 	if err != nil {
 		return fmt.Errorf("couldn't identify the logged-in user: %w", err)
 	}
-	plan := install.Plan{Binary: path, Plist: launchd.Plist, User: u.Username}
+	plan := servicePlan(path, u)
 	if ok, err := install.Current(plan); err != nil {
 		return fmt.Errorf("couldn't compare the installed CARE Clinic service: %w", err)
 	} else if ok {

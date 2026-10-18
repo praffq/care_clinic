@@ -21,7 +21,7 @@ func serviceApp(t *testing.T) (*App, *fakeAPI) {
 	a := roleApp(t)
 	f := newFakeAPI(t)
 	a.service = f
-	a.layout = &bundle.Layout{MacOSDir: filepath.Join(t.TempDir(), "MacOS")}
+	a.layout = &bundle.Layout{ExeDir: filepath.Join(t.TempDir(), "MacOS"), OS: "darwin"}
 	a.readyTimeout = 2 * time.Second
 	if err := a.saveConfig(Config{Role: roleServer}); err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func serviceApp(t *testing.T) (*App, *fakeAPI) {
 // app's Resources.
 func shipEngine(t *testing.T, a *App, version string) {
 	t.Helper()
-	dir := filepath.Join(a.layout.MacOSDir, "..", "Resources", "engine")
+	dir := filepath.Join(a.layout.ExeDir, "..", "Resources", "engine")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

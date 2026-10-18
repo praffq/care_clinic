@@ -1,8 +1,9 @@
 // Package vm boots the CARE engine VM bundle (see engine/README.md) under the
 // host's hypervisor. The OS-neutral parts live here: Config, the Machine
 // interface, bundle validation and data disk creation. New is implemented per
-// OS: Apple Virtualization.framework on macOS (vz_darwin.go); other platforms
-// return errors.ErrUnsupported until their driver exists.
+// OS: Apple Virtualization.framework on macOS (vz_darwin.go), QEMU with the
+// Windows Hypervisor Platform on Windows (qemu.go, qemu_windows.go); other
+// platforms return errors.ErrUnsupported.
 //
 // A Machine is one boot: New, Start, and once it has stopped (Done is closed)
 // a new Machine is needed to boot again.
@@ -66,6 +67,10 @@ type Config struct {
 	ConsoleMirror io.Writer
 	// ExtraCmdline is appended to the kernel command line, e.g. "care.debug".
 	ExtraCmdline string
+	// QEMUDir is the QEMU installation the Windows driver runs
+	// (qemu-system-x86_64.exe, share/); it defaults to "qemu" next to the
+	// executable. Unused on macOS.
+	QEMUDir string
 }
 
 // WithDefaults returns c with zero fields set to their defaults.
@@ -176,6 +181,15 @@ func EnsureDataDisk(path string, size int64) (created bool, err error) {
 		return false, nil
 	}
 	if err != nil {
+		// Windows fails an O_CREATE open of a directory with EISDIR, not EEXIST.
+		if st, serr := os.Stat(path); serr == nil && !st.Mode().IsRegular() {
+			return false, fmt.Errorf("data disk %s is not a regular file", path)
+		}
+		return false, fmt.Errorf("create data disk: %w", err)
+	}
+	if err := setSparse(f); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return false, fmt.Errorf("create data disk: %w", err)
 	}
 	if err := f.Truncate(size); err != nil {

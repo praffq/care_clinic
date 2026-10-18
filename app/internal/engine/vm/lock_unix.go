@@ -28,3 +28,6 @@ func checkDataDiskFree(path string) error {
 	}
 	return nil
 }
+
+// setSparse is a no-op: Truncate leaves a hole on Unix filesystems.
+func setSparse(*os.File) error { return nil }

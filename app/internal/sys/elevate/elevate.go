@@ -1,10 +1,12 @@
 package elevate
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
@@ -56,6 +58,30 @@ func run(c *exec.Cmd) error {
 		return fmt.Errorf("%w: %s", err, msg)
 	}
 	return err
+}
+
+// RunPS runs a PowerShell script elevated (one UAC prompt) and waits for
+// it. The script travels base64-encoded, so it needs no quoting; its exit
+// code comes back as an *exec.ExitError. Its output is not captured: the
+// elevated process has its own (hidden) console.
+func RunPS(script string) error {
+	return run(proc.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", elevatedEncodedPS(script)))
+}
+
+// elevatedEncodedPS is the unelevated command that starts script elevated.
+func elevatedEncodedPS(script string) string {
+	return "$ErrorActionPreference = 'Stop'; $p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru " +
+		"-ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-EncodedCommand','" + EncodePS(script) + "'; exit $p.ExitCode"
+}
+
+// EncodePS encodes script for powershell -EncodedCommand (UTF-16LE, base64).
+func EncodePS(script string) string {
+	u := utf16.Encode([]rune(script))
+	b := make([]byte, 2*len(u))
+	for i, c := range u {
+		b[2*i], b[2*i+1] = byte(c), byte(c>>8)
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func elevatedPS(inner string) string {

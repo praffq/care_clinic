@@ -6,10 +6,12 @@
 //   - TCP :47377 with mutual TLS, only when QEMU passes a TLS bundle through
 //     fw_cfg (see DefaultTLSBundle). There is never a plain TCP listener.
 //
-// With vsock enabled the agent also relays the fixed vsock ports in
-// forward.StandardPorts to the clinic's Caddy on guest loopback (80, 443,
-// 8480), so the macOS host can expose them without a host-visible VM IP.
-// QEMU forwards those ports itself (hostfwd), so the relay is vsock-only.
+// The agent also relays the fixed ports in forward.StandardPorts to the
+// clinic's Caddy on guest loopback (80, 443, 8480), so the host can expose
+// them without a host-visible VM IP: on vsock ports with vsock, and on
+// mutual-TLS TCP ports (TCPPort) with the TLS bundle. QEMU's hostfwd carries
+// the TLS ports to host loopback; TLS keeps other local users of the host
+// from reaching the guest (and spoofing PROXY headers) through them.
 package main
 
 import (
@@ -62,9 +64,9 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
-// tlsListener returns the mutual-TLS TCP listener, or nil when bundlePath
-// does not exist.
-func tlsListener(bundlePath, addr string) (net.Listener, error) {
+// loadTLS returns the mutual-TLS server config, or nil when bundlePath does
+// not exist.
+func loadTLS(bundlePath string) (*tls.Config, error) {
 	data, err := os.ReadFile(bundlePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -72,10 +74,20 @@ func tlsListener(bundlePath, addr string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tls bundle: %w", err)
 	}
-	cfg, err := parseTLSBundle(data)
-	if err != nil {
+	return parseTLSBundle(data)
+}
+
+// tlsListener returns the mutual-TLS TCP listener, or nil when bundlePath
+// does not exist.
+func tlsListener(bundlePath, addr string) (net.Listener, error) {
+	cfg, err := loadTLS(bundlePath)
+	if err != nil || cfg == nil {
 		return nil, err
 	}
+	return listenTLS(cfg, addr)
+}
+
+func listenTLS(cfg *tls.Config, addr string) (net.Listener, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -132,11 +144,15 @@ func main() {
 		}
 		listeners = append(listeners, l)
 	}
-	tl, err := tlsListener(*tlsBundle, *tlsAddr)
+	tlsCfg, err := loadTLS(*tlsBundle)
 	if err != nil {
 		log.Fatalf("mutual-TLS listener: %v", err)
 	}
-	if tl != nil {
+	if tlsCfg != nil {
+		tl, err := listenTLS(tlsCfg, *tlsAddr)
+		if err != nil {
+			log.Fatalf("mutual-TLS listener: %v", err)
+		}
 		listeners = append(listeners, tl)
 	} else {
 		log.Printf("no TLS bundle at %s; TCP listener disabled", *tlsBundle)
@@ -148,9 +164,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go logImageStore(ctx)
-	waitRelays := func() {}
+	var relays []func()
 	if *vsockPort != 0 {
-		waitRelays = startRelays(ctx, listenVsock, forward.StandardPorts())
+		relays = append(relays, startRelays(ctx, func(p forward.Port) (net.Listener, error) {
+			return listenVsock(p.VsockPort)
+		}, forward.StandardPorts()))
+	}
+	if tlsCfg != nil {
+		relays = append(relays, startRelays(ctx, tlsRelayListener(tlsCfg), forward.StandardPorts()))
+	}
+	waitRelays := func() {
+		for _, w := range relays {
+			w()
+		}
 	}
 	errc := make(chan error, len(listeners))
 	var wg sync.WaitGroup
