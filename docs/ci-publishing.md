@@ -96,8 +96,9 @@ Inputs: `care`, `engine` (which sections to publish), `migrations`,
 
 Keeps clinics on the latest commits of the refs in `versions.yml`:
 
-1. Fails immediately if `FEED_SIGNING_KEY` is missing (it would build images
-   it cannot publish).
+1. Without `FEED_SIGNING_KEY` (it would build images it cannot publish), a
+   scheduled run logs a notice and skips everything as a success; a manual
+   dispatch fails.
 2. Resolves the backend, frontend and plugin refs (`git ls-remote`) and
    compares them with `sources` of the newest CARE release in the published
    feed. No feed or no recorded sources counts as changed.
