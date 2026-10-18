@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,10 +39,12 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/service/backups"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/hostfwd"
+	"github.com/ohcnetwork/care_desktop/app/internal/service/hostlogs"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/logfile"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/settings"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/supervisor"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/logdir"
 )
 
 // version is set at build time with -ldflags "-X main.version=<version>".
@@ -95,7 +98,8 @@ func serve(ctx context.Context, args []string) error {
 	group := fs.String("group", "care-clinic", "group whose members may use the control socket (ignored with --dev)")
 	mem := fs.Uint64("mem", 0, "VM memory in MiB (default engine default)")
 	cpus := fs.Uint("cpus", 0, "VM CPUs (default engine default)")
-	logFile := fs.String("log-file", "", "log to this size-rotated file, which also becomes stderr (default stderr)")
+	logFile := fs.String("log-file", "", "write the service log to this size-rotated file, which also becomes stderr (default: service.log in the log folder, or stderr with --dev)")
+	logDir := fs.String("log-dir", "", "log folder used when the installed user's log folder can't be used (default <root>/logs)")
 	advertiseMDNS := fs.Bool("mdns", true, "advertise <mdns_name>.local on the LAN")
 	fwd := map[string]*string{}
 	for _, name := range []string{"http", "https", "home"} {
@@ -132,29 +136,57 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 
+	for _, d := range []string{rootDir, filepath.Join(rootDir, "slots")} {
+		if err := os.MkdirAll(d, dirMode); err != nil {
+			return err
+		}
+	}
+	fallbackLogs := *logDir
+	if fallbackLogs == "" {
+		fallbackLogs = filepath.Join(rootDir, "logs")
+	}
+	logs, logNotes, err := hostlogs.Resolve(rootDir, fallbackLogs)
+	if err != nil {
+		return fmt.Errorf("log folder: %w", err)
+	}
 	var logOut io.Writer = os.Stderr
-	if *logFile != "" {
+	switch {
+	case *logFile != "":
 		if err := os.MkdirAll(filepath.Dir(*logFile), 0o755); err != nil {
 			return err
 		}
-		f, err := logfile.Open(*logFile, 10<<20, 5)
+		f, err := logfile.Open(*logFile, logdir.MaxFileBytes, logdir.KeepRotated)
+		if err != nil {
+			return err
+		}
+		logOut = f
+	case !*dev:
+		f, err := logfile.OpenIn(logs, hostlogs.ServiceLog, logdir.MaxFileBytes, logdir.KeepRotated)
 		if err != nil {
 			return err
 		}
 		logOut = f
 	}
 	log := slog.New(slog.NewTextHandler(logOut, nil))
-	for _, d := range []string{rootDir, filepath.Join(rootDir, "slots"), filepath.Join(rootDir, "logs")} {
-		if err := os.MkdirAll(d, dirMode); err != nil {
-			return err
-		}
-	}
+	var sup *supervisor.Supervisor
+	collector := hostlogs.New(hostlogs.Config{
+		Dir:           logs,
+		Agent:         client.New(func(ctx context.Context) (net.Conn, error) { return sup.DialAgent(ctx) }),
+		Ready:         func() bool { return sup.Status().AgentReachable() },
+		EngineVersion: func() string { return sup.Status().EngineVersion },
+		StatePath:     filepath.Join(rootDir, hostlogs.StateFile),
+		Notes:         logNotes,
+		Log:           log,
+	})
+	console := collector.ConsoleWriter()
+	defer func() { _ = console.Close() }()
 	store := slots.New(filepath.Join(rootDir, "slots"), "")
-	sup := supervisor.New(supervisor.Config{
+	sup = supervisor.New(supervisor.Config{
 		Slots: store,
 		VM: vm.Config{
 			DataDisk:   filepath.Join(rootDir, "data.img"),
-			ConsoleLog: filepath.Join(rootDir, "logs", "console.log"),
+			ConsoleLog: filepath.Join(logs.Path(), hostlogs.ConsoleLog),
+			Console:    console,
 			MemoryMiB:  *mem,
 			CPUs:       *cpus,
 		},
@@ -213,9 +245,14 @@ func serve(ctx context.Context, args []string) error {
 	go func() { adv.Run(ctx); netDone <- struct{}{} }()
 	expDone := make(chan struct{})
 	go func() { exp.Run(ctx); close(expDone) }()
+	logsDone := make(chan struct{})
+	go func() { collector.Run(ctx); close(logsDone) }()
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Serve(ln) }()
-	log.Info("care-clinic-service started", "root", rootDir, "socket", sock, "dev", *dev)
+	log.Info("care-clinic-service started", "root", rootDir, "socket", sock, "dev", *dev, "logs", logs.Path())
+	for _, n := range logNotes {
+		log.Warn(n)
+	}
 
 	if err := sup.Start(ctx); err != nil && !errors.Is(err, supervisor.ErrNoEngine) {
 		log.Error("engine start failed", "err", err)
@@ -231,6 +268,7 @@ func serve(ctx context.Context, args []string) error {
 	<-netDone
 	<-netDone // the advertiser says goodbye so clients drop the name
 	<-expDone
+	<-logsDone
 	<-supDone // Run stops the VM gracefully before returning
 	_ = srv.Close()
 	log.Info("stopped")

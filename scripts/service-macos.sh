@@ -3,7 +3,9 @@
 #
 #   scripts/service-macos.sh install            build, sign and install; start at boot
 #   scripts/service-macos.sh uninstall [--purge] stop and remove (--purge also
-#                                                deletes the engine data disk)
+#                                                deletes the engine data disk;
+#                                                ~/Library/Logs/care-clinic is
+#                                                always kept)
 #   scripts/service-macos.sh status             launchd and service status
 #
 # Run as your admin user, not with sudo: install builds the binary as you,
@@ -16,6 +18,7 @@ root="/Library/Application Support/care-clinic"
 bin="$root/bin/care-clinic-service"
 plist=/Library/LaunchDaemons/$label.plist
 logdir=/Library/Logs/care-clinic
+loguser="$root/log-user"
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
 die() {
@@ -41,7 +44,7 @@ stop_service() {
 		loaded || return 0
 		sleep 0.5
 	done
-	die "$label is still running 150s after bootout; see $logdir/service.log"
+	die "$label is still running 150s after bootout; see ~${SUDO_USER:-}/Library/Logs/care-clinic/service.log"
 }
 
 install_root() {
@@ -59,6 +62,9 @@ install_root() {
 
 	# Root-owned all the way up, so no user can swap the binary root runs.
 	install -d -o root -g wheel -m 0755 "$root" "$root/bin" "$logdir"
+	printf '%s\n' "$SUDO_USER" >"$loguser.new"
+	chmod 0644 "$loguser.new"
+	mv -f "$loguser.new" "$loguser"
 	install -o root -g wheel -m 0755 "$built" "$bin.new"
 	mv -f "$bin.new" "$bin"
 
@@ -98,7 +104,8 @@ EOF
   $ctl watch                 # until the engine is ready
   $ctl config mdns_name=<name>  # advertise <name>.local instead of care.local
 
-Logs: $logdir/service.log
+Logs: ~$SUDO_USER/Library/Logs/care-clinic/ (service.log, engine-console.log,
+guest-system.log, containers/, collector.log; see docs/local-logs.md)
 EOF
 }
 
@@ -126,7 +133,7 @@ uninstall_cmd() {
 	echo "removed $label (the $group group is kept)"
 	if [ "$purge" = --purge ]; then
 		rm -rf "$root" "$logdir"
-		echo "purged $root and $logdir"
+		echo "purged $root and $logdir (the logs in ~/Library/Logs/care-clinic are kept)"
 	else
 		echo "kept engine data and slots in $root (use --purge to delete them)"
 	fi
@@ -160,7 +167,7 @@ uninstall)
 	;;
 status) status_cmd ;;
 *)
-	sed -n '2,10p' "$0" >&2
+	sed -n '2,12p' "$0" >&2
 	exit 2
 	;;
 esac

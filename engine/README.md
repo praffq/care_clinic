@@ -83,9 +83,19 @@ FATAL message), or newer than the schema this engine supports
 ### Logs
 
 Persistent under `/var/log` (= `/var/lib/care/logs` on the data disk):
-`docker.log`, `care-engine-agent.log` (logrotate hourly: 10 MiB × 5,
-compressed), `messages` (busybox syslogd: 2 MiB × 3). Container logs use
-Docker's `json-file` driver (10 MiB × 3).
+`docker.log`, `care-engine-agent.log` (logrotate hourly: 5 MiB × 2,
+compressed), `messages` (busybox syslogd, with klogd feeding it kernel
+messages: 2 MiB × 3). Container logs use Docker's `json-file` driver (5 MiB ×
+2 per container, `mode: non-blocking` with a 4 MiB buffer so a slow disk
+never stalls a container) under `/var/lib/docker` on the data disk, so they
+survive VM restarts for as long as the container exists. The image has no
+systemd/journald; these files are the guest's persistent journal.
+
+The host service copies all of them out of the VM continuously
+(`logs.system` follows the three files with inode/offset cursors,
+`logs.containers` follows `docker logs --timestamps` of every container),
+into the user's log folder on the host. See
+[docs/local-logs.md](../docs/local-logs.md).
 
 ### Kernel command line
 
@@ -189,7 +199,8 @@ the macOS implementation uses Virtualization.framework via
 (`console=hvc0 care.system=/dev/vda care.data=/dev/vdb`), virtio-blk
 (system.img read-only, then the data disk), NAT networking, entropy, balloon
 and a virtio-socket device, and appends the console to a log file that is
-rotated to `<log>.1` at 8 MiB by default. Virtualization.framework holds an
+rotated to `<log>.1` at 8 MiB by default, or to `Config.Console` when set
+(the host service passes a non-blocking writer for `engine-console.log`). Virtualization.framework holds an
 exclusive lock on the attached data disk; a second VM on the same disk fails
 with `ErrDataDiskInUse`.
 
@@ -266,4 +277,5 @@ qemu-system-x86_64.exe -machine pc -accel whpx,kernel-irqchip=off -cpu host
 - QEMU runs in a kill-on-close job object, so a crashed service never leaves a
   VM holding the data disk. The data disk is a sparse file; before a boot the
   driver refuses a disk another process (QEMU) still has open. The serial
-  console goes to the service's `logs\console.log`, as on macOS.
+  console goes to `engine-console.log` in the user's log folder
+  (`%LOCALAPPDATA%\care-clinic\logs`), as on macOS.

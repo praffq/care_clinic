@@ -117,8 +117,9 @@ app/internal/
 |   |-- api/         # control-socket types
 |   |-- control/     # control-socket client and server
 |   |-- hostfwd/     # host listeners for 80/443/8480
+|   |-- hostlogs/    # copies VM, guest and container logs to the user's log folder
 |   |-- install/     # one-prompt LaunchDaemon install
-|   |-- logfile/
+|   |-- logfile/     # service.log, also the process's stderr
 |   |-- settings/
 |   |-- slots/       # engine bundle slots, install and activate
 |   `-- supervisor/  # engine VM watchdog
@@ -126,7 +127,7 @@ app/internal/
 |-- versions/        # versions.yml
 `-- sys/
     |-- applog/  appremoval/  atomicfile/  diskspace/  elevate/
-    `-- hosts/  mdns/  netfix/  proc/  tailscale/  trust/
+    `-- hosts/  logdir/  mdns/  netfix/  proc/  tailscale/  trust/
 ```
 
 ### Where each package is explained
@@ -146,6 +147,9 @@ app/internal/
 | [`sys/atomicfile`](../app/internal/sys/atomicfile) | Durable single-file replacement across OSes. | [Native integrations](native-integrations.md). |
 | [`sys/appremoval`](../app/internal/sys/appremoval) | Locating and removing the installed desktop app (macOS Trash, Windows uninstaller), other-instance and other-account checks. | [Cleanup](cleanup-and-uninstall.md#3-removing-the-desktop-app). |
 | [`sys/applog`](../app/internal/sys/applog) | Diagnostic sink, native log location, bounded rotation. | [Native integrations](native-integrations.md). |
+| [`sys/logdir`](../app/internal/sys/logdir) | The shared log folder: per-user location, symlink-safe file access, rotation, the non-blocking console queue and the retention sweep. | [Local logs](local-logs.md). |
+| [`service/hostlogs`](../app/internal/service/hostlogs) | The service's log collector: resolves the installed user's folder, streams `logs.system` and `logs.containers` with saved positions, reconnects and sweeps. | [Local logs](local-logs.md). |
+| [`engine/agent/logs.go`](../app/internal/engine/agent/logs.go), [`engine/protocol/logs.go`](../app/internal/engine/protocol/logs.go) | The guest side of log collection: following `/var/log` files with inode/offset cursors and `docker logs` of every container. | [Local logs](local-logs.md). |
 | [`sys/diskspace`](../app/internal/sys/diskspace) | Platform free-space measurement (used by the disk check). | [Server onboarding](onboarding.md#1-computer-checks). |
 | [`sys/elevate`](../app/internal/sys/elevate) | Interpreter quoting and batching privileged native steps. | [Native integrations](native-integrations.md). |
 | [`sys/hosts`](../app/internal/sys/hosts) | Owned loopback hostname entries and verified removal. | [Native integrations](native-integrations.md). |

@@ -127,9 +127,16 @@ scripts/service-macos.sh uninstall           # keeps data.img and slots
 scripts/service-macos.sh uninstall --purge   # deletes them too
 ```
 
-Logs: `/Library/Logs/care-clinic/service.log` (rotated at 10 MiB, 5 kept;
-Go crash output goes there too). `launchd.log` next to it only catches
-output from before the log file is open.
+Logs: the installed user's `~/Library/Logs/care-clinic/` (the user is
+recorded in `/Library/Application Support/care-clinic/log-user` by the
+install). The service writes `service.log` (Go crash output goes there
+too), `engine-console.log`, `guest-system.log`, `containers/<name>.log` and
+`collector.log` there, each rotated at 5 MiB with 2 copies kept, and keeps
+the whole folder under 100 MiB; see [docs/local-logs.md](../../../docs/local-logs.md).
+When that folder can't be used the same files go to `--log-dir`
+(`/Library/Logs/care-clinic`) and `collector.log` says why.
+`/Library/Logs/care-clinic/launchd.log` only catches output from before
+the log file is open.
 
 Show or change the configuration (`config.json` in the service root; set
 fields through the control API rather than editing the file, which is read
@@ -172,7 +179,7 @@ backup export are shared with macOS.
 | | macOS | Windows |
 | --- | --- | --- |
 | State root | `/Library/Application Support/care-clinic` | `%ProgramData%\CARE Clinic` (SYSTEM and Administrators only) |
-| Logs | `/Library/Logs/care-clinic/service.log` | `%ProgramData%\CARE Clinic\logs\service.log` (same rotation) |
+| Logs | `~/Library/Logs/care-clinic/` of the installed user (fallback `/Library/Logs/care-clinic`) | `%LOCALAPPDATA%\care-clinic\logs\` of the installed user (`service install --log-user <SID>`; fallback `%ProgramData%\CARE Clinic\logs`) |
 | Control | `/var/run/care-clinic/control.sock` | named pipe `\\.\pipe\care-clinic-control` |
 | Engine VM | Virtualization.framework, vsock | QEMU + WHPX, mutual TLS over `hostfwd` (see `engine/README.md`) |
 

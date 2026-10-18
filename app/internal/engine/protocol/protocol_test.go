@@ -176,7 +176,7 @@ func TestDecodeOp(t *testing.T) {
 
 func TestRegistryComplete(t *testing.T) {
 	want := []string{"backup.run", "db.dump", "db.restore", "image.build", "image.load", "image.prune",
-		"image.pull", "manage", "migrations.run", "stack.down", "stack.logs", "stack.status", "stack.stop", "stack.up"}
+		"image.pull", "logs.containers", "logs.system", "manage", "migrations.run", "stack.down", "stack.logs", "stack.status", "stack.stop", "stack.up"}
 	got := OpNames()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("OpNames = %v", got)

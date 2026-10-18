@@ -24,6 +24,7 @@ application's own user or API documentation.
 | [Configuration and settings](configuration-and-settings.md) | The installed directory, persisted configuration, environment files, and settings changes. |
 | [Clinic lifecycle and deployment](clinic-lifecycle.md) | Setup through the stack runtime, images, starting, migrations, service relationships, and stopping. |
 | [Cleanup and uninstall](cleanup-and-uninstall.md) | What each removal operation deletes or preserves, ownership checks, and partial-cleanup recovery. |
+| [Local logs](local-logs.md) | Where the app, service, VM console, guest system and container logs are kept on the computer, how they are collected from the VM, and how they are kept small. |
 | [Native integrations](native-integrations.md) | Process execution, file persistence, logs, elevation, TLS trust, mDNS, and OS differences. |
 | [The care-clinic-service](../app/cmd/care-clinic-service/README.md) | The root host service: ports, control socket, `ctl`, developer install and reboot test. |
 | [Engine](../engine/README.md) | The engine VM image. |
@@ -57,6 +58,7 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | "How are patient data and uploaded files stored?" | [Clinic lifecycle](clinic-lifecycle.md). |
 | "How do I move the clinic to a new computer?" | [Backups and restore](backups.md). |
 | "What happens if uninstall is interrupted?" | [Cleanup and uninstall](cleanup-and-uninstall.md). |
+| "The VM won't start: where are its logs and the container logs?" | [Local logs](local-logs.md). |
 | "The app works here but not on another device." | [Native integrations](native-integrations.md). |
 | "How do staff computers connect?" | [Native client setup and initial trust](native-integrations.md#native-client-setup-and-trust-on-first-use). |
 | "This client previously hosted CARE and now cannot reach another server." | [Client recovery and earlier-install cleanup](client-recovery.md). |

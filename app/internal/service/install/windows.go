@@ -70,7 +70,7 @@ func WindowsScript(p Plan, errFile string) (string, error) {
 		"    $r = Enable-WindowsOptionalFeature -Online -FeatureName 'HypervisorPlatform' -All -NoRestart",
 		"    if ($r.RestartNeeded) { $code = " + fmt.Sprint(RestartExitCode) + " }",
 		"  }",
-		"  Invoke-Service service install --group $g",
+		"  Invoke-Service service install --group $g --log-user " + q(p.User),
 		"  Invoke-Service service start",
 		"} catch {",
 		"  ($_ | Out-String) | Set-Content -LiteralPath " + q(errFile) + " -Encoding UTF8",

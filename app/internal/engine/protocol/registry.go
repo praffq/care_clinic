@@ -44,6 +44,9 @@ var registry = map[string]func() Op{
 	OpDBRestore:     func() Op { return &DBRestore{} },
 	OpManage:        func() Op { return &ManageCmd{} },
 	OpBackupRun:     func() Op { return &BackupRun{} },
+
+	OpLogsSystem:     func() Op { return &LogsSystem{} },
+	OpLogsContainers: func() Op { return &LogsContainers{} },
 }
 
 // OpNames returns all registered op names, sorted.

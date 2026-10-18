@@ -58,7 +58,7 @@ func TestMacSelfUpdateSwap(t *testing.T) {
 			}
 			defer func() { _ = running.Process.Kill() }()
 			opened := filepath.Join(tmp, "opened")
-			script := macUpdateHelper(target, staged, work, running.Process.Pid, false, verification)
+			script := macUpdateHelper(target, staged, work, filepath.Join(work, "helper.log"), running.Process.Pid, false, verification)
 			script = strings.ReplaceAll(script, "/usr/bin/open ", "echo >>"+opened+" ")
 			script = strings.ReplaceAll(script, "/usr/bin/osascript ", "echo alert ")
 			name := filepath.Join(tmp, "install.sh")

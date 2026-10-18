@@ -162,6 +162,14 @@ func (f *FakeExecutor) BackupRun(ctx context.Context, em Emitter) (protocol.Back
 	return r, err
 }
 
+func (f *FakeExecutor) LogsSystem(ctx context.Context, op protocol.LogsSystem, em Emitter) error {
+	return f.none(ctx, "LogsSystem", &op, em)
+}
+
+func (f *FakeExecutor) LogsContainers(ctx context.Context, op protocol.LogsContainers, em Emitter) error {
+	return f.none(ctx, "LogsContainers", &op, em)
+}
+
 func (f *FakeExecutor) Containers(context.Context) ([]string, error) {
 	f.record(FakeCall{Method: "Containers"})
 	return f.ContainerList, f.ContainersErr

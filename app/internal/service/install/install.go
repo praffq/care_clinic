@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/service/hostlogs"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
 )
 
@@ -32,6 +33,8 @@ const (
 	Binary    = Root + "/bin/care-clinic-service"
 	PlistPath = "/Library/LaunchDaemons/" + Label + ".plist"
 	LogDir    = "/Library/Logs/care-clinic"
+
+	LogUserFile = Root + "/" + hostlogs.UserFile
 )
 
 var (
@@ -84,6 +87,9 @@ func Script(p Plan, plistTmp string) (string, error) {
 		"if ! dseditgroup -o read " + q(Group) + " >/dev/null 2>&1; then dseditgroup -o create -r 'CARE Clinic service users' " + q(Group) + "; fi",
 		"if ! dseditgroup -o checkmember -m " + q(p.User) + " " + q(Group) + " >/dev/null 2>&1; then dseditgroup -o edit -a " + q(p.User) + " -t user " + q(Group) + "; fi",
 		"install -d -o root -g wheel -m 0755 " + q(Root) + " " + q(Root+"/bin") + " " + q(LogDir),
+		"printf '%s\\n' " + q(p.User) + " >" + q(LogUserFile+".new"),
+		"chmod 0644 " + q(LogUserFile+".new"),
+		"mv -f " + q(LogUserFile+".new") + " " + q(LogUserFile),
 		"install -o root -g wheel -m 0755 " + q(p.Binary) + " " + q(Binary+".new"),
 		"mv -f " + q(Binary+".new") + " " + q(Binary),
 		"if launchctl print " + label + " >/dev/null 2>&1; then",

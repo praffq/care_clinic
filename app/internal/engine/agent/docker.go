@@ -131,6 +131,10 @@ type DockerExecutor struct {
 	RestoreInputDir string
 	// ReadFile reads files; nil uses os.ReadFile.
 	ReadFile func(name string) ([]byte, error)
+
+	LogFiles      map[string]string
+	LogPoll       time.Duration
+	ContainerPoll time.Duration
 }
 
 var _ Executor = (*DockerExecutor)(nil)

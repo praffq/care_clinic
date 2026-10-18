@@ -90,14 +90,34 @@ The app never removes `care-clinic-service`. On macOS:
 
 ```sh
 scripts/service-macos.sh uninstall          # stop and remove the LaunchDaemon and binary
-scripts/service-macos.sh uninstall --purge  # also delete engine slots, VM data and logs
+scripts/service-macos.sh uninstall --purge  # also delete engine slots, VM data and /Library/Logs/care-clinic
 ```
 
 Without `--purge`, `/Library/Application Support/care-clinic` (engine slots
-and VM disks, including any clinic data still in them) and
-`/Library/Logs/care-clinic` are kept. The `care-clinic` group is kept either
-way. Run the clinic uninstall first if its hosts entry and certificate
-trust should be reverted too.
+and VM disks, including any clinic data still in them, and the saved log
+positions in `logs-state.json`) and `/Library/Logs/care-clinic` are kept.
+The `care-clinic` group is kept either way. Run the clinic uninstall first if
+its hosts entry and certificate trust should be reverted too.
+
+### Logs are always kept
+
+No removal path deletes the log folder, so the logs stay usable after the VM,
+the service or the app is gone:
+
+| Platform | Log folder |
+| --- | --- |
+| macOS | `~/Library/Logs/care-clinic/` |
+| Windows | `%LOCALAPPDATA%\care-clinic\logs\` |
+| Linux | `$XDG_STATE_HOME/care-clinic/` (default `~/.local/state/care-clinic/`) |
+
+It holds `care-log.log` (the app), `service.log`, `engine-console.log`,
+`guest-system.log`, `containers/<name>.log`, `collector.log` and
+`app-update-helper.log`; see [Local logs](local-logs.md). Neither the clinic
+uninstall, the app's removal, the Windows uninstaller, `service-macos.sh
+uninstall --purge` nor `service-windows.ps1 uninstall -Purge` touches it.
+The files are small (at most 100 MiB together) and expire on their own after
+7 days without changes while the service runs; delete the folder by hand to
+remove them sooner.
 
 ## 5. Invariants
 

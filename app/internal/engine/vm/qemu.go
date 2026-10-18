@@ -241,7 +241,7 @@ func (m *qemuMachine) writeBundle(data []byte) (string, error) {
 // startConsole opens the console log and returns a writer for QEMU's
 // stdout/stderr (the serial console and QEMU's own errors).
 func (m *qemuMachine) startConsole() (io.Writer, error) {
-	log, err := openConsoleLog(m.cfg.ConsoleLog, m.cfg.ConsoleLogMaxBytes)
+	log, err := m.cfg.openConsole()
 	if err != nil {
 		return nil, err
 	}

@@ -2,19 +2,24 @@
 // as the process's stderr (fd 2), so Go runtime crash output (panics, fatal
 // errors) lands in the same file as the structured log and survives the
 // restart launchd (or the Windows service manager) does next. When the file
-// grows past MaxBytes it is renamed to <path>.1 (older ones shift up to
-// <path>.<Keep>) and a new file takes over fd 2. On Windows the file becomes
+// grows past MaxBytes it is renamed to <stem>.1.log (older ones shift up to
+// <stem>.<Keep>.log) and a new file takes over fd 2. On Windows the file becomes
 // the process's standard error handle (SetStdHandle) and os.Stderr.
 package logfile
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/logdir"
 )
 
 // File writes to stderr and rotates the file behind it.
 type File struct {
+	dir  *logdir.Dir
+	name string
 	path string
 	max  int64
 	keep int
@@ -28,15 +33,25 @@ type File struct {
 // for log output. Callers must write log lines through it so that rotation
 // sees them; writing to os.Stderr directly is fine but not counted.
 func Open(path string, maxBytes int64, keep int) (*File, error) {
-	f := &File{path: path, max: maxBytes, keep: max(keep, 1)}
+	dir, err := logdir.OpenOrCreate(filepath.Dir(path), nil)
+	if err != nil {
+		return nil, err
+	}
+	return OpenIn(dir, filepath.Base(path), maxBytes, keep)
+}
+
+func OpenIn(dir *logdir.Dir, name string, maxBytes int64, keep int) (*File, error) {
+	f := &File{dir: dir, name: name, path: filepath.Join(dir.Path(), name), max: maxBytes, keep: max(keep, 1)}
 	if err := f.reopen(); err != nil {
 		return nil, err
 	}
 	return f, nil
 }
 
+func (f *File) Path() string { return f.path }
+
 func (f *File) reopen() error {
-	fd, err := os.OpenFile(f.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	fd, err := f.dir.OpenAppend(f.name)
 	if err != nil {
 		return err
 	}
@@ -78,12 +93,7 @@ func (f *File) rotate() (err error) {
 			}
 		}()
 	}
-	for i := f.keep - 1; i >= 1; i-- {
-		if err := os.Rename(fmt.Sprintf("%s.%d", f.path, i), fmt.Sprintf("%s.%d", f.path, i+1)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if err := os.Rename(f.path, f.path+".1"); err != nil {
+	if err := logdir.Rotate(f.dir, f.name, f.keep); err != nil {
 		return err
 	}
 	return f.reopen()

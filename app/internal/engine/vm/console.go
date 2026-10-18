@@ -19,6 +19,17 @@ type consoleLog struct {
 	size int64
 }
 
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
+
+func (c Config) openConsole() (io.WriteCloser, error) {
+	if c.Console != nil {
+		return nopCloser{c.Console}, nil
+	}
+	return openConsoleLog(c.ConsoleLog, c.ConsoleLogMaxBytes)
+}
+
 func openConsoleLog(path string, max int64) (*consoleLog, error) {
 	l := &consoleLog{path: path, max: max}
 	if err := l.open(); err != nil {

@@ -20,6 +20,8 @@ func TestScript(t *testing.T) {
 		"install -o root -g wheel -m 0755 '/Applications/CARE Clinic.app/Contents/MacOS/care-clinic-service' '/Library/Application Support/care-clinic/bin/care-clinic-service.new'",
 		"install -o root -g wheel -m 0644 '/tmp/x.plist' '/Library/LaunchDaemons/org.ohc.care-clinic.plist'",
 		"launchctl bootstrap system '/Library/LaunchDaemons/org.ohc.care-clinic.plist'",
+		"printf '%s\\n' 'nurse' >'/Library/Application Support/care-clinic/log-user.new'",
+		"mv -f '/Library/Application Support/care-clinic/log-user.new' '/Library/Application Support/care-clinic/log-user'",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q:\n%s", want, s)

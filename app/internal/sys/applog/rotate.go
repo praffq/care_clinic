@@ -4,11 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/logdir"
 )
 
 var (
-	maxSize  int64 = 10 << 20
-	maxFiles       = 5
+	maxSize  int64 = logdir.MaxFileBytes
+	maxFiles       = logdir.KeepRotated + 1
 )
 
 func (l *Logger) slot(n int) string {

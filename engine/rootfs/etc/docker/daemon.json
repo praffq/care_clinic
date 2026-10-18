@@ -1,6 +1,6 @@
 {
   "data-root": "/var/lib/docker",
   "log-driver": "json-file",
-  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "log-opts": { "max-size": "5m", "max-file": "2", "mode": "non-blocking", "max-buffer-size": "4m" },
   "features": { "buildkit": true, "containerd-snapshotter": true }
 }
