@@ -20,6 +20,7 @@ import type {
   Plugin,
   PluginPreset,
   QuitRequest,
+  ResidueReport,
   RestoreChoice,
   ServiceState,
   StorageState,
@@ -48,6 +49,8 @@ declare global {
           DisableHomeAccess(): Promise<void>;
           HostChecks(): Promise<HostReport>;
           InstallService(): Promise<void>;
+          ScanResidue(): Promise<ResidueReport>;
+          PurgeResidue(confirmed: boolean): Promise<ResidueReport>;
           ServiceStatus(): Promise<ServiceState>;
           ValidatePassword(pw: string): Promise<string>;
           ValidateDomain(name: string): Promise<string>;

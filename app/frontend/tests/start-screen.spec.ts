@@ -86,6 +86,8 @@ test("setup initializes once on its own screen before any guarded reads or write
   expect(await methodCount(page, "SelectRole")).toBe(0);
 
   await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Removing stale files from an earlier setup", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Checking this computer", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(setup(page)).toBeVisible();

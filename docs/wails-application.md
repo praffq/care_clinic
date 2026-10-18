@@ -171,7 +171,7 @@ after the job succeeds, then emits `setup-done`. The frontend waits for both
 `setup-done` and the matching successful `care-done` before entering the
 panel. A failure emits `setup-failed {can_retry}` first. `RetrySetup` reuses
 the in-memory `setupAttempt` (and its password) under the same lock; it is
-lost when the app restarts. See [server onboarding](onboarding.md#3-install).
+lost when the app restarts. See [server onboarding](onboarding.md#4-install).
 
 A job can be waiting for an in-window confirmation or an OS approval while
 holding the lock. A panic inside the job is logged with a stack trace and

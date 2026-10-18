@@ -181,7 +181,7 @@ test("a reused engine shows as skipped with its version", async ({ page }) => {
   await capture(page, "install-engine-skipped");
 });
 
-for (const [platform, count] of [["windows", 5], ["darwin", 5]] as const) {
+for (const [platform, count] of [["windows", 6], ["darwin", 6]] as const) {
   test(`installation and failure keep the ${count}-step rail on ${platform} and fit both window sizes`, async ({ page }) => {
     const labels = await begin(page, { platform });
     expect(labels).toHaveLength(count);

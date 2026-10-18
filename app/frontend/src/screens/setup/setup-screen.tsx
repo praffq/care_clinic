@@ -9,12 +9,13 @@ import { bridge } from "@/lib/bridge";
 import { errorText, normaliseHost } from "@/lib/format";
 import { useCare } from "@/state/care-store";
 import type { SetupForm } from "@/state/forms";
-import type { HostReport, SetupPage } from "@/types";
+import type { HostReport, ResidueReport, SetupPage } from "@/types";
+import { CleanupStep, type CleanupProblem } from "./cleanup-step";
 import { AddressStep, AdminStep, ComputerStep, ReviewStep, type AddressResult, type SetupIssue } from "./configuration-steps";
 import { SetupLayout } from "./setup-layout";
 import { installServiceProblem } from "./setup-model";
 
-const STEPS: SetupPage[] = ["computer", "address", "admin", "review", "install"];
+const STEPS: SetupPage[] = ["computer", "cleanup", "address", "admin", "review", "install"];
 
 export function SetupScreen({ form, patch }: { form: SetupForm; patch: (values: Partial<SetupForm>) => void }) {
   const { clearRole, log } = useCare();
@@ -60,6 +61,9 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const [report, setReport] = useState<HostReport | null>(null);
   const reportRef = useRef<HostReport | null>(null);
   const [serviceProblem, setServiceProblem] = useState("");
+  const [residue, setResidue] = useState<ResidueReport | null>(null);
+  const [cleanupBefore, setCleanupBefore] = useState<ResidueReport | null>(null);
+  const [cleanupProblem, setCleanupProblem] = useState<CleanupProblem | null>(null);
   const [passwordError, setPasswordError] = useState("");
   const [address, setAddress] = useState<AddressResult>({ name: "", state: "waiting", message: "" });
   const [addressPending, setAddressPending] = useState(0);
@@ -79,6 +83,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const busy = operation !== "" || addressQueued || addressPending > 0 || care.busy;
   const locked = busy || update.active;
   const computerReady = report?.ready === true;
+  const cleanupReady = residue?.clean === true && !cleanupProblem;
   const adminReady = strength.strong && !!form.adminConfirm && form.adminPassword === form.adminConfirm && !passwordError;
   const addressReady = address.state === "ready" && address.name === normaliseHost(form.hostInput) && isClinicName(form.hostInput);
   const syncBusy = useCallback(() => {
@@ -108,6 +113,20 @@ function SetupWizard({ form, patch, update, onBusy }: {
     if (mounted.current) setReport(next);
     markDone("computer", next.ready);
     return next.ready;
+  };
+
+  const checkCleanup = async () => {
+    try {
+      const next = await bridge.ScanResidue();
+      if (mounted.current) { setResidue(next); setCleanupProblem(null); }
+      markDone("cleanup", next.clean);
+      return next.clean;
+    } catch (e) {
+      care.log(`scan leftovers: ${errorText(e)}`);
+      if (mounted.current) setCleanupProblem({ kind: "check", message: "This step couldn't be checked. Try again. If it keeps happening, share the log file with your support contact." });
+      markDone("cleanup", false);
+      return false;
+    }
   };
 
   const checkAddress = useCallback((raw: string): Promise<boolean> => {
@@ -191,6 +210,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
     setPage(target);
     setEditing(editingRef.current);
     if (target === "computer") { await checkComputer(); return; }
+    if (target === "cleanup") { await checkCleanup(); return; }
     if (target === "address") { await checkAddress(formRef.current.hostInput); return; }
     if (target === "review") { await validateReview(); return; }
   };
@@ -242,6 +262,20 @@ function SetupWizard({ form, patch, update, onBusy }: {
     await checkComputer();
   });
 
+  const removeLeftovers = () => void execute("cleanup", async () => {
+    setCleanupBefore(residue);
+    setCleanupProblem(null);
+    try {
+      const after = await bridge.PurgeResidue(true);
+      if (mounted.current) setResidue(after);
+      markDone("cleanup", after.clean);
+    } catch (e) {
+      care.log(`remove leftovers: ${errorText(e)}`);
+      await checkCleanup();
+      if (mounted.current) setCleanupProblem({ kind: "remove", message: "Cleanup didn't finish. Check what's still listed and try again. Approve the request if your computer asks for permission." });
+    }
+  });
+
   const changeHost = (value: string) => {
     changeForm({ hostInput: value });
     addressQueuedRef.current = true;
@@ -288,6 +322,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
     }
     let ok = false;
     if (target === "computer") ok = await checkComputer();
+    else if (target === "cleanup") ok = await checkCleanup();
     else if (target === "address") ok = await checkAddress(latest.hostInput);
     else if (target === "admin") {
       const invalid = await bridge.ValidatePassword(latest.adminPassword);
@@ -302,23 +337,26 @@ function SetupWizard({ form, patch, update, onBusy }: {
 
   const titles: Record<SetupPage, [string, string]> = {
     computer: ["Checking this computer", "CARE runs in the background on this computer. Make sure it has what the clinic needs."],
+    cleanup: ["Removing stale files from an earlier setup", "CARE checks for files or settings from an earlier setup before installing a new clinic here."],
     address: ["Choosing the clinic address", "Staff type this into their browser to open CARE. Short and easy to say out loud works best."],
     admin: ["Creating the admin password", "This password protects CARE Clinic on this computer and is the first sign-in for CARE itself."],
     review: ["Review before installing", "Here's what CARE will set up."],
     install: ["Installing CARE", ""],
   };
-  const ready = page === "computer" ? computerReady
+  const ready = page === "computer" ? computerReady : page === "cleanup" ? cleanupReady
     : page === "address" ? addressReady : page === "admin" ? adminReady
     : verified && issues.length === 0;
-  const note = busy ? operation === "install-service" ? "Installing the CARE Clinic service…" : page === "review" ? "Checking everything before installation…" : "Checking…"
+  const note = busy ? operation === "install-service" ? "Installing the CARE Clinic service…" : operation === "cleanup" ? "Keep this window open while the cleanup finishes…" : page === "review" ? "Checking everything before installation…" : "Checking…"
     : problem ? "Check this step again before continuing."
     : editing ? "Choose Continue to return to Review when this step is ready."
     : page === "computer" ? computerReady ? "This computer is ready." : "Fix the computer checks to continue."
+    : page === "cleanup" ? cleanupReady ? "Nothing from an earlier setup is left." : "Remove what an earlier setup left to continue."
     : page === "address" ? addressReady ? "Next: the admin password." : "Pick an address that is free to continue."
     : page === "admin" ? adminReady ? "Almost done — one last look before installing." : "Choose and confirm a password to continue."
     : issues.length ? "Fix the highlighted step; you come back to this screen." : "Nothing has been installed yet.";
   const blocked = issues.map((issue) => issue.step);
   if (page === "computer" && report && !report.ready) blocked.push("computer");
+  if (page === "cleanup" && (cleanupProblem || residue?.clean === false)) blocked.push("cleanup");
 
   return (
     <SetupLayout steps={STEPS} page={page} done={done} blocked={blocked} working={busy}
@@ -326,6 +364,8 @@ function SetupWizard({ form, patch, update, onBusy }: {
       next={continueSetup} nextDisabled={!ready} editing={editing} update={update}>
       {page === "computer" ? <ComputerStep report={report} problem={serviceProblem} busy={locked} installing={operation === "install-service"}
         onInstallService={installService} onCheck={recheck} />
+        : page === "cleanup" ? <CleanupStep report={residue} before={cleanupBefore} checking={operation !== ""} removing={operation === "cleanup"} problem={cleanupProblem} busy={locked}
+          onRemove={removeLeftovers} onCheck={() => void execute("checking", async () => { await checkCleanup(); })} />
         : page === "address" ? <AddressStep value={form.hostInput} result={address} disabled={operation !== "" || update.active || care.busy} onChange={changeHost} onCheck={() => void checkAddress(formRef.current.hostInput)} />
         : page === "admin" ? <AdminStep form={form} patch={changeForm} strength={strength} passwordError={passwordError} busy={locked} />
         : <ReviewStep steps={STEPS} form={form} report={report} issues={issues} verified={verified} busy={locked} onEdit={edit} />}

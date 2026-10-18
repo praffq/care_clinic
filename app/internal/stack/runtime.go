@@ -518,6 +518,18 @@ func (r *Runtime) InstalledPlugs(ctx context.Context) (string, error) {
 	return ParsePluginsEnv(data)
 }
 
+func (r *Runtime) Configured(ctx context.Context) (bool, error) {
+	rc, err := r.Service.Agent().GetFile(ctx, protocol.FileAreaConfig, StackEnv)
+	if isNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = rc.Close()
+	return true, nil
+}
+
 // ParseStackImages reads the IMAGE_<ROLE>=repo@digest lines Render writes.
 func ParseStackImages(data []byte) ([]Image, error) {
 	refs := map[string]string{}
