@@ -5,8 +5,8 @@ import "crypto/ed25519"
 // Production signing keys (standard-base64 Ed25519 public keys). Release
 // builds trust only these. Leave a slot empty when unused; during a rotation
 // set ProductionKeyNext to the new key, ship a desktop release, then start
-// signing with it and move it to ProductionKeyCurrent. The `release keygen`
-// command (S7) prints the value to paste here.
+// signing with it and move it to ProductionKeyCurrent. `release keygen`
+// (app/cmd/release) prints the value to paste here.
 //
 // Both are empty until the production key is generated, so release builds
 // currently reject every feed.
