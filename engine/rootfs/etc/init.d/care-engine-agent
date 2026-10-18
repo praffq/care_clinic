@@ -4,12 +4,15 @@ name="care-engine-agent"
 description="CARE engine agent"
 supervisor="supervise-daemon"
 command="/usr/bin/care-engine-agent"
-output_log="/dev/console"
-error_log="/dev/console"
+output_log="/var/log/care-engine-agent.log"
+error_log="/var/log/care-engine-agent.log"
 respawn_delay=2
 
+# Only "use" docker: /v1/status must keep answering (docker_ready=false)
+# when dockerd fails so the host can diagnose it.
 depend() {
-	need net docker
+	need net
+	use docker
 	after docker
 }
 

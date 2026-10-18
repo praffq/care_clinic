@@ -22,7 +22,7 @@ ARG ENGINE_VERSION
 RUN apk add --no-cache \
       openrc busybox-openrc busybox-mdev-openrc linux-virt \
       docker docker-cli-compose docker-cli-buildx \
-      ca-certificates e2fsprogs chrony \
+      ca-certificates e2fsprogs chrony logrotate \
  && rc-update add sysfs sysinit \
  && rc-update add procfs sysinit \
  && rc-update add devfs sysinit \
@@ -37,12 +37,14 @@ RUN apk add --no-cache \
  && rc-update add syslog boot \
  && rc-update add networking boot \
  && rc-update add chronyd default \
+ && rc-update add crond default \
  && rc-update add docker default
 COPY rootfs/ /
 COPY --from=agent /out/care-engine-agent /usr/bin/care-engine-agent
 RUN rc-update add care-engine-agent default \
  && sed -i 's/^#\?rc_cgroup_mode=.*/rc_cgroup_mode="unified"/' /etc/rc.conf \
  && echo "${ENGINE_VERSION}" > /etc/care-engine/version \
+ && mv /etc/periodic/daily/logrotate /etc/periodic/hourly/logrotate \
  && rm -f /etc/motd /boot/initramfs-* \
  && rm -rf /var/cache/apk/*
 

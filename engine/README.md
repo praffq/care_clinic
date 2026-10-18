@@ -49,20 +49,37 @@ The initramfs (`initramfs/init`):
 
 1. loads the modules in `initramfs/modules`;
 2. mounts `system.img` (EROFS) read-only;
-3. formats the data disk as ext4 (label `care-data`) if it has no filesystem;
+3. checks the data disk:
+   - ext4 labelled `care-data`: used as is;
+   - any other filesystem or label: refused;
+   - no filesystem: formatted as ext4 (`care-data`) **only** if its first and
+     last 1 MiB are all zeros, otherwise refused (a damaged superblock must
+     never cause clinic data to be wiped);
 4. mounts a tmpfs-backed overlay over the system image as `/` (so `/etc`,
-   `/var/log`, `/run` … are writable but ephemeral);
+   `/run` … are writable but ephemeral);
 5. mounts the data disk at `/var/lib`, creates `/var/lib/docker`,
-   `/var/lib/care/{clinic,backups,builds}`, and writes `1` to
+   `/var/lib/care/{clinic,backups,builds,logs}`, and writes `1` to
    `/var/lib/care/.data-schema` on first init;
-6. `switch_root`s into OpenRC.
+6. bind-mounts `/var/lib/care/logs` on `/var/log` so logs persist;
+7. `switch_root`s into OpenRC.
 
-On any failure it logs `care-init: FATAL: …` and drops to a console shell.
+On any failure it logs `care-init: FATAL: …` to the console, waits 10 s and
+powers the VM off (the host service sees the VM exit). With `care.debug` it
+drops to an emergency shell instead.
 
-OpenRC then brings up networking (DHCP on `eth0`), chrony, `dockerd`, and
-`care-engine-agent`. The agent service refuses to start (and logs why on the
-console) when `/var/lib/care/.data-schema` is newer than the schema this
-engine supports (`/etc/care-engine/data-schema`).
+OpenRC then brings up networking (DHCP on `eth0`), chrony, crond, `dockerd`,
+and `care-engine-agent`. The agent only *uses* docker (not *needs*), so
+`/v1/status` keeps answering with `docker_ready: false` when dockerd fails. The
+agent service refuses to start (and logs why) when
+`/var/lib/care/.data-schema` is newer than the schema this engine supports
+(`/etc/care-engine/data-schema`).
+
+### Logs
+
+Persistent under `/var/log` (= `/var/lib/care/logs` on the data disk):
+`docker.log`, `care-engine-agent.log` (logrotate hourly: 10 MiB × 5,
+compressed), `messages` (busybox syslogd: 2 MiB × 3). Container logs use
+Docker's `json-file` driver (10 MiB × 3).
 
 ### Kernel command line
 
@@ -76,9 +93,9 @@ console=<serial> [care.system=/dev/vda] [care.data=/dev/vdb] [care.debug]
 | QEMU `-M virt` (arm64) | `ttyAMA0` |
 | QEMU `-M q35` / WHPX (amd64) | `ttyS0` |
 
-Kernel, initramfs (`care-init: …`), OpenRC, and agent logs go to the console.
-`care.debug` enables `set -x` in the initramfs. Docker's log is
-`/var/log/docker.log` (ephemeral).
+Kernel, initramfs (`care-init: …`) and OpenRC output go to the console.
+`care.debug` enables `set -x` in the initramfs and an emergency shell on
+failure.
 
 ## Agent
 
