@@ -6,7 +6,7 @@ desktop:
   requires: { engine: ">=0.1.0 <0.2.0" }
 
 engine:
-  version: "0.1.6"
+  version: "0.1.7"
   requires: { desktop: ">=0.2.0" }
 
 care:

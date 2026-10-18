@@ -2,7 +2,11 @@
 // desktop app with a single administrator prompt. On macOS it mirrors
 // scripts/service-macos.sh install-built: create the care-clinic group and
 // add the user, copy the binary root-owned into place, write the
-// LaunchDaemon plist and bootstrap it. Windows is not supported yet.
+// LaunchDaemon plist and bootstrap it. On Windows it mirrors
+// scripts/service-windows.ps1 install: create the care-clinic local group
+// and add the user, turn on the Windows Hypervisor Platform, and run
+// `care-clinic-service service install` and `service start` (see
+// WindowsScript).
 package install
 
 import (
@@ -30,8 +34,14 @@ const (
 	LogDir    = "/Library/Logs/care-clinic"
 )
 
-// ErrUnsupported is returned where the app can't install the service yet.
-var ErrUnsupported = errors.New("installing the CARE Clinic service from the app is not supported on this system yet")
+var (
+	// ErrUnsupported is returned where the app can't install the service.
+	ErrUnsupported = errors.New("installing the CARE Clinic service from the app is not supported on this system")
+	// ErrRestartRequired: the service is installed, but Windows turned on
+	// the Windows Hypervisor Platform and must restart before the engine
+	// can run.
+	ErrRestartRequired = errors.New("the Windows Hypervisor Platform was turned on: restart Windows, then open CARE Clinic to finish setting up")
+)
 
 // Plan is one install.
 type Plan struct {
@@ -41,7 +51,7 @@ type Plan struct {
 	// Plist is the LaunchDaemon plist content.
 	Plist []byte
 	// User is added to the care-clinic group so the app can reach the
-	// control socket.
+	// control socket. On Windows it is the user's SID.
 	User string
 }
 
@@ -86,10 +96,9 @@ func Script(p Plan, plistTmp string) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// Current reports whether the installed service is already p: the same
-// binary and LaunchDaemon plist. A missing file means it is not.
-func Current(p Plan) (bool, error) { return current(p, Binary, PlistPath) }
-
+// current reports whether the installed service at binary (and, unless
+// plist is empty, the LaunchDaemon plist) is already p. A missing file means
+// it is not.
 func current(p Plan, binary, plist string) (bool, error) {
 	want, err := fileSum(p.Binary)
 	if err != nil {
@@ -101,6 +110,9 @@ func current(p Plan, binary, plist string) (bool, error) {
 	}
 	if err != nil || got != want {
 		return false, err
+	}
+	if plist == "" {
+		return true, nil
 	}
 	b, err := os.ReadFile(plist)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -120,10 +132,4 @@ func fileSum(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// Installed reports whether the LaunchDaemon plist is in place.
-func Installed() bool {
-	_, err := os.Stat(PlistPath)
-	return err == nil
 }

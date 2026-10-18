@@ -17,3 +17,4 @@
 # Go build output in app/ (go build without -o)
 /app/app
 /app/care-clinic-service
+/app/care-engine-agent

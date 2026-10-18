@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/user"
 	"runtime"
 	"time"
@@ -29,8 +30,13 @@ func (a *App) hostProbes() hostcheck.Probes {
 		return *a.host
 	}
 	diskPath := a.installDir()
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		diskPath = install.Root
+	case "windows":
+		if d := os.Getenv("ProgramData"); d != "" {
+			diskPath = d // the service keeps the engine's disk under it
+		}
 	}
 	return hostcheck.Probes{
 		Virtualization:   hostcheck.HostVirtualization,
@@ -68,7 +74,10 @@ func (a *App) InstallService() error {
 		if inst == nil {
 			inst = install.Install
 		}
-		if err := inst(install.Plan{Binary: path, Plist: launchd.Plist, User: u.Username}); err != nil {
+		if err := inst(servicePlan(path, u)); errors.Is(err, install.ErrRestartRequired) {
+			a.logln("The CARE Clinic service is installed; Windows must restart to turn on the hypervisor.")
+			return err
+		} else if err != nil {
 			return fmt.Errorf("couldn't install the CARE Clinic service: %w", err)
 		}
 		if err := a.waitServiceReachable(serviceStartTimeout); err != nil {
@@ -77,6 +86,16 @@ func (a *App) InstallService() error {
 		a.logln("The CARE Clinic service is installed and running.")
 		return nil
 	})
+}
+
+// servicePlan is the install plan for the service binary at path, adding
+// u to the care-clinic group (by SID on Windows).
+func servicePlan(path string, u *user.User) install.Plan {
+	who := u.Username
+	if runtime.GOOS == "windows" {
+		who = u.Uid
+	}
+	return install.Plan{Binary: path, Plist: launchd.Plist, User: who}
 }
 
 func (a *App) waitServiceReachable(timeout time.Duration) error {

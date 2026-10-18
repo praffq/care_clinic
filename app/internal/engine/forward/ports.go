@@ -10,9 +10,14 @@ import (
 // guest TCP address of the clinic's Caddy. The guest relay
 // (care-engine-agent) listens on VsockPort and dials GuestAddr; the host
 // listens on HostAddr and dials VsockPort. Nothing else is ever forwarded.
+//
+// Under QEMU (Windows) there is no vsock device: the relay also listens on
+// guest TCP port TCPPort with mutual TLS, and QEMU's hostfwd carries it to
+// a loopback port on the host. Caddy itself only binds guest loopback.
 type Port struct {
 	Name      string
 	VsockPort uint32
+	TCPPort   uint16
 	GuestAddr string
 	HostAddr  string
 }
@@ -24,12 +29,20 @@ const (
 	VsockHome  = 8480
 )
 
+// Guest TCP ports of the mutual-TLS relay (QEMU). 47377 is the agent API.
+const (
+	TLSAgent = 47377
+	TLSHTTP  = 47378
+	TLSHTTPS = 47379
+	TLSHome  = 47380
+)
+
 var standardPorts = []Port{
-	{Name: "http", VsockPort: VsockHTTP, GuestAddr: "127.0.0.1:80", HostAddr: "0.0.0.0:80"},
-	{Name: "https", VsockPort: VsockHTTPS, GuestAddr: "127.0.0.1:443", HostAddr: "0.0.0.0:443"},
+	{Name: "http", VsockPort: VsockHTTP, TCPPort: TLSHTTP, GuestAddr: "127.0.0.1:80", HostAddr: "0.0.0.0:80"},
+	{Name: "https", VsockPort: VsockHTTPS, TCPPort: TLSHTTPS, GuestAddr: "127.0.0.1:443", HostAddr: "0.0.0.0:443"},
 	// Tailscale home access: `tailscale serve` on the host proxies to it, so
 	// it is never exposed beyond the host's loopback.
-	{Name: "home", VsockPort: VsockHome, GuestAddr: "127.0.0.1:8480", HostAddr: "127.0.0.1:8480"},
+	{Name: "home", VsockPort: VsockHome, TCPPort: TLSHome, GuestAddr: "127.0.0.1:8480", HostAddr: "127.0.0.1:8480"},
 }
 
 // StandardPorts returns the fixed port table.

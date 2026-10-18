@@ -93,3 +93,21 @@ func TestInstallStepsStillStopAtTheFirstFailure(t *testing.T) {
 		t.Fatalf("install must not run step 2 when step 1 failed: %s", script)
 	}
 }
+
+func TestEncodePS(t *testing.T) {
+	// "exit 7" in UTF-16LE, base64: what powershell -EncodedCommand expects.
+	if got := EncodePS("exit 7"); got != "ZQB4AGkAdAAgADcA" {
+		t.Fatalf("EncodePS = %s", got)
+	}
+	if !strings.Contains(elevatedEncodedPS("x"), "'-EncodedCommand','eAA='") {
+		t.Fatal(elevatedEncodedPS("x"))
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	cmd := proc.Command("powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", EncodePS("$s = 'it''s'; if ($s -eq \"it's\") { exit 7 }"))
+	var exit *exec.ExitError
+	if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != 7 {
+		t.Fatalf("encoded script: %v", err)
+	}
+}

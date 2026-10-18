@@ -60,8 +60,12 @@ type Report struct {
 type Virtualization struct {
 	// Supported: the hypervisor is available to this process.
 	Supported bool
-	// Arm64 is false on a Mac the arm64 engine can't run on.
-	Arm64 bool
+	// Problem, when not supported, says why and what to do instead of the
+	// generic message (e.g. a Mac without Apple silicon).
+	Problem string
+	// Fixable: installing the service fixes it (on Windows it turns on the
+	// Windows Hypervisor Platform, which then needs a restart).
+	Fixable bool
 }
 
 // Probes reach the machine. Nil probes report a warning that the check
@@ -82,7 +86,7 @@ type Probes struct {
 // Run runs every check.
 func Run(ctx context.Context, p Probes) Report {
 	r := Report{Checks: []Check{
-		virtualization(p.Virtualization),
+		virtualization(p.Virtualization, p.CanInstallService),
 		memory(p.Memory),
 		disk(p.Disk),
 		service(ctx, p),
@@ -100,7 +104,7 @@ func unavailable(id, title string) Check {
 	return Check{ID: id, Title: title, Level: LevelWarn, Detail: "This check isn't available on this system yet."}
 }
 
-func virtualization(probe func() (Virtualization, error)) Check {
+func virtualization(probe func() (Virtualization, error), canInstall bool) Check {
 	const title = "Virtualization"
 	if probe == nil {
 		return unavailable(CheckVirtualization, title)
@@ -109,10 +113,15 @@ func virtualization(probe func() (Virtualization, error)) Check {
 	switch {
 	case err != nil:
 		return Check{ID: CheckVirtualization, Title: title, Level: LevelWarn, Detail: "Couldn't check for virtualization support: " + err.Error()}
-	case !v.Arm64:
-		return Check{ID: CheckVirtualization, Title: title, Level: LevelFail, Detail: "CARE Clinic needs a Mac with Apple silicon (M1 or later)."}
 	case !v.Supported:
-		return Check{ID: CheckVirtualization, Title: title, Level: LevelFail, Detail: "This computer doesn't offer hardware virtualization, which CARE Clinic needs to run the clinic."}
+		c := Check{ID: CheckVirtualization, Title: title, Level: LevelFail, Detail: v.Problem}
+		if c.Detail == "" {
+			c.Detail = "This computer doesn't offer hardware virtualization, which CARE Clinic needs to run the clinic."
+		}
+		if v.Fixable && canInstall {
+			c.Action = "install-service"
+		}
+		return c
 	}
 	return Check{ID: CheckVirtualization, Title: title, Level: LevelOK, Detail: "Hardware virtualization is available."}
 }

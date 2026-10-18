@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +23,8 @@ type loopbackVsock struct {
 	fail  map[uint32]bool
 }
 
-func (v *loopbackVsock) listen(port uint32) (net.Listener, error) {
+func (v *loopbackVsock) listen(p forward.Port) (net.Listener, error) {
+	port := p.VsockPort
 	if v.fail[port] {
 		return nil, errors.New("address in use")
 	}
@@ -117,5 +121,64 @@ func TestRelays(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", v.addrs[1], time.Second); err == nil {
 		_ = c.Close()
 		t.Fatal("relay listener still open after shutdown")
+	}
+}
+
+func freeTCPPort(t *testing.T) uint16 {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	return uint16(l.Addr().(*net.TCPAddr).Port)
+}
+
+func TestTLSRelayRequiresClientCert(t *testing.T) {
+	ca := newCA(t, true)
+	srvCert, srvKey := ca.issue(t, "engine", x509.ExtKeyUsageServerAuth)
+	cfg, err := parseTLSBundle(bundle(ca.pem, srvCert, srvKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freeTCPPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := startRelays(ctx, tlsRelayListener(cfg), []forward.Port{{Name: "t", TCPPort: port, GuestAddr: echoServer(t)}})
+	defer func() { cancel(); wait() }()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.cert)
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
+	dial := func(certs ...tls.Certificate) (string, error) {
+		c, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+			&tls.Config{RootCAs: roots, Certificates: certs, MinVersion: tls.VersionTLS13})
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = c.Close() }()
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := c.Write([]byte("ping")); err != nil {
+			return "", err
+		}
+		b := make([]byte, 4)
+		_, err = io.ReadFull(c, b)
+		return string(b), err
+	}
+	cc, ck := ca.issue(t, "host", x509.ExtKeyUsageClientAuth)
+	pair, err := tls.X509KeyPair(cc, ck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := dial(pair); err != nil || got != "ping" {
+		t.Fatalf("with client cert: %q, %v", got, err)
+	}
+	if _, err := dial(); err == nil {
+		t.Fatal("relay accepted a connection without a client certificate")
+	}
+}
+
+func TestTLSRelayNeedsTCPPort(t *testing.T) {
+	if _, err := tlsRelayListener(&tls.Config{})(forward.Port{Name: "x"}); err == nil {
+		t.Fatal("want an error for a port without TCPPort")
 	}
 }

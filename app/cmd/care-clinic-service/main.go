@@ -1,14 +1,14 @@
-//go:build unix
-
 // Command care-clinic-service is the root host service that owns the CARE
 // engine VM: it keeps the active engine slot running (restarting it after
-// crashes) and serves the control API the app uses, on a Unix socket.
+// crashes) and serves the control API the app uses, on a Unix socket
+// (macOS, a LaunchDaemon) or a named pipe (Windows, the CareClinic service).
 //
 //	care-clinic-service [flags]                 run the service
 //	care-clinic-service ctl [flags] <command>   talk to a running service
+//	care-clinic-service service <command>       (Windows) install, start, stop or remove the service
 //
-// --dev runs as the current user with state under the user's Library and a
-// socket only that user may open, for local testing.
+// --dev runs as the current user with state under the user's config
+// directory and a socket only that user may open, for local testing.
 //
 // Besides the VM the service owns the host side of the network: it forwards
 // the host's ports 80/443 (and 127.0.0.1:8480) into the guest and advertises
@@ -28,9 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
@@ -50,7 +48,6 @@ import (
 var version = "dev"
 
 const (
-	systemRoot   = "/Library/Application Support/care-clinic"
 	systemSocket = control.SystemSocket
 	devRootName  = "care-clinic-dev"
 )
@@ -59,7 +56,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "ctl" {
 		os.Exit(ctl(os.Args[2:]))
 	}
-	if err := serve(os.Args[1:]); err != nil {
+	if code, ok := platformMain(os.Args[1:]); ok {
+		os.Exit(code)
+	}
+	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "care-clinic-service:", err)
 		os.Exit(1)
 	}
@@ -80,17 +80,18 @@ func paths(dev bool, root, socket string) (string, string, error) {
 	if socket == "" {
 		socket = systemSocket
 		if dev {
-			socket = filepath.Join(root, "control.sock")
+			socket = devSocket(root)
 		}
 	}
 	return root, socket, nil
 }
 
-func serve(args []string) error {
+// serve runs the service until ctx is cancelled or the control server fails.
+func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("care-clinic-service", flag.ContinueOnError)
-	dev := fs.Bool("dev", false, "run as the current user (state under ~/Library, socket only for this user)")
-	root := fs.String("root", "", "state directory (default "+systemRoot+", or ~/Library/Application Support/"+devRootName+" with --dev)")
-	socket := fs.String("socket", "", "control socket (default "+systemSocket+", or <root>/control.sock with --dev)")
+	dev := fs.Bool("dev", false, "run as the current user (state in the user's config directory, socket only for this user)")
+	root := fs.String("root", "", "state directory (default "+systemRoot+", or <user config dir>/"+devRootName+" with --dev)")
+	socket := fs.String("socket", "", "control socket (default "+systemSocket+", or "+devSocket("<root>")+" with --dev)")
 	group := fs.String("group", "care-clinic", "group whose members may use the control socket (ignored with --dev)")
 	mem := fs.Uint64("mem", 0, "VM memory in MiB (default engine default)")
 	cpus := fs.Uint("cpus", 0, "VM CPUs (default engine default)")
@@ -114,8 +115,8 @@ func serve(args []string) error {
 	if *dev {
 		*group = ""
 		dirMode = 0o700
-	} else if os.Geteuid() != 0 {
-		return errors.New("must run as root (use --dev for local testing)")
+	} else if err := requireAdmin(); err != nil {
+		return err
 	}
 	overrides := map[string]string{}
 	for name, v := range fwd {
@@ -203,7 +204,7 @@ func serve(args []string) error {
 		Version:    version,
 	}), ReadHeaderTimeout: 10 * time.Second}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	supDone := make(chan struct{})
 	go func() { sup.Run(ctx); close(supDone) }()

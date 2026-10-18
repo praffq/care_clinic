@@ -97,7 +97,7 @@ console=<serial> [care.system=/dev/vda] [care.data=/dev/vdb] [care.debug]
 | --- | --- |
 | Virtualization.framework (virtio console) | `hvc0` |
 | QEMU `-M virt` (arm64) | `ttyAMA0` |
-| QEMU `-M q35` / WHPX (amd64) | `ttyS0` |
+| QEMU `-M pc` / WHPX (amd64; the smoke test uses `q35`) | `ttyS0` |
 
 Kernel, initramfs (`care-init: …`) and OpenRC output go to the console.
 `care.debug` enables `set -x` in the initramfs and an emergency shell on
@@ -122,23 +122,28 @@ there is no TCP listener at all.
 
 ### Clinic port relay
 
-The clinic's Caddy publishes 80, 443 and `127.0.0.1:8480` inside the VM. With
-vsock the agent also relays fixed vsock ports to those guest loopback
-addresses so the macOS host can expose them without a host-visible VM IP
-(`app/internal/engine/forward`, `StandardPorts`):
+The clinic's Caddy publishes 80, 443 and `127.0.0.1:8480` inside the VM. The
+agent relays fixed ports to those guest loopback addresses so the host can
+expose them without a host-visible VM IP (`app/internal/engine/forward`,
+`StandardPorts`): vsock ports when vsock is enabled (macOS), and mutual-TLS
+TCP ports when the fw_cfg TLS bundle exists (QEMU on Windows, with the same
+CA and server certificate as `:47377`):
 
-| vsock port | Guest target | Host listener (service, later) |
-| --- | --- | --- |
-| `8080` | `127.0.0.1:80` | `0.0.0.0:80` |
-| `8443` | `127.0.0.1:443` | `0.0.0.0:443` |
-| `8480` | `127.0.0.1:8480` | `127.0.0.1:8480` (Tailscale home access) |
+| vsock port | TLS TCP port | Guest target | Host listener (service) |
+| --- | --- | --- | --- |
+| `8080` | `47378` | `127.0.0.1:80` | `0.0.0.0:80` |
+| `8443` | `47379` | `127.0.0.1:443` | `0.0.0.0:443` |
+| `8480` | `47380` | `127.0.0.1:8480` | `127.0.0.1:8480` (Tailscale home access) |
+
+QEMU's `hostfwd` carries the TLS ports (and `:47377`) to ephemeral ports on
+host `127.0.0.1`; TLS keeps other local users of the Windows host from
+reaching the guest through them.
 
 The table is the only thing ever forwarded; clients cannot pick a destination.
 Bytes pass through untouched (Caddy terminates TLS), half-closes are
 propagated, each port is capped at 512 concurrent connections, and a
 connection is closed at once when its target refuses (stack not up). Dial
-failures are logged at most every 30 s per port. The QEMU TCP listener has no
-relay; QEMU forwards these ports with `hostfwd`. Caddy sees every relayed
+failures are logged at most every 30 s per port. Caddy sees every relayed
 connection as coming from the Docker bridge gateway (e.g. `172.18.0.1`). The `vmw_vsock_virtio_transport`
 and `qemu_fw_cfg` modules are loaded from `/etc/modules`. Request lines are
 logged to `/var/log/care-engine-agent.log`.
@@ -229,3 +234,36 @@ go test -c -o /tmp/vm.test ./internal/engine/vm
 codesign -f -s - --entitlements cmd/vzboot/vzboot.entitlements /tmp/vm.test
 CARE_VZ_BUNDLE=$PWD/../dist/care-engine-0.1.0-arm64 /tmp/vm.test -test.run TestBootEngine -test.v
 ```
+
+## Booting with QEMU and WHPX (Windows)
+
+On Windows the service boots the amd64 bundle with QEMU
+(`app/internal/engine/vm`, `qemu.go` and `qemu_windows.go`). setup.exe ships a
+QEMU build pinned in `versions.yml` (`tools.qemu_windows_x86_64`, sha256
+checked; `app/cmd/bundle-windows` downloads it resumably, unpacks it with
+7-Zip and keeps only `qemu-system-x86_64.exe`, its DLLs, the x86 BIOS/option
+ROMs and the licences, about 125 MB). The command line is:
+
+```
+qemu-system-x86_64.exe -machine pc -accel whpx,kernel-irqchip=off -cpu host
+  -m <MiB> -smp <n> -display none -monitor none -serial stdio -no-reboot -L <qemu>\share
+  -kernel vmlinuz -initrd initramfs -append "console=ttyS0 care.system=/dev/vda care.data=/dev/vdb ..."
+  -drive file=system.img,if=virtio,format=raw,readonly=on
+  -drive file=<data disk>,if=virtio,format=raw,discard=unmap
+  -fw_cfg name=opt/care/tls,file=<bundle>
+  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:<eph>-:47377,... -device virtio-net-pci,netdev=net0
+  -device virtio-rng-pci
+```
+
+- WHPX only, never TCG: before every boot the driver checks the Windows
+  Hypervisor Platform (`app/internal/sys/whpx`) and fails with
+  `ErrHypervisorUnavailable` and what to do instead of falling back to slow
+  emulation. `kernel-irqchip=off` works around WHPX stopping the guest with
+  "Unexpected VP exit code 4" (see containers_anywhere's WHPX notes).
+- The mTLS bundle (a fresh CA, server and client certificate per boot) goes
+  in through fw_cfg as in the smoke test; the host talks to the agent and the
+  port relays over mutual TLS on the hostfwd loopback ports.
+- QEMU runs in a kill-on-close job object, so a crashed service never leaves a
+  VM holding the data disk. The data disk is a sparse file; before a boot the
+  driver refuses a disk another process (QEMU) still has open. The serial
+  console goes to the service's `logs\console.log`, as on macOS.

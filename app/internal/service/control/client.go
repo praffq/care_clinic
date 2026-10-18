@@ -54,9 +54,6 @@ func (e *APIError) Is(target error) bool {
 	return false
 }
 
-// SystemSocket is the installed service's control socket.
-const SystemSocket = "/var/run/care-clinic/control.sock"
-
 // Client talks to the host service over its control socket.
 type Client struct {
 	socket string
@@ -77,8 +74,7 @@ func NewClient(socket string) *Client {
 
 // Dial opens a connection to the control socket.
 func (c *Client) Dial(ctx context.Context) (net.Conn, error) {
-	var d net.Dialer
-	return d.DialContext(ctx, "unix", c.socket)
+	return dialSocket(ctx, c.socket)
 }
 
 // Agent returns an agent client that goes through the service's relay.

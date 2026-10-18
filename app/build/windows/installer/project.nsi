@@ -34,6 +34,16 @@ Unicode true
 ####
 !include "wails_tools.nsh"
 
+## The host service, QEMU and (optionally) the engine bundle, staged by
+## app/cmd/bundle-windows (a Wails post-build hook) next to the app. Release
+## builds pass the signed service with -DCARE_SERVICE_BINARY=...
+!ifndef CARE_PAYLOAD
+!define CARE_PAYLOAD "..\..\bin\payload"
+!endif
+!ifndef CARE_SERVICE_BINARY
+!define CARE_SERVICE_BINARY "${CARE_PAYLOAD}\care-clinic-service.exe"
+!endif
+
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
 VIFileVersion    "${INFO_PRODUCTVERSION}.0"
@@ -153,6 +163,14 @@ Section
 
     !insertmacro wails.files
 
+    # Onboarding copies these to %ProgramData%\CARE Clinic\bin when it
+    # installs the CareClinic service.
+    File "/oname=care-clinic-service.exe" "${CARE_SERVICE_BINARY}"
+    RMDir /r "$INSTDIR\qemu"
+    File /r "${CARE_PAYLOAD}\qemu"
+    RMDir /r "$INSTDIR\engine"
+    File /nonfatal /r "${CARE_PAYLOAD}\engine"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -206,6 +224,13 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+
+    # Stop and remove the CareClinic service and its firewall rules. The
+    # clinic's data under %ProgramData%\CARE Clinic stays.
+    ${If} ${FileExists} "$INSTDIR\care-clinic-service.exe"
+        ExecWait '"$INSTDIR\care-clinic-service.exe" service uninstall' $0
+        DetailPrint "care-clinic-service uninstall: exit code $0"
+    ${EndIf}
 
     RMDir /r $INSTDIR
 

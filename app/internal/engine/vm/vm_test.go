@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -128,7 +129,7 @@ func TestEnsureDataDisk(t *testing.T) {
 	if st.Size() != size {
 		t.Errorf("size = %d, want %d", st.Size(), size)
 	}
-	if perm := st.Mode().Perm(); perm != 0o600 {
+	if perm := st.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("mode = %v, want 0600", perm)
 	}
 	assertSparse(t, path, st)

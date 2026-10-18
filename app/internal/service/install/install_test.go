@@ -28,6 +28,9 @@ func TestScript(t *testing.T) {
 	if strings.Index(s, "bootout") > strings.Index(s, "bootstrap") {
 		t.Error("bootstrap before bootout")
 	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		return
+	}
 	if out, err := exec.Command("sh", "-n", "-c", s).CombinedOutput(); err != nil {
 		t.Errorf("sh -n: %v %s", err, out)
 	}

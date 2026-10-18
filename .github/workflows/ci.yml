@@ -9,7 +9,7 @@ on:
   workflow_call:
     inputs:
       engine-tag:
-        description: Engine release (e.g. engine-v0.1.2) whose arm64 tarball is bundled into the macOS app. Empty ships no engine.
+        description: Engine release (e.g. engine-v0.1.2) whose tarballs are bundled into the apps (arm64 for macOS, amd64 for Windows). Empty ships no engine.
         type: string
         required: false
         default: ""
@@ -64,6 +64,11 @@ jobs:
           version: v2.13.2
           working-directory: app
           args: --timeout=5m
+      - name: Lint the Windows build
+        working-directory: app
+        env:
+          GOOS: windows
+        run: golangci-lint run --timeout=5m
 
   go:
     name: Go tests
@@ -102,6 +107,32 @@ jobs:
       - name: Check module files were not changed
         run: git diff --exit-code -- go.mod go.sum
 
+  go-windows:
+    name: Go tests (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Build from a clean checkout
+        run: go build ./...
+      - name: Test
+        run: go test -count=1 -timeout=15m ./...
+      - name: Check module files were not changed
+        run: git diff --exit-code -- go.mod go.sum
+
   frontend:
     name: Frontend
     runs-on: ubuntu-24.04
@@ -130,7 +161,7 @@ jobs:
 
   native:
     name: Build ${{ matrix.target }}
-    needs: [lint, go, frontend]
+    needs: [lint, go, go-windows, frontend]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -165,18 +196,26 @@ jobs:
       - name: Prepare installer metadata and deployment kit
         run: node app/frontend/scripts/stage-install.mjs
       - name: Fetch the engine bundle
-        if: matrix.target == 'desktop-macos' && inputs.engine-tag != ''
+        if: inputs.engine-tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ENGINE_TAG: ${{ inputs.engine-tag }}
+          ARCH: ${{ matrix.target == 'desktop-windows' && 'amd64' || 'arm64' }}
         run: |
           version=${ENGINE_TAG#engine-v}
           dir="$RUNNER_TEMP/engine"
           mkdir -p "$dir"
           gh release download "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
-            --pattern "care-engine-$version-arm64.tar.gz" --pattern SHA256SUMS
-          (cd "$dir" && grep -E "  \*?care-engine-$version-arm64\.tar\.gz$" SHA256SUMS | shasum -a 256 -c -)
-          echo "CARE_CLINIC_ENGINE_BUNDLE=$dir/care-engine-$version-arm64.tar.gz" >>"$GITHUB_ENV"
+            --pattern "care-engine-$version-$ARCH.tar.gz" --pattern SHA256SUMS
+          (cd "$dir" && grep -E "  \*?care-engine-$version-$ARCH\.tar\.gz$" SHA256SUMS | shasum -a 256 -c -)
+          echo "CARE_CLINIC_ENGINE_BUNDLE=$dir/care-engine-$version-$ARCH.tar.gz" >>"$GITHUB_ENV"
+      - name: Cache the QEMU download
+        if: matrix.target == 'desktop-windows'
+        uses: actions/cache@v6.1.0
+        with:
+          path: dist/cache
+          key: qemu-${{ hashFiles('versions.yml') }}
+          restore-keys: qemu-
       - name: Build native application
         working-directory: app
         run: wails build -platform ${{ matrix.platform }} -clean -s -skipbindings -m -nosyncgomod ${{ matrix.extra }}
@@ -203,8 +242,18 @@ jobs:
               test -s "$app"
               installers=("$BUILD_DIR"/*installer.exe)
               test "${#installers[@]}" -eq 1 && test -s "${installers[0]}"
-              mkdir -p ci-app
-              cp "$app" ci-app/
+              payload="$BUILD_DIR/payload"
+              test -s "$payload/care-clinic-service.exe"
+              test -s "$payload/qemu/qemu-system-x86_64.exe"
+              test -s "$payload/qemu/share/bios-256k.bin"
+              if [ -n "${CARE_CLINIC_ENGINE_BUNDLE:-}" ]; then
+                test -s "$payload/engine/$(basename "$CARE_CLINIC_ENGINE_BUNDLE")"
+                (cd "$payload/engine" && shasum -a 256 -c SHA256SUMS)
+              fi
+              mkdir -p ci-app ci-payload
+              cp "$app" "$payload/care-clinic-service.exe" ci-app/
+              cp -R "$payload/qemu" ci-payload/
+              if [ -d "$payload/engine" ]; then cp -R "$payload/engine" ci-payload/; fi
               cp "${installers[0]}" "ci-artifacts/$TARGET-unsigned-setup.exe"
               ;;
             *) echo "::error::Unknown build target: $TARGET"; exit 1 ;;
@@ -243,6 +292,14 @@ jobs:
           path: ci-app/
           if-no-files-found: error
           retention-days: 7
+      - name: Upload the Windows service payload
+        if: matrix.target == 'desktop-windows'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: desktop-windows-payload
+          path: ci-payload/
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload Windows installer inputs
         if: matrix.target == 'desktop-windows'
         uses: actions/upload-artifact@v7.0.1
@@ -263,7 +320,7 @@ jobs:
   required:
     name: CI
     if: always()
-    needs: [lint, go, frontend, native]
+    needs: [lint, go, go-windows, frontend, native]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

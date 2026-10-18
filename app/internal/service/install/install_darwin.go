@@ -32,3 +32,13 @@ func Install(p Plan) error {
 	}
 	return elevate.Run(script, true)
 }
+
+// Current reports whether the installed service is already p: the same
+// binary and LaunchDaemon plist.
+func Current(p Plan) (bool, error) { return current(p, Binary, PlistPath) }
+
+// Installed reports whether the LaunchDaemon plist is in place.
+func Installed() bool {
+	_, err := os.Stat(PlistPath)
+	return err == nil
+}
