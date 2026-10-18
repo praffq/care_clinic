@@ -26,7 +26,7 @@ type stackFixture struct {
 func fakeStack(t *testing.T) stackFixture {
 	svc := stacktest.New(t)
 	svc.Fake.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
-		switch op.(type) {
+		switch op := op.(type) {
 		case *protocol.StackStatus:
 			backend := "running"
 			switch os.Getenv("CARE_FAKE_STATE") {
@@ -43,7 +43,7 @@ func fakeStack(t *testing.T) stackFixture {
 				return nil, errors.New("migration failed")
 			}
 		case *protocol.ManageCmd:
-			if os.Getenv("CARE_MIGRATION_FAILURE") == "existing" {
+			if op.Command == protocol.ManageCreateSuperuser && os.Getenv("CARE_MIGRATION_FAILURE") == "existing" {
 				return nil, errors.New("Error: That username is already taken.")
 			}
 		}
@@ -87,7 +87,7 @@ func TestStartConfiguresMigratesThenStarts(t *testing.T) {
 			t.Fatalf("steps = %v, want %v", steps, want)
 		}
 		got := strings.Join(fs.Methods(), " ")
-		if want := "RunMigrations StackUp Manage"; !strings.HasSuffix(got, want) {
+		if want := "RunMigrations StackUp Manage Manage"; !strings.HasSuffix(got, want) {
 			t.Fatalf("calls = %q, want suffix %q", got, want)
 		}
 		env, err := os.ReadFile(filepath.Join(fs.Files, "config", "clinic.env"))

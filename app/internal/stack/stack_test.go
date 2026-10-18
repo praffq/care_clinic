@@ -260,16 +260,22 @@ func TestInstall(t *testing.T) {
 	if err := os.WriteFile(imgs[0].Tarball, []byte("tar"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Install(ctxT(t), kit, "care.local", nil, imgs); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, imgs, ""); err != nil {
 		t.Fatal(err)
 	}
 	testCert() // small keys
-	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp"
+	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp Manage"
 	if got := strings.Join(svc.Methods(), " "); got != want {
 		t.Errorf("calls = %s\nwant    %s", got, want)
 	}
-	if up := svc.Fake.Calls()[len(svc.Fake.Calls())-1].Op.(*protocol.StackUp); !up.Wait {
+	calls := svc.Fake.Calls()
+	if up := calls[len(calls)-2].Op.(*protocol.StackUp); !up.Wait {
 		t.Errorf("StackUp = %+v, want Wait", up)
+	}
+	plug := calls[len(calls)-1].Op.(*protocol.ManageCmd)
+	wantMeta := `{"config":{"redirect_after_login":true},"url":"https://care.local/plugins/care_onboarding_fe/assets/remoteEntry.js"}`
+	if plug.Command != protocol.ManagePlugConfig || plug.Slug != "care_onboarding_fe" || string(plug.Meta) != wantMeta {
+		t.Errorf("PlugConfig op = %+v (meta %s)", plug, plug.Meta)
 	}
 	if u := svc.Updates(); len(u) != 1 || u[0].ProxyProtocol == nil || !*u[0].ProxyProtocol {
 		t.Errorf("config updates = %+v, want proxy_protocol on", u)
@@ -302,7 +308,7 @@ func TestInstall(t *testing.T) {
 	}
 
 	// Reinstalling keeps the secrets.
-	if err := r.Install(ctxT(t), kit, "clinic.local", nil, testImages()); err != nil {
+	if err := r.Install(ctxT(t), kit, "clinic.local", nil, testImages(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if vm2, _ := os.ReadFile(filepath.Join(svc.Files, "config", SecretsEnv)); !bytes.Equal(vm, vm2) {
@@ -407,7 +413,7 @@ func TestDown(t *testing.T) {
 	svc := stacktest.New(t)
 	state := t.TempDir()
 	r := &Runtime{Service: svc, StateDir: state}
-	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages()); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Down(ctxT(t), false); err != nil {
@@ -438,7 +444,7 @@ func TestInstalledImages(t *testing.T) {
 		t.Fatalf("no clinic: err = %v", err)
 	}
 	want := testImages()
-	if err := r.Install(ctxT(t), kit, "care.local", nil, want); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, want, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := r.InstalledImages(ctxT(t))

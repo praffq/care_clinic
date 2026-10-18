@@ -26,6 +26,9 @@ type Clinic struct {
 	// Stack drives the CARE stack in the engine VM through the service.
 	Stack       *stack.Runtime
 	StackImages []stack.Image
+	// StackPlugs is the ADDITIONAL_PLUGS StackImages are installed with
+	// (updates.Coordinator.InstallPlugs); "" means the catalog defaults.
+	StackPlugs string
 	// Progress receives the setup steps (Step* constants).
 	Progress progress.Func
 

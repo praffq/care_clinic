@@ -414,6 +414,16 @@ func TestDockerManageKeepsPasswordOutOfArgv(t *testing.T) {
 	expectArgv(t, r, c("exec", "-T", "backend", "python", "manage.py", "sync_valueset"))
 
 	d, r = newDocker(nil)
+	meta := `{"url":"https://care.local/plugins/care_onboarding_fe/assets/remoteEntry.js"}`
+	if err := d.Manage(context.Background(), protocol.ManageCmd{Command: "plug_config", Slug: "care_onboarding_fe", Meta: []byte(meta)}, nil, &recEmitter{}); err != nil {
+		t.Fatal(err)
+	}
+	expectArgv(t, r, c("exec", "-T", "-e", "CARE_PLUG_SLUG", "-e", "CARE_PLUG_META", "backend", "python", "manage.py", "shell", "-c", plugConfigCode))
+	if want := []string{"CARE_PLUG_SLUG=care_onboarding_fe", "CARE_PLUG_META=" + meta}; !slices.Equal(r.cmds[0].Env, want) {
+		t.Fatalf("env = %q", r.cmds[0].Env)
+	}
+
+	d, r = newDocker(nil)
 	if err := d.Manage(context.Background(), protocol.ManageCmd{Command: "createsuperuser", Username: "a", PasswordFile: "pw"}, []byte("\n"), &recEmitter{}); err == nil || len(r.cmds) != 0 {
 		t.Fatalf("empty password accepted: %v", err)
 	}
@@ -422,7 +432,7 @@ func TestDockerManageKeepsPasswordOutOfArgv(t *testing.T) {
 func TestDockerNotImplemented(t *testing.T) {
 	d, r := newDocker(nil)
 	ctx, em := context.Background(), &recEmitter{}
-	_, e1 := d.ImageBuild(ctx, protocol.ImageBuild{}, em)
+	_, e1 := d.ImageBuild(ctx, protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild}, em)
 	_, e2 := d.DBDump(ctx, protocol.DBDump{}, em)
 	for _, err := range []error{e1, e2} {
 		var oe *protocol.OpError

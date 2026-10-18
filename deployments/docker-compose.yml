@@ -25,7 +25,7 @@ x-backend: &backend
   image: ${IMAGE_BACKEND:?IMAGE_BACKEND not set}
   pull_policy: never
   restart: unless-stopped
-  env_file: [./backend.env, ./clinic.env, ./secrets.env]
+  env_file: [./backend.env, ./clinic.env, ./secrets.env, ./plugins.env]
 
 services:
   db:

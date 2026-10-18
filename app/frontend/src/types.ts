@@ -179,3 +179,29 @@ export type CareHealth = {
   servicesError?: string;
   checkedAt: string;
 };
+
+/** A CARE backend plugin (internal/plugins.Plugin). Secret configs read back as REDACTED. */
+export type Plugin = {
+  id: string;
+  package: string;
+  version?: string;
+  configs?: Record<string, unknown>;
+  bundled?: boolean;
+};
+
+/** A catalog frontend plugin (internal/plugins.FrontendPlugin), served at /plugins/<slug>/. */
+export type FrontendPlugin = {
+  slug: string;
+  label: string;
+  description: string;
+  required?: boolean;
+  config?: Record<string, unknown>;
+};
+
+/** A catalog preset (internal/plugins.Preset). */
+export type PluginPreset = Plugin & {
+  label: string;
+  description: string;
+  default?: boolean;
+  required_configs?: string[];
+};

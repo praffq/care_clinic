@@ -77,11 +77,14 @@ const (
 	ManageChangePassword       ManageCommand = "changepassword"
 	ManageSyncPermissionsRoles ManageCommand = "sync_permissions_roles"
 	ManageSyncValueset         ManageCommand = "sync_valueset"
+	// ManagePlugConfig upserts a frontend plugin's PlugConfig row (ManageCmd
+	// Slug and Meta) and clears CARE's plug_config cache.
+	ManagePlugConfig ManageCommand = "plug_config"
 )
 
 // ManageCommands lists every valid ManageCommand.
 var ManageCommands = []ManageCommand{
-	ManageCreateSuperuser, ManageChangePassword, ManageSyncPermissionsRoles, ManageSyncValueset,
+	ManageCreateSuperuser, ManageChangePassword, ManageSyncPermissionsRoles, ManageSyncValueset, ManagePlugConfig,
 }
 
 func (c ManageCommand) Valid() bool { return contains(ManageCommands, c) }

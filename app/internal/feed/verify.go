@@ -178,7 +178,7 @@ func (m *Manifest) validate(insecure bool) error {
 			}
 		}
 		if len(r.BuildEnv) > 0 {
-			b := protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild, Base: r.Images[protocol.ImageRoleFrontend].Digest, BuildEnv: r.BuildEnv}
+			b := protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild, BuildEnv: r.BuildEnv}
 			for _, fe := range fieldErrors(b.Validate()) {
 				if strings.HasPrefix(fe.Field, "build_env") {
 					v.add(p+"."+fe.Field, "%s", fe.Msg)

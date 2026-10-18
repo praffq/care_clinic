@@ -62,19 +62,26 @@ func TestDecodeOp(t *testing.T) {
 		{"load digest no prefix", OpImageLoad, `{"role":"silo","digest":"` + strings.Repeat("a", 64) + `"}`, "invalid_params:digest"},
 		{"load digest short", OpImageLoad, `{"role":"silo","digest":"sha256:abc"}`, "invalid_params:digest"},
 		// image.build
-		{"build ok", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"care_scribe","package":"git+https://github.com/ohcnetwork/care_scribe.git","version":"v1.2.0"},{"name":"abdm","package":"care-abdm"}]}`, ""},
-		{"build frontend env", OpImageBuild, `{"kind":"frontend-rebuild","base":"` + dgA + `","build_env":{"REACT_CARE_API_URL":"https://x","CARE_FOO":"1"}}`, ""},
-		{"build env key not allowed", OpImageBuild, `{"kind":"frontend-rebuild","base":"` + dgA + `","build_env":{"PATH":"/tmp"}}`, "invalid_params:build_env.PATH"},
-		{"build env lowercase", OpImageBuild, `{"kind":"frontend-rebuild","base":"` + dgA + `","build_env":{"react_x":"1"}}`, "invalid_params:build_env.react_x"},
-		{"build env newline", OpImageBuild, `{"kind":"frontend-rebuild","base":"` + dgA + `","build_env":{"REACT_X":"a\nRUN evil"}}`, "invalid_params:build_env.REACT_X"},
-		{"build bad kind", OpImageBuild, `{"kind":"anything","base":"` + dgA + `"}`, "invalid_params:kind"},
-		{"build bad base", OpImageBuild, `{"kind":"backend-plugins","base":"latest"}`, "invalid_params:base"},
-		{"build plugin traversal", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"../x","package":"p"}]}`, "invalid_params:plugins[0].name"},
-		{"build plugin dup", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"a","package":"p"},{"name":"a","package":"p"}]}`, "invalid_params:plugins[1].name"},
-		{"build package traversal", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"a","package":"../x"}]}`, "invalid_params:plugins[0].package"},
-		{"build package file url", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"a","package":"file:///etc/passwd"}]}`, "invalid_params:plugins[0].package"},
-		{"build package flag", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"a","package":"-e ."}]}`, "invalid_params:plugins[0].package"},
-		{"build version shell", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","plugins":[{"name":"a","package":"p","version":"1.0 && id"}]}`, "invalid_params:plugins[0].version"},
+		{"build ok", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"ghcr.io/x/care-backend-builder@` + dgB + `","plugins":[{"name":"care_scribe","package":"git+https://github.com/ohcnetwork/care_scribe.git","version":"@v1.2.0"},{"name":"abdm","package":"care-abdm","version":"==1.0"},{"name":"x","package":"care-x"}]}`, ""},
+		{"build frontend ok", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"care-scribe-fe","package":"git+https://github.com/ohcnetwork/care_scribe_fe.git","version":"@main"}],"build_env":{"REACT_CARE_API_URL":"https://x","CARE_FOO":"1"}}`, ""},
+		{"build no plugins", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `"}`, "invalid_params:plugins"},
+		{"build env key not allowed", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"git+https://h/a"}],"build_env":{"PATH":"/tmp"}}`, "invalid_params:build_env.PATH"},
+		{"build env lowercase", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"git+https://h/a"}],"build_env":{"react_x":"1"}}`, "invalid_params:build_env.react_x"},
+		{"build env newline", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"git+https://h/a"}],"build_env":{"REACT_X":"a\nRUN evil"}}`, "invalid_params:build_env.REACT_X"},
+		{"build bad kind", OpImageBuild, `{"kind":"anything","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"p"}]}`, "invalid_params:kind"},
+		{"build bad base", OpImageBuild, `{"kind":"backend-plugins","base":"` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"p"}]}`, "invalid_params:base"},
+		{"build unpinned builder", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb","plugins":[{"name":"a","package":"p"}]}`, "invalid_params:builder"},
+		{"build plugin traversal", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"../x","package":"p"}]}`, "invalid_params:plugins[0].name"},
+		{"build backend hyphen name", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a-b","package":"p"}]}`, "invalid_params:plugins[0].name"},
+		{"build plugin dup", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"p"},{"name":"a","package":"p"}]}`, "invalid_params:plugins[1].name"},
+		{"build package traversal", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"../x"}]}`, "invalid_params:plugins[0].package"},
+		{"build package file url", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"file:///etc/passwd"}]}`, "invalid_params:plugins[0].package"},
+		{"build package flag", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"-e ."}]}`, "invalid_params:plugins[0].package"},
+		{"build version shell", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"p","version":"==1.0 && id"}]}`, "invalid_params:plugins[0].version"},
+		{"build version bare", OpImageBuild, `{"kind":"backend-plugins","base":"r/b@` + dgA + `","builder":"r/bb@` + dgB + `","plugins":[{"name":"a","package":"p","version":"1.0"}]}`, "invalid_params:plugins[0].version"},
+		{"build frontend pypi package", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"care-x"}]}`, "invalid_params:plugins[0].package"},
+		{"build frontend pip version", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"git+https://h/a","version":"==1"}]}`, "invalid_params:plugins[0].version"},
+		{"load builder role", OpImageLoad, `{"role":"backend-builder","digest":"` + dgA + `"}`, ""},
 		// image.prune
 		{"prune ok", OpImagePrune, `{"keep":["` + dgA + `","` + dgB + `"]}`, ""},
 		{"prune bad", OpImagePrune, `{"keep":["` + dgA + `","nope"]}`, "invalid_params:keep[1]"},
@@ -95,6 +102,12 @@ func TestDecodeOp(t *testing.T) {
 		{"manage pw traversal", OpManage, `{"command":"changepassword","username":"admin","password_file":"../x"}`, "invalid_params:password_file"},
 		{"manage pw dotdot", OpManage, `{"command":"changepassword","username":"admin","password_file":".."}`, "invalid_params:password_file"},
 		{"manage pw missing", OpManage, `{"command":"changepassword","username":"admin"}`, "invalid_params:password_file"},
+		{"manage plug ok", OpManage, `{"command":"plug_config","slug":"care_onboarding_fe","meta":{"url":"https://care.local/plugins/care_onboarding_fe/assets/remoteEntry.js","config":{"redirect_after_login":true}}}`, ""},
+		{"manage plug http", OpManage, `{"command":"plug_config","slug":"x","meta":{"url":"http://care.local/x.js"}}`, "invalid_params:meta"},
+		{"manage plug relative", OpManage, `{"command":"plug_config","slug":"x","meta":{"url":"/plugins/x/assets/remoteEntry.js"}}`, "invalid_params:meta"},
+		{"manage plug config not object", OpManage, `{"command":"plug_config","slug":"x","meta":{"url":"https://h/x.js","config":1}}`, "invalid_params:meta"},
+		{"manage plug bad slug", OpManage, `{"command":"plug_config","slug":"X; rm","meta":{"url":"https://h/x.js"}}`, "invalid_params:slug"},
+		{"manage plug meta elsewhere", OpManage, `{"command":"sync_valueset","meta":{"url":"https://h/x.js"}}`, "invalid_params:meta"},
 		{"manage bad username", OpManage, `{"command":"createsuperuser","username":"a b","password_file":"p"}`, "invalid_params:username"},
 		{"manage sync with user", OpManage, `{"command":"sync_permissions_roles","username":"admin"}`, "invalid_params:username"},
 		{"manage inline password", OpManage, `{"command":"createsuperuser","username":"a","password":"x"}`, "bad_request"},
@@ -227,7 +240,7 @@ func TestErrorJSON(t *testing.T) {
 }
 
 func TestBuildEnvErrorsDeterministic(t *testing.T) {
-	o := ImageBuild{Kind: BuildFrontendRebuild, Base: Digest(dgA), BuildEnv: map[string]string{"Z": "", "A": "", "M": ""}}
+	o := ImageBuild{Kind: BuildFrontendRebuild, Base: "r/f@" + dgA, Builder: "r/fb@" + dgB, Plugins: []PluginSpec{{Name: "a", Package: "git+https://h/a"}}, BuildEnv: map[string]string{"Z": "", "A": "", "M": ""}}
 	for range 20 {
 		var ve *ValidationError
 		if !errors.As(o.Validate(), &ve) || len(ve.Errors) != 3 || ve.Errors[0].Field != "build_env.A" || ve.Errors[2].Field != "build_env.Z" {

@@ -9,10 +9,13 @@ import type {
   ClientReachability,
   ClinicInfo,
   ConfirmationRequest,
+  FrontendPlugin,
   HomeAccess,
   HostReport,
   NameStatus,
   NetworkStatus,
+  Plugin,
+  PluginPreset,
   QuitRequest,
   ServiceState,
   StorageState,
@@ -53,6 +56,11 @@ declare global {
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
+          PluginCatalog(): Promise<PluginPreset[]>;
+          FrontendPlugins(): Promise<FrontendPlugin[]>;
+          ListPlugins(): Promise<Plugin[]>;
+          EnablePlugin(plugin: Plugin, adminPassword: string): Promise<void>;
+          DisablePlugin(id: string, adminPassword: string): Promise<void>;
           RunUninstall(removeData: boolean, adminPassword: string): Promise<void>;
           OpenURL(url: string): Promise<void>;
           LogPath(): Promise<string>;

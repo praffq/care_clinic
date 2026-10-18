@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 )
@@ -63,10 +64,11 @@ func StackImages(imgs []Image) []stack.Image {
 
 // Installed is installed.json: what the coordinator last committed.
 type Installed struct {
-	Desktop   string           `json:"desktop,omitempty"`
-	Engine    *InstalledEngine `json:"engine,omitempty"`
-	Care      *InstalledCare   `json:"care,omitempty"`
-	UpdatedAt time.Time        `json:"updated_at,omitzero"`
+	Desktop   string            `json:"desktop,omitempty"`
+	Engine    *InstalledEngine  `json:"engine,omitempty"`
+	Care      *InstalledCare    `json:"care,omitempty"`
+	Plugins   *InstalledPlugins `json:"plugins,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at,omitzero"`
 }
 
 // InstalledEngine is the active engine slot.
@@ -82,6 +84,16 @@ type InstalledCare struct {
 	Version    string    `json:"version"`
 	ReleasedAt time.Time `json:"released_at"`
 	Images     []Image   `json:"images"`
+}
+
+// InstalledPlugins is the backend plugin set the stack runs. Its configs
+// may hold secrets (the file is 0600); Status redacts them.
+type InstalledPlugins struct {
+	Set []plugins.Plugin `json:"set"`
+	// Base is the CARE backend image; Image, when set, is the derived image
+	// built from it with the plugins Set has that Base lacks.
+	Base  Image  `json:"base"`
+	Image *Image `json:"image,omitempty"`
 }
 
 // JournalState is the state of an in-flight operation.
@@ -132,6 +144,8 @@ type Rollback struct {
 	EnvWritten     bool    `json:"env_written"`
 	DBMigrated     bool    `json:"db_migrated"`
 	PreviousImages []Image `json:"previous_images,omitempty"`
+	// PreviousPlugs is the ADDITIONAL_PLUGS the stack ran before (secret).
+	PreviousPlugs string `json:"previous_plugs,omitempty"`
 	// Engine: the slot to re-activate and whether the new one was
 	// activated.
 	PreviousEngine  string `json:"previous_engine,omitempty"`
@@ -143,6 +157,16 @@ type CareTarget struct {
 	Version    string    `json:"version"`
 	ReleasedAt time.Time `json:"released_at"`
 	Images     []Image   `json:"images"`
+}
+
+// PluginsTarget is the backend plugin set a CARE or plugins operation
+// installs, built on Base with Builder; the build step records Image (nil
+// when every plugin is bundled).
+type PluginsTarget struct {
+	Set     []plugins.Plugin `json:"set"`
+	Base    Image            `json:"base"`
+	Builder *Image           `json:"builder,omitempty"`
+	Image   *Image           `json:"image,omitempty"`
 }
 
 // EngineTarget is the engine release being installed.
@@ -160,21 +184,22 @@ type EngineTarget struct {
 // Journal is journal.json, present only while an operation is in flight
 // (or its rollback failed).
 type Journal struct {
-	ID            string        `json:"id"`
-	Component     string        `json:"component"` // feed.ComponentCare or feed.ComponentEngine
-	From          string        `json:"from,omitempty"`
-	To            string        `json:"to"`
-	Revision      uint64        `json:"revision"`
-	State         JournalState  `json:"state"`
-	StartedAt     time.Time     `json:"started_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
-	Steps         []StepRecord  `json:"steps"`
-	RollbackSteps []StepRecord  `json:"rollback_steps,omitempty"`
-	Rollback      Rollback      `json:"rollback"`
-	Error         string        `json:"error,omitempty"`
-	FailedStep    string        `json:"failed_step,omitempty"`
-	Care          *CareTarget   `json:"care,omitempty"`
-	Engine        *EngineTarget `json:"engine,omitempty"`
+	ID            string         `json:"id"`
+	Component     string         `json:"component"` // feed.ComponentCare, feed.ComponentEngine or ComponentPlugins
+	From          string         `json:"from,omitempty"`
+	To            string         `json:"to"`
+	Revision      uint64         `json:"revision"`
+	State         JournalState   `json:"state"`
+	StartedAt     time.Time      `json:"started_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	Steps         []StepRecord   `json:"steps"`
+	RollbackSteps []StepRecord   `json:"rollback_steps,omitempty"`
+	Rollback      Rollback       `json:"rollback"`
+	Error         string         `json:"error,omitempty"`
+	FailedStep    string         `json:"failed_step,omitempty"`
+	Care          *CareTarget    `json:"care,omitempty"`
+	Plugins       *PluginsTarget `json:"plugins,omitempty"`
+	Engine        *EngineTarget  `json:"engine,omitempty"`
 }
 
 // Results recorded in history.

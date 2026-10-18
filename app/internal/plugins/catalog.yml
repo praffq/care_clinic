@@ -1,0 +1,36 @@
+# Plugins offered by CARE Clinic.
+#
+# backend: presets for the Plugins card. "bundled" plugins are pip-installed
+# in the CARE backend image at the same commit (scripts/dev-images.sh and CI),
+# so enabling them needs no image build.
+#
+# frontend: module-federation remotes pre-baked in the care-frontend image at
+# /plugins/<slug>/ (deployments/frontend.Dockerfile PLUGIN_REMOTES). "required"
+# ones get a PlugConfig row at every clinic install, pointing at
+# https://<clinic host>/plugins/<slug>/assets/remoteEntry.js with "config".
+# Other frontend plugins are registered by a CARE admin in CARE's own plugin
+# settings (see docs/plugins.md).
+backend:
+  - id: care_multihost_files_be
+    label: Files on every address
+    description: Lets files open and upload when CARE is reached from more than one address, such as the clinic network and home access.
+    default: true
+    bundled: true
+    package: git+https://github.com/ohcnetwork/care_multihost_files_be.git
+    version: "@main"
+    configs:
+      ALLOWED_HOSTS: ["*.local", "*.ts.net"]
+  - id: care_filly
+    label: Filly
+    description: "AI scribe: Medispeak dictation that fills CARE forms. Needs a Medispeak API key and internet access; enable its frontend in CARE's plugin settings."
+    bundled: true
+    package: git+https://github.com/ohcnetwork/care_filly.git
+    version: "@develop"
+    required_configs: [MEDISPEAK_API_KEY, MEDISPEAK_BASE_URL]
+frontend:
+  - slug: care_onboarding_fe
+    label: CARE Onboarding
+    description: Guided first-time clinic setup; opens after the first admin login while CARE has no facility.
+    required: true
+    config:
+      redirect_after_login: true

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
@@ -110,8 +111,9 @@ func isNotFound(err error) bool {
 
 // Configure renders kit for host and uploads it with the clinic secrets. It
 // also makes the service send PROXY headers, which the Caddyfile requires.
-// Running containers pick the change up on the next Up.
-func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins []string, images []Image) error {
+// Running containers pick the change up on the next Up. plugs is the
+// ADDITIONAL_PLUGS JSON; empty means the catalog defaults.
+func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins []string, images []Image, plugs string) error {
 	sec, err := r.Secrets(ctx)
 	if err != nil {
 		return err
@@ -122,7 +124,7 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 	}
 	files, err := Render(kit, Config{
 		Host: host, Origins: origins, Images: images, Secrets: sec,
-		BackupCert: cert, BackupTZ: PosixTZ(time.Now()),
+		BackupCert: cert, BackupTZ: PosixTZ(time.Now()), AdditionalPlugs: plugs,
 	})
 	if err != nil {
 		return err
@@ -209,18 +211,40 @@ func imageTitle(img Image) string {
 
 // Install loads the images, configures the clinic for host and brings the
 // stack up migrated. It is safe to run again: secrets are kept and only
-// changed containers are recreated.
-func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins []string, images []Image) error {
+// changed containers are recreated. plugs is the ADDITIONAL_PLUGS for the
+// images (see updates.Coordinator.InstallPlugs); "" means the catalog defaults.
+func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins []string, images []Image, plugs string) error {
 	if err := r.Images(ctx, images); err != nil {
 		return err
 	}
-	if err := r.Configure(ctx, kit, host, origins, images); err != nil {
+	if err := r.Configure(ctx, kit, host, origins, images, plugs); err != nil {
 		return err
 	}
 	if err := r.Migrate(ctx); err != nil {
 		return err
 	}
-	return r.Up(ctx)
+	if err := r.Up(ctx); err != nil {
+		return err
+	}
+	return r.RegisterFrontendPlugins(ctx, host)
+}
+
+// RegisterFrontendPlugins writes the PlugConfig row of every required
+// catalog frontend plugin (plugins.RequiredFrontend) for host. Settings an
+// admin changed in CARE are kept; the URL follows host.
+func (r *Runtime) RegisterFrontendPlugins(ctx context.Context, host string) error {
+	for _, f := range plugins.RequiredFrontend() {
+		meta, err := f.Meta(host)
+		if err != nil {
+			return err
+		}
+		r.logf("Registering the %s frontend plugin", f.Label)
+		op := protocol.ManageCmd{Command: protocol.ManagePlugConfig, Slug: f.Slug, Meta: meta}
+		if err := r.Service.Agent().Op(ctx, op, nil, r.frames); err != nil {
+			return fmt.Errorf("register the %s frontend plugin: %w", f.Label, err)
+		}
+	}
+	return nil
 }
 
 // Migrate runs the one-shot migrate service.
@@ -263,7 +287,7 @@ func (r *Runtime) Down(ctx context.Context, purge bool) error {
 	}
 	ag := r.Service.Agent()
 	// The host keeps the backup recovery key: exported backups still need it.
-	names := []string{StackEnv, ClinicEnv, SecretsEnv, BackupCert}
+	names := []string{StackEnv, ClinicEnv, SecretsEnv, PluginsEnv, BackupCert}
 	for _, f := range kitFiles {
 		names = append(names, f.dst)
 	}
@@ -402,6 +426,24 @@ func (r *Runtime) InstalledImages(ctx context.Context) ([]Image, error) {
 		return nil, err
 	}
 	return ParseStackImages(data)
+}
+
+// InstalledPlugs returns the engine's ADDITIONAL_PLUGS, or "" when no
+// plugins.env is configured.
+func (r *Runtime) InstalledPlugs(ctx context.Context) (string, error) {
+	rc, err := r.Service.Agent().GetFile(ctx, protocol.FileAreaConfig, PluginsEnv)
+	if isNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	_ = rc.Close()
+	if err != nil {
+		return "", err
+	}
+	return ParsePluginsEnv(data)
 }
 
 // ParseStackImages reads the IMAGE_<ROLE>=repo@digest lines Render writes.

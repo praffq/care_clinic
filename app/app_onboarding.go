@@ -17,6 +17,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/service/install"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -165,6 +166,7 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 			return err
 		}
 		var e *clinic.Clinic
+		var u *updates.Coordinator
 		a.setupAttempt = &setupAttempt{
 			config: cfg,
 			prepare: func() error {
@@ -177,9 +179,24 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 				e = a.engine()
 				e.AdminPassword = adminPassword
 				e.Progress = a.progress()
+				// A clinic set up again keeps its recorded plugins.
+				var err error
+				if u, err = a.pluginCoordinator(ctx); err != nil {
+					a.logln("warning: plugins: " + err.Error())
+				} else if e.StackPlugs, err = u.InstallPlugs(); err != nil {
+					return err
+				}
 				return e.Setup()
 			},
-			start: func() error { return e.Start() },
+			start: func() error {
+				if err := e.Start(); err != nil || u == nil {
+					return err
+				}
+				if err := u.Reinstalled(ctx); err != nil {
+					return fmt.Errorf("CARE is running, but re-applying the clinic's plugins failed; retry them in Advanced: %w", err)
+				}
+				return nil
+			},
 		}
 		return a.setupAttempt.run()
 	}, true, "setup")

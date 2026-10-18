@@ -13,3 +13,7 @@
 
 # Generated demo update feed (demo/generate.sh)
 /demo/feed/
+
+# Go build output in app/ (go build without -o)
+/app/app
+/app/care-clinic-service

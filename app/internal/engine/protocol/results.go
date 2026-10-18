@@ -28,7 +28,9 @@ type StackStatusResult struct {
 }
 
 // ImageBuildResult is the result of OpImageBuild.
+// Ref is the local repository the image is tagged in; Ref@Digest pins it.
 type ImageBuildResult struct {
+	Ref    string `json:"ref"`
 	Digest Digest `json:"digest"`
 }
 

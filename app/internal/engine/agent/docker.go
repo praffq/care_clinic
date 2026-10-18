@@ -36,6 +36,8 @@ const (
 	envSuperuserPassword = "DJANGO_SUPERUSER_PASSWORD"
 	envManageUsername    = "CARE_MANAGE_USERNAME"
 	envManagePassword    = "CARE_MANAGE_PASSWORD"
+	envPlugSlug          = "CARE_PLUG_SLUG"
+	envPlugMeta          = "CARE_PLUG_META"
 
 	// changePasswordCode is run with manage.py shell -c; the username and
 	// password reach it through the environment, never through argv. It
@@ -60,6 +62,36 @@ except ValidationError as error:
 user.set_password(password)
 user.save()
 print("` + protocol.ManagePasswordSet + `", flush=True)`
+
+	// plugConfigCode upserts the PlugConfig row of protocol.ManagePlugConfig
+	// (slug and meta from the environment). The row's own keys win, except
+	// "url", so settings an admin changed in CARE survive a reinstall. The
+	// list is cached by CARE's viewset, so the cache key is cleared.
+	plugConfigCode = `import json, os
+from django.core.cache import cache
+from care.users.models import PlugConfig
+slug = os.environ["` + envPlugSlug + `"]
+want = json.loads(os.environ["` + envPlugMeta + `"])
+row = PlugConfig.objects.filter(slug=slug).first()
+meta = dict(row.meta) if row is not None and isinstance(row.meta, dict) else {}
+config = dict(want.get("config") or {})
+if isinstance(meta.get("config"), dict):
+    config.update(meta["config"])
+for key, value in want.items():
+    meta.setdefault(key, value)
+meta["url"] = want["url"]
+if "config" in want or config:
+    meta["config"] = config
+if row is None:
+    PlugConfig.objects.create(slug=slug, meta=meta)
+    print("plug_config " + slug + ": created", flush=True)
+elif row.meta != meta:
+    row.meta = meta
+    row.save(update_fields=["meta"])
+    print("plug_config " + slug + ": updated", flush=True)
+else:
+    print("plug_config " + slug + ": unchanged", flush=True)
+cache.delete("care_plug_viewset_list")`
 )
 
 // Command is one process invocation. Args[0] is the program; there is no
@@ -483,10 +515,6 @@ func (d *DockerExecutor) ImageLoad(ctx context.Context, op protocol.ImageLoad, t
 	return &protocol.OpError{Code: protocol.CodeDigestMismatch, Message: "loaded image does not match digest " + string(op.Digest)}
 }
 
-func (d *DockerExecutor) ImageBuild(context.Context, protocol.ImageBuild, Emitter) (protocol.ImageBuildResult, error) {
-	return protocol.ImageBuildResult{}, ErrNotImplemented
-}
-
 type imageRow struct {
 	ID         string `json:"ID"`
 	Repository string `json:"Repository"`
@@ -594,6 +622,11 @@ func (d *DockerExecutor) Manage(ctx context.Context, op protocol.ManageCmd, pass
 			args = append(args, manage...)
 			args = append(args, "shell", "-c", changePasswordCode)
 		}
+	case protocol.ManagePlugConfig:
+		env = []string{envPlugSlug + "=" + op.Slug, envPlugMeta + "=" + string(op.Meta)}
+		args = compose("exec", "-T", "-e", envPlugSlug, "-e", envPlugMeta, string(protocol.ServiceBackend))
+		args = append(args, manage...)
+		args = append(args, "shell", "-c", plugConfigCode)
 	case protocol.ManageSyncPermissionsRoles, protocol.ManageSyncValueset:
 		args = compose("exec", "-T", string(protocol.ServiceBackend))
 		args = append(args, manage...)

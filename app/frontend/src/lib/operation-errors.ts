@@ -7,6 +7,7 @@ const TITLES: Record<string, string> = {
   stop: "CARE couldn't stop",
   restart: "CARE couldn't restart",
   uninstall: "Removal didn't finish",
+  plugins: "The plugin change didn't finish",
 };
 
 export function operationError(action: string, cause: unknown): OperationError {
@@ -17,6 +18,8 @@ export function operationError(action: string, cause: unknown): OperationError {
       ? "Another operation is still running. Wait for it to finish before trying again."
       : /service isn't running|couldn't reach the CARE Clinic service/i.test(detail)
         ? "The CARE Clinic service isn't responding. Check its status on Overview, or open the log file for support."
-        : "The operation didn't finish. Try again, or open the log file for support.";
+        : action === "plugins"
+          ? "CARE Clinic put the previous plugins back. Check the plugin's package and settings, or open the log file for support."
+          : "The operation didn't finish. Try again, or open the log file for support.";
   return { action, title: TITLES[action] ?? "CARE couldn't finish that", message };
 }

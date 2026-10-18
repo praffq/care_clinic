@@ -24,6 +24,37 @@ var devTarballs = map[protocol.ImageRole]string{
 	protocol.ImageRoleBackup:   "care-backup",
 }
 
+// devBuilderTarballs maps builder roles to their dev tarball names.
+var devBuilderTarballs = map[protocol.ImageRole]string{
+	protocol.ImageRoleBackendBuilder:  "care-backend-builder",
+	protocol.ImageRoleFrontendBuilder: "care-frontend-builder",
+}
+
+// DevBuilders returns the builder images in dir that scripts/dev-images.sh
+// wrote (it builds them only on request); missing ones are skipped.
+func DevBuilders(dir string) ([]Image, error) {
+	var out []Image
+	for _, role := range protocol.BuilderRoles {
+		tarball := filepath.Join(dir, devBuilderTarballs[role]+".tar")
+		d, err := os.ReadFile(tarball + ".digest")
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		dg := protocol.Digest(strings.TrimSpace(string(d)))
+		if !dg.Valid() {
+			return nil, fmt.Errorf("%s.digest: invalid digest %q", tarball, dg)
+		}
+		repo, err := TarballRepo(tarball)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", tarball, err)
+		}
+		out = append(out, Image{Role: role, Repo: repo, Digest: dg, Tarball: tarball})
+	}
+	return out, nil
+}
+
 // DevImages returns the stack images in dir, as written by
 // scripts/dev-images.sh: <name>.tar plus <name>.tar.digest. overrides maps a
 // role to another tarball name, e.g. backend → care-backend-B.

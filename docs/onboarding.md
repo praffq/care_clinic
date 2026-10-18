@@ -131,5 +131,5 @@ Quitting the app does not stop the clinic.
 
 Reaching the control panel means the clinic is installed; it does not mean a
 facility, staff or clinical catalog exists in CARE. Facility setup happens in
-the CARE web application. The CARE Onboarding plugin was enabled by the old
-plugin system, which was removed in v2; it returns later via engine agent ops.
+the CARE web application. The CARE Onboarding frontend plugin is served by
+the clinic and enabled in CARE's admin dashboard ([plugins.md](plugins.md)).

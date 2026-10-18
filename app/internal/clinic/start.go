@@ -21,6 +21,9 @@ func (e *Clinic) Start() error {
 	if err := r.Up(e.context()); err != nil {
 		return err
 	}
+	if err := r.RegisterFrontendPlugins(e.context(), e.host()); err != nil {
+		return err
+	}
 	e.Progress.Finish(StepStart, "")
 	if err := e.createAdmin(); err != nil {
 		return err

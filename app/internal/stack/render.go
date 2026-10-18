@@ -9,11 +9,14 @@
 //     and hashes of bind-mounted files (so changes recreate the container)
 //   - clinic.env  origins the clinic is served on (CSRF, CORS, bucket URL)
 //   - secrets.env generated once on the host and never regenerated
+//   - plugins.env ADDITIONAL_PLUGS, the backend plugins CARE loads (it may
+//     hold plugin secrets)
 //   - backup-cert.pem the certificate backups are encrypted to, generated
 //     once with its recovery key, which stays on the host
 package stack
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,7 +26,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 )
 
 // kitFiles maps deployment kit paths to their flat upload names.
@@ -41,6 +46,7 @@ const (
 	StackEnv   = "stack.env"
 	ClinicEnv  = "clinic.env"
 	SecretsEnv = "secrets.env"
+	PluginsEnv = "plugins.env"
 )
 
 // RequiredRoles are the images the stack runs.
@@ -77,6 +83,10 @@ type Config struct {
 	// BackupTZ is the POSIX TZ the backup container's midnight is in; empty
 	// means UTC.
 	BackupTZ string
+	// AdditionalPlugs is CARE's ADDITIONAL_PLUGS JSON (plugins.AdditionalPlugs);
+	// empty means the catalog defaults. The backend image must have every
+	// plugin it lists installed.
+	AdditionalPlugs string
 }
 
 // Render returns the config area files: kit files under their upload names
@@ -135,7 +145,47 @@ func Render(kit fs.FS, c Config) (map[string][]byte, error) {
 	}
 	files[ClinicEnv] = clinic
 	files[SecretsEnv] = c.Secrets.Env()
+	pe, err := pluginsEnv(c.AdditionalPlugs)
+	if err != nil {
+		return nil, err
+	}
+	files[PluginsEnv] = pe
 	return files, nil
+}
+
+// pluginsEnv renders plugins.env. The value is single-quoted so compose
+// takes it literally (no interpolation, no comments); a quote inside JSON
+// strings is written as its \u0027 escape.
+func pluginsEnv(plugs string) ([]byte, error) {
+	if plugs == "" {
+		var err error
+		if plugs, err = plugins.AdditionalPlugs(plugins.Defaults()); err != nil {
+			return nil, err
+		}
+	}
+	var v []map[string]any
+	if err := json.Unmarshal([]byte(plugs), &v); err != nil {
+		return nil, fmt.Errorf("ADDITIONAL_PLUGS is not a JSON list: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(plugs)); err != nil {
+		return nil, err
+	}
+	val := strings.ReplaceAll(buf.String(), "'", `\u0027`)
+	return []byte("ADDITIONAL_PLUGS='" + val + "'\n"), nil
+}
+
+// ParsePluginsEnv returns the ADDITIONAL_PLUGS value of a plugins.env.
+func ParsePluginsEnv(data []byte) (string, error) {
+	env, err := dotenv.UnmarshalBytesWithLookup(data, nil)
+	if err != nil {
+		return "", err
+	}
+	v, ok := env["ADDITIONAL_PLUGS"]
+	if !ok {
+		return "", fmt.Errorf("%s: no ADDITIONAL_PLUGS", PluginsEnv)
+	}
+	return v, nil
 }
 
 // clinicEnv lists every origin the clinic is served on.

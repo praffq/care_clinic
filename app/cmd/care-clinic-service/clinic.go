@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -23,7 +22,9 @@ commands:
   install --images <dir> [--deployments dir] [--backend care-backend-B]
           [--origin https://host ...] [--admin user --admin-password pw]
                      load the dev images (scripts/dev-images.sh), upload the
-                     config for <mdns_name>.local, migrate and start
+                     config for <mdns_name>.local, migrate and start, then
+                     re-apply the recorded plugins (--state, --feed: see
+                     ctl update)
   up | stop          start (waits for healthy) or stop the stack
   migrate            run database migrations
   status             per-service state
@@ -80,21 +81,18 @@ func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 func clinicInstall(ctx context.Context, c *control.Client, rt *stack.Runtime, args []string) error {
-	fs := flag.NewFlagSet("clinic install", flag.ContinueOnError)
-	images := fs.String("images", "", "directory written by scripts/dev-images.sh")
-	kit := fs.String("deployments", "deployments", "deployment kit directory")
-	backend := fs.String("backend", "", "backend tarball name, e.g. care-backend-B (default care-backend-A)")
-	admin := fs.String("admin", "", "create this superuser after starting")
-	adminPW := fs.String("admin-password", "", "password for --admin")
-	var origins listFlag
-	fs.Var(&origins, "origin", "extra https origin the clinic is served on (repeatable)")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || *images == "" || (*admin == "") != (*adminPW == "") {
+	f := newCoordFlags("clinic install")
+	*f.desktop = "0.0.0"
+	backend := f.fs.String("backend", "", "backend tarball name, e.g. care-backend-B (default care-backend-A)")
+	admin := f.fs.String("admin", "", "create this superuser after starting")
+	adminPW := f.fs.String("admin-password", "", "password for --admin")
+	if err := f.fs.Parse(args); err != nil || f.fs.NArg() > 0 || *f.images == "" || (*admin == "") != (*adminPW == "") {
 		return errClinicUsage
 	}
-	if _, err := os.Stat(*kit + "/docker-compose.yml"); err != nil {
-		return fmt.Errorf("deployment kit: %w (pass --deployments)", err)
+	if err := f.needKit(); err != nil {
+		return err
 	}
-	imgs, err := stack.DevImages(*images, map[protocol.ImageRole]string{protocol.ImageRoleBackend: *backend})
+	imgs, err := stack.DevImages(*f.images, map[protocol.ImageRole]string{protocol.ImageRoleBackend: *backend})
 	if err != nil {
 		return err
 	}
@@ -103,8 +101,21 @@ func clinicInstall(ctx context.Context, c *control.Client, rt *stack.Runtime, ar
 		return err
 	}
 	host := cfg.MDNSName + ".local"
-	if err := rt.Install(ctx, os.DirFS(*kit), host, origins, imgs); err != nil {
+	// The recorded plugin set survives a reinstall: its bundled plugins are
+	// installed with the images, its custom ones rebuilt afterwards.
+	u, err := f.open(ctx, c)
+	if err != nil {
 		return err
+	}
+	plugs, err := u.InstallPlugs()
+	if err != nil {
+		return err
+	}
+	if err := rt.Install(ctx, os.DirFS(*f.kit), host, f.origins, imgs, plugs); err != nil {
+		return err
+	}
+	if err := u.Reinstalled(ctx); err != nil {
+		return fmt.Errorf("CARE is installed, but re-applying its plugins failed: %w", err)
 	}
 	if *admin != "" {
 		err := rt.CreateSuperuser(ctx, *admin, *adminPW)

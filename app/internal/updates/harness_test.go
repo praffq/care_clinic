@@ -41,6 +41,7 @@ type spec struct {
 	published time.Time // zero: published(rev)
 	expires   time.Time // zero: a year later
 	careNeeds string    // care requires.desktop (default ">=1.0.0")
+	builders  bool      // CARE releases publish builders
 }
 
 type eng struct {
@@ -237,7 +238,7 @@ func (h *harness) build(s spec) []byte {
 		})
 	}
 	for _, name := range s.cares {
-		cares = append(cares, map[string]any{
+		r := map[string]any{
 			"version": careVersion(name), "released_at": careReleased(name), "migrations": true,
 			"requires": map[string]any{"desktop": s.careNeeds, "engine": ">=0.0.1"},
 			"images": map[string]any{
@@ -246,7 +247,14 @@ func (h *harness) build(s spec) []byte {
 				"caddy":    h.image("caddy", "caddy", false),
 				"backup":   h.image("backup", "backup", false),
 			},
-		})
+		}
+		if s.builders {
+			r["builders"] = map[string]any{
+				"backend-builder":  h.image("care-backend-builder", "builder-"+name, true),
+				"frontend-builder": h.image("care-frontend-builder", "fe-builder-"+name, true),
+			}
+		}
+		cares = append(cares, r)
 	}
 	m := map[string]any{
 		"schema": 1, "revision": s.rev, "published_at": s.published, "expires": s.expires,
