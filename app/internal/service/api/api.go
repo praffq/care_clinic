@@ -73,6 +73,49 @@ type ServiceStatus struct {
 	Slots   slots.Pointer  `json:"slots"`
 	Forward *ForwardStatus `json:"forward,omitempty"`
 	MDNS    *MDNSStatus    `json:"mdns,omitempty"`
+	Backups *BackupStatus  `json:"backups,omitempty"`
+}
+
+// BackupStatus is the state of the backup export: the service copies every
+// complete set out of the engine into Dir, then deletes it there.
+type BackupStatus struct {
+	Dir string `json:"dir"`
+	// LastExported is the newest set copied out and verified, at VerifiedAt.
+	LastExported string    `json:"last_exported,omitempty"`
+	VerifiedAt   time.Time `json:"verified_at,omitzero"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
+	// CheckedAt is the last export pass that reached the engine.
+	CheckedAt time.Time `json:"checked_at,omitzero"`
+	// Pending complete sets are still in the engine, oldest from
+	// OldestPendingAt.
+	Pending         int       `json:"pending"`
+	OldestPendingAt time.Time `json:"oldest_pending_at,omitzero"`
+	// Critical is set when more than MaxPendingBackups sets are waiting.
+	Critical bool `json:"critical,omitempty"`
+	// Message explains a problem, e.g. "not copied out since ...".
+	Message string `json:"message,omitempty"`
+}
+
+// MaxPendingBackups is how many sets may wait in the engine before the
+// backup status turns critical.
+const MaxPendingBackups = 2
+
+// HostBackup is an exported set in the host backup directory.
+type HostBackup struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	Size      int64     `json:"size"`
+	Path      string    `json:"path"`
+}
+
+// BackupList is GET /v1/backups: sets on the host and still in the engine.
+type BackupList struct {
+	Dir    string               `json:"dir"`
+	Host   []HostBackup         `json:"host"`
+	Engine []protocol.BackupSet `json:"engine"`
+	// EngineError is set when the engine's sets could not be listed.
+	EngineError string `json:"engine_error,omitempty"`
 }
 
 // ForwardStatus describes the host listeners that forward to the engine.
@@ -116,6 +159,8 @@ type ServiceConfig struct {
 	// ProxyProtocol prefixes every forwarded connection with a PROXY v2
 	// header; the guest's Caddy must expect it.
 	ProxyProtocol bool `json:"proxy_protocol"`
+	// BackupDir is the host directory backups are exported to.
+	BackupDir string `json:"backup_dir"`
 }
 
 // ServiceConfigUpdate is the body of POST /v1/service/config; omitted
@@ -123,6 +168,7 @@ type ServiceConfig struct {
 type ServiceConfigUpdate struct {
 	MDNSName      *string `json:"mdns_name,omitempty"`
 	ProxyProtocol *bool   `json:"proxy_protocol,omitempty"`
+	BackupDir     *string `json:"backup_dir,omitempty"`
 }
 
 // SlotList is GET /v1/engine/slots.

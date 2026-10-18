@@ -17,17 +17,14 @@ import (
 )
 
 // ManifestName is the file that marks a backup set as complete.
-const ManifestName = "manifest.json"
+const ManifestName = protocol.BackupManifestName
 
 const maxManifestBytes = 1 << 20
 
 var sha256HexRE = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // Manifest is the on-disk manifest.json of a backup set.
-type Manifest struct {
-	CreatedAt time.Time             `json:"created_at"`
-	Files     []protocol.BackupFile `json:"files"`
-}
+type Manifest = protocol.BackupManifest
 
 func validBackupID(id string) bool {
 	return protocol.DBRestore{BackupID: id}.Validate() == nil && id != "." && id != ".."
@@ -41,6 +38,12 @@ func readManifest(root *os.Root, id string) (*Manifest, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	return decodeManifest(f, id)
+}
+
+// decodeManifest parses a manifest and checks its entries; a manifest that
+// names an id must name id.
+func decodeManifest(f io.Reader, id string) (*Manifest, error) {
 	var m Manifest
 	dec := json.NewDecoder(io.LimitReader(f, maxManifestBytes))
 	if err := dec.Decode(&m); err != nil {
@@ -49,10 +52,15 @@ func readManifest(root *os.Root, id string) (*Manifest, error) {
 	if len(m.Files) == 0 {
 		return nil, errors.New("manifest lists no files")
 	}
+	if m.ID != "" && m.ID != id {
+		return nil, errors.New("manifest belongs to backup " + m.ID)
+	}
+	seen := map[string]bool{}
 	for _, bf := range m.Files {
-		if !protocol.ValidFileName(bf.Name) || bf.Name == ManifestName || !sha256HexRE.MatchString(bf.SHA256) || bf.Size < 0 {
+		if !protocol.ValidFileName(bf.Name) || bf.Name == ManifestName || !sha256HexRE.MatchString(bf.SHA256) || bf.Size < 0 || seen[bf.Name] {
 			return nil, errors.New("manifest has an invalid file entry")
 		}
+		seen[bf.Name] = true
 	}
 	return &m, nil
 }

@@ -154,8 +154,10 @@ func (f *FakeExecutor) Manage(ctx context.Context, op protocol.ManageCmd, passwo
 	return err
 }
 
-func (f *FakeExecutor) BackupRun(ctx context.Context, em Emitter) error {
-	return f.none(ctx, "BackupRun", &protocol.BackupRun{}, em)
+func (f *FakeExecutor) BackupRun(ctx context.Context, em Emitter) (protocol.BackupRunResult, error) {
+	res, err := f.do(ctx, "BackupRun", &protocol.BackupRun{}, em)
+	r, _ := res.(protocol.BackupRunResult)
+	return r, err
 }
 
 func (f *FakeExecutor) Containers(context.Context) ([]string, error) {

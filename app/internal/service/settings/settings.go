@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
@@ -26,13 +27,16 @@ type Store struct {
 	cfg api.ServiceConfig
 }
 
-// Open loads path, using defaults for a missing file or missing fields.
-// onChange, if set, is called after every successful Update. When the file
+// Open loads path, using defaults for a missing file or missing fields
+// (DefaultMDNSName when defaults has no name). onChange, if set, is called after every successful Update. When the file
 // cannot be read or is invalid, Open returns the error together with a Store
 // holding the defaults, so the service can still come up; the next Update
 // replaces the file.
-func Open(path string, onChange func(api.ServiceConfig)) (*Store, error) {
-	s := &Store{path: path, onChange: onChange, cfg: api.ServiceConfig{MDNSName: DefaultMDNSName}}
+func Open(path string, defaults api.ServiceConfig, onChange func(api.ServiceConfig)) (*Store, error) {
+	if defaults.MDNSName == "" {
+		defaults.MDNSName = DefaultMDNSName
+	}
+	s := &Store{path: path, onChange: onChange, cfg: defaults}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -45,7 +49,10 @@ func Open(path string, onChange func(api.ServiceConfig)) (*Store, error) {
 		return s, fmt.Errorf("%s: %w", path, err)
 	}
 	if cfg.MDNSName == "" {
-		cfg.MDNSName = DefaultMDNSName
+		cfg.MDNSName = defaults.MDNSName
+	}
+	if cfg.BackupDir == "" {
+		cfg.BackupDir = defaults.BackupDir
 	}
 	if err := validate(&cfg); err != nil {
 		return s, fmt.Errorf("%s: %w", path, err)
@@ -73,6 +80,9 @@ func (s *Store) Update(u api.ServiceConfigUpdate) (api.ServiceConfig, error) {
 	if u.ProxyProtocol != nil {
 		cfg.ProxyProtocol = *u.ProxyProtocol
 	}
+	if u.BackupDir != nil {
+		cfg.BackupDir = *u.BackupDir
+	}
 	err := validate(&cfg)
 	if err == nil {
 		err = writeAtomic(s.path, cfg)
@@ -94,6 +104,14 @@ func validate(cfg *api.ServiceConfig) error {
 	cfg.MDNSName = mdns.Label(cfg.MDNSName)
 	if err := mdns.ValidateLabel(cfg.MDNSName); err != nil {
 		return fmt.Errorf("%w: mdns_name: %w", api.ErrInvalidConfig, err)
+	}
+	d := cfg.BackupDir
+	if !filepath.IsAbs(d) || strings.ContainsAny(d, "\x00\r\n") {
+		return fmt.Errorf("%w: backup_dir: %q is not an absolute path", api.ErrInvalidConfig, d)
+	}
+	cfg.BackupDir = filepath.Clean(d)
+	if filepath.Dir(cfg.BackupDir) == cfg.BackupDir {
+		return fmt.Errorf("%w: backup_dir: %q is a filesystem root", api.ErrInvalidConfig, d)
 	}
 	return nil
 }

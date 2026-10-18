@@ -13,7 +13,9 @@
 //	PUT    /v1/files/{area}/{name}    upload (atomic, mode 0600)
 //	GET    /v1/files/{area}/{name}    download
 //	DELETE /v1/files/{area}/{name}    remove
-//	GET    /v1/backups                []protocol.BackupSet
+//	GET    /v1/backups                []protocol.BackupSet (complete sets have a
+//	                                  manifest.json naming their id and each
+//	                                  file's size and sha256)
 //	GET    /v1/backups/{id}/{file}    stream a file listed in the set's manifest
 //	DELETE /v1/backups/{id}           remove a backup set
 //	GET    /v1/diagnostics            protocol.DiagnosticsReport (redacted)

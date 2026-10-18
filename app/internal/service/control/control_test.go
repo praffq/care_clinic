@@ -39,6 +39,7 @@ type env struct {
 	store   *slots.Store
 	factory *supervisortest.Factory
 	cfgPath string
+	backups fakeBackups
 
 	mu      sync.Mutex
 	mdns    api.MDNSStatus
@@ -88,7 +89,7 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 	staging := filepath.Join(dir, "staging")
 	e := &env{cl: control.NewClient(sock), sock: sock, staging: staging, store: store, factory: f, cfgPath: filepath.Join(dir, "config.json")}
 	e.mdns = api.MDNSStatus{Enabled: true, Name: "care"}
-	cfg, err := settings.Open(e.cfgPath, func(c api.ServiceConfig) {
+	cfg, err := settings.Open(e.cfgPath, api.ServiceConfig{BackupDir: filepath.Join(dir, "backups")}, func(c api.ServiceConfig) {
 		e.mu.Lock()
 		e.applied = append(e.applied, c)
 		e.mu.Unlock()
@@ -111,6 +112,7 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 			return e.mdns
 		},
 		Settings: cfg,
+		Backups:  &e.backups,
 	}), ReadHeaderTimeout: time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
@@ -565,7 +567,7 @@ func TestServiceConfig(t *testing.T) {
 	}
 	name, on := "Clinic-East.local", true
 	cfg, err = e.cl.UpdateConfig(t.Context(), api.ServiceConfigUpdate{MDNSName: &name, ProxyProtocol: &on})
-	if err != nil || cfg != (api.ServiceConfig{MDNSName: "clinic-east", ProxyProtocol: true}) {
+	if err != nil || cfg.MDNSName != "clinic-east" || !cfg.ProxyProtocol || cfg.BackupDir != filepath.Join(filepath.Dir(e.cfgPath), "backups") {
 		t.Fatalf("set = %+v, %v", cfg, err)
 	}
 	if b, err := os.ReadFile(e.cfgPath); err != nil || !strings.Contains(string(b), `"clinic-east"`) {
@@ -598,4 +600,47 @@ func rawPost(t *testing.T, sock, path, body string) (int, error) {
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+type fakeBackups struct {
+	mu      sync.Mutex
+	exports int
+}
+
+func (f *fakeBackups) Status() api.BackupStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := api.BackupStatus{Dir: "/backups", Pending: 3 - f.exports}
+	if f.exports == 0 {
+		st.Critical, st.Message = true, "3 backups are waiting in the engine"
+	}
+	return st
+}
+
+func (f *fakeBackups) List(context.Context) (api.BackupList, error) {
+	return api.BackupList{Dir: "/backups", Host: []api.HostBackup{{ID: "daily-1"}}}, nil
+}
+
+func (f *fakeBackups) Export(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exports++
+	return errors.New("engine unreachable")
+}
+
+func TestBackupRoutes(t *testing.T) {
+	e := newEnv(t, nil)
+	st, err := e.cl.Status(t.Context())
+	if err != nil || st.Backups == nil || !st.Backups.Critical {
+		t.Fatalf("status = %+v, %v", st.Backups, err)
+	}
+	if bs, err := e.cl.BackupStatus(t.Context()); err != nil || bs.Pending != 3 {
+		t.Fatalf("backup status = %+v, %v", bs, err)
+	}
+	if l, err := e.cl.Backups(t.Context()); err != nil || len(l.Host) != 1 || l.Host[0].ID != "daily-1" {
+		t.Fatalf("list = %+v, %v", l, err)
+	}
+	if bs, err := e.cl.ExportBackups(t.Context()); err != nil || bs.Pending != 2 || bs.Critical {
+		t.Fatalf("export = %+v, %v", bs, err)
+	}
 }

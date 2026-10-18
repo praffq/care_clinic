@@ -1,4 +1,5 @@
-// Package stacktest provides a fake host service for stack.Runtime tests.
+// Package stacktest provides a fake host service, relaying to a real agent
+// server over a fake executor, for stack and backup tests.
 package stacktest
 
 import (
@@ -17,8 +18,9 @@ import (
 // Service is a control client whose relay reaches a real agent server
 // backed by Fake.
 type Service struct {
-	Fake  *agent.FakeExecutor
-	Files string // agent files root
+	Fake    *agent.FakeExecutor
+	Files   string // agent files root
+	Backups string // agent backups root
 
 	srv     *httptest.Server
 	mu      sync.Mutex
@@ -29,9 +31,9 @@ type Service struct {
 func New(t testing.TB) *Service {
 	t.Helper()
 	dir := t.TempDir()
-	s := &Service{Fake: &agent.FakeExecutor{}, Files: filepath.Join(dir, "files")}
+	s := &Service{Fake: &agent.FakeExecutor{}, Files: filepath.Join(dir, "files"), Backups: filepath.Join(dir, "backups")}
 	s.srv = httptest.NewServer(agent.NewServer(agent.Config{
-		DataRoot: dir, FilesRoot: s.Files, BackupsRoot: filepath.Join(dir, "backups"), Log: agent.NewLogRing(10),
+		DataRoot: dir, FilesRoot: s.Files, BackupsRoot: s.Backups, Log: agent.NewLogRing(10),
 	}, s.Fake))
 	t.Cleanup(s.srv.Close)
 	return s

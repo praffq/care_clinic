@@ -84,7 +84,7 @@ func TestDecodeOp(t *testing.T) {
 		{"dump traversal", OpDBDump, `{"label":"../x"}`, "invalid_params:label"},
 		{"dump too long", OpDBDump, `{"label":"` + strings.Repeat("a", 41) + `"}`, "invalid_params:label"},
 		// db.restore
-		{"restore ok", OpDBRestore, `{"backup_id":"20260101T120000Z","target_time":"2026-01-01T12:00:00Z"}`, ""},
+		{"restore ok", OpDBRestore, `{"backup_id":"20260101T120000Z"}`, ""},
 		{"restore traversal", OpDBRestore, `{"backup_id":"../x"}`, "invalid_params:backup_id"},
 		{"restore slash", OpDBRestore, `{"backup_id":"a/b"}`, "invalid_params:backup_id"},
 		{"restore empty", OpDBRestore, `{}`, "invalid_params:backup_id"},

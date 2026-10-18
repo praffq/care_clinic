@@ -234,10 +234,11 @@ func (o DBDump) Validate() error {
 	return v.err()
 }
 
-// DBRestore restores BackupID, optionally to a point in time.
+// DBRestore replaces the clinic's database and uploaded files with the
+// backup set BackupID, whose files, manifest (BackupManifestName) and
+// recovery key (BackupKeyName) were uploaded to FileAreaRestoreInput.
 type DBRestore struct {
-	BackupID   string     `json:"backup_id"`
-	TargetTime *time.Time `json:"target_time,omitempty"`
+	BackupID string `json:"backup_id"`
 }
 
 func (DBRestore) OpName() string { return OpDBRestore }
@@ -274,7 +275,7 @@ func (o ManageCmd) Validate() error {
 	return v.err()
 }
 
-// BackupRun triggers the backup service immediately.
+// BackupRun takes a backup set now and returns its id (BackupRunResult).
 type BackupRun struct{}
 
 func (BackupRun) OpName() string  { return OpBackupRun }

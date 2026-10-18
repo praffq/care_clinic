@@ -3,12 +3,14 @@
 // nothing here runs docker on the host.
 //
 // The deployment kit (the repo's deployments/ directory) is uploaded mostly
-// verbatim to the agent's config file area, plus three generated files:
+// verbatim to the agent's config file area, plus generated files:
 //
 //   - stack.env   compose interpolation: digest-pinned images, the host name
 //     and hashes of bind-mounted files (so changes recreate the container)
 //   - clinic.env  origins the clinic is served on (CSRF, CORS, bucket URL)
 //   - secrets.env generated once on the host and never regenerated
+//   - backup-cert.pem the certificate backups are encrypted to, generated
+//     once with its recovery key, which stays on the host
 package stack
 
 import (
@@ -31,6 +33,7 @@ var kitFiles = []struct{ src, dst string }{
 	{"Caddyfile", "Caddyfile"},
 	{"minio/entrypoint.sh", "minio-entrypoint.sh"},
 	{"setup/index.html", "setup.html"},
+	{"scripts/backup.sh", "backup.sh"},
 }
 
 // Generated file names in the config area.
@@ -43,7 +46,7 @@ const (
 // RequiredRoles are the images the stack runs.
 var RequiredRoles = []protocol.ImageRole{
 	protocol.ImageRoleBackend, protocol.ImageRoleFrontend, protocol.ImageRoleCaddy,
-	protocol.ImageRolePostgres, protocol.ImageRoleRedis, protocol.ImageRoleSilo,
+	protocol.ImageRolePostgres, protocol.ImageRoleRedis, protocol.ImageRoleSilo, protocol.ImageRoleBackup,
 }
 
 // homeAccessOrigin is where Tailscale serve exposes the clinic.
@@ -69,6 +72,11 @@ type Config struct {
 	Origins []string
 	Images  []Image
 	Secrets Secrets
+	// BackupCert is the PEM certificate backups are encrypted to.
+	BackupCert []byte
+	// BackupTZ is the POSIX TZ the backup container's midnight is in; empty
+	// means UTC.
+	BackupTZ string
 }
 
 // Render returns the config area files: kit files under their upload names
@@ -79,6 +87,16 @@ func Render(kit fs.FS, c Config) (map[string][]byte, error) {
 	}
 	if err := c.Secrets.validate(); err != nil {
 		return nil, err
+	}
+	if _, err := ParseBackupCert(c.BackupCert); err != nil {
+		return nil, err
+	}
+	tz := c.BackupTZ
+	if tz == "" {
+		tz = "UTC0"
+	}
+	if strings.ContainsAny(tz, " \t\r\n\"'$") {
+		return nil, fmt.Errorf("invalid backup TZ %q", tz)
 	}
 	files := map[string][]byte{}
 	for _, f := range kitFiles {
@@ -106,7 +124,10 @@ func Render(kit fs.FS, c Config) (map[string][]byte, error) {
 	fmt.Fprintf(&env, "CARE_HOST=%s\n", c.Host)
 	fmt.Fprintf(&env, "CADDY_CONFIG_SHA=%s\n", digest(files["Caddyfile"], files["setup.html"]))
 	fmt.Fprintf(&env, "MINIO_CONFIG_SHA=%s\n", digest(files["minio-entrypoint.sh"]))
+	fmt.Fprintf(&env, "BACKUP_TZ=%s\n", tz)
+	fmt.Fprintf(&env, "BACKUP_CONFIG_SHA=%s\n", digest(files["backup.sh"], c.BackupCert))
 	files[StackEnv] = []byte(env.String())
+	files[BackupCert] = c.BackupCert
 
 	clinic, err := clinicEnv(c.Host, c.Origins)
 	if err != nil {

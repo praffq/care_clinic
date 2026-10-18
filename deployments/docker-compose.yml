@@ -1,6 +1,6 @@
 # The CARE stack. It runs inside the engine VM as compose project "care":
 # the host uploads this file as compose.yml, together with backend.env,
-# Caddyfile, minio-entrypoint.sh, setup.html and the generated stack.env
+# Caddyfile, minio-entrypoint.sh, setup.html, backup.sh, backup-cert.pem and the generated stack.env
 # (interpolation: digest-pinned images, host name), clinic.env (served
 # origins) and secrets.env (generated once). See app/internal/stack.
 name: care
@@ -110,6 +110,28 @@ services:
         ./wait_for_db.sh && ./wait_for_redis.sh && touch /tmp/healthy &&
         exec celery --app=config.celery_app beat --loglevel=info
     depends_on: *after-migrate
+
+  # Encrypted backup sets in /var/lib/care/backups at midnight (BACKUP_TZ, the
+  # host's zone) and on backup.run; db.restore runs it once with "restore".
+  # The host service copies complete sets out and deletes them here.
+  backup:
+    image: ${IMAGE_BACKUP:?IMAGE_BACKUP not set}
+    pull_policy: never
+    restart: unless-stopped
+    env_file: [./backend.env, ./secrets.env]
+    environment:
+      TZ: ${BACKUP_TZ:-UTC0}
+    labels:
+      care.config: ${BACKUP_CONFIG_SHA:-}
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ./backup-cert.pem:/keys/backup-cert.pem:ro
+      - /var/lib/care/backups:/backups
+      - /var/lib/care/files/restore-input:/restore-input:ro
+      - minio-data:/minio-data
+    depends_on:
+      db: {condition: service_healthy}
 
   frontend:
     image: ${IMAGE_FRONTEND:?IMAGE_FRONTEND not set}

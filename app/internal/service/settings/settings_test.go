@@ -9,15 +9,17 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
 
+var defs = api.ServiceConfig{BackupDir: "/Library/Application Support/care-clinic/backups"}
+
 func TestDefaultsAndPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	var applied []api.ServiceConfig
-	s, err := Open(path, func(c api.ServiceConfig) { applied = append(applied, c) })
+	s, err := Open(path, defs, func(c api.ServiceConfig) { applied = append(applied, c) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Get().MDNSName; got != DefaultMDNSName {
-		t.Fatalf("default name = %q", got)
+	if got := s.Get(); got.MDNSName != DefaultMDNSName || got.BackupDir != defs.BackupDir {
+		t.Fatalf("defaults = %+v", got)
 	}
 	got, err := s.Update(api.ServiceConfigUpdate{MDNSName: ptr(" Clinic-2.local. ")})
 	if err != nil {
@@ -33,10 +35,10 @@ func TestDefaultsAndPersist(t *testing.T) {
 		t.Fatalf("temp files left: %v", left)
 	}
 	got, err = s.Update(api.ServiceConfigUpdate{ProxyProtocol: ptr(true)})
-	if err != nil || got != (api.ServiceConfig{MDNSName: "clinic-2", ProxyProtocol: true}) {
+	if err != nil || got != (api.ServiceConfig{MDNSName: "clinic-2", ProxyProtocol: true, BackupDir: defs.BackupDir}) {
 		t.Fatalf("partial update = %+v, %v", got, err)
 	}
-	s2, err := Open(path, nil)
+	s2, err := Open(path, defs, nil)
 	if err != nil || s2.Get() != got {
 		t.Fatalf("reopen: %+v %v", s2.Get(), err)
 	}
@@ -46,7 +48,7 @@ func ptr[T any](v T) *T { return &v }
 
 func TestSetRejectsInvalidName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	s, err := Open(path, func(api.ServiceConfig) { t.Fatal("applied an invalid config") })
+	s, err := Open(path, defs, func(api.ServiceConfig) { t.Fatal("applied an invalid config") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +68,36 @@ func TestOpenRejectsCorruptFile(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		s, err := Open(path, nil)
+		s, err := Open(path, defs, nil)
 		if err == nil {
 			t.Errorf("Open accepted %q", body)
 		}
 		if s == nil || s.Get().MDNSName != DefaultMDNSName {
 			t.Errorf("no default store for %q: %+v", body, s)
 		}
+	}
+}
+
+func TestBackupDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	s, err := Open(path, defs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr("/Volumes/USB/care//backups/")})
+	if err != nil || got.BackupDir != "/Volumes/USB/care/backups" {
+		t.Fatalf("set = %+v, %v", got, err)
+	}
+	for _, d := range []string{"", "relative/dir", "/", "/a\nb"} {
+		if _, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr(d)}); !errors.Is(err, api.ErrInvalidConfig) {
+			t.Errorf("Update(%q) = %v", d, err)
+		}
+	}
+	// A config without backup_dir picks up the default.
+	if err := os.WriteFile(path, []byte(`{"mdns_name":"care"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if s2, err := Open(path, defs, nil); err != nil || s2.Get().BackupDir != defs.BackupDir {
+		t.Fatalf("reopen = %+v, %v", s2.Get(), err)
 	}
 }
