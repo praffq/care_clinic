@@ -17,11 +17,20 @@ depend() {
 }
 
 start_pre() {
+	local f=/var/lib/care/.data-schema supported current
+	if [ ! -e "$f" ]; then
+		eerror "FATAL: data schema file $f is missing (data disk not initialised by care-init); refusing to start"
+		return 1
+	fi
+	current=$(cat "$f" 2>/dev/null)
 	supported=$(cat /etc/care-engine/data-schema)
-	current=$(cat /var/lib/care/.data-schema 2>/dev/null)
 	case "$current" in
-	''|*[!0-9]*)
-		eerror "/var/lib/care/.data-schema is missing or invalid ('$current'); refusing to start"
+	'')
+		eerror "FATAL: data schema file $f is empty although the data disk is initialised (interrupted first boot or corruption); refusing to start, data left untouched"
+		return 1
+		;;
+	*[!0-9]*)
+		eerror "FATAL: data schema file $f is invalid ('$current'); refusing to start, data left untouched"
 		return 1
 		;;
 	esac

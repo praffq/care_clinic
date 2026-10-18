@@ -59,7 +59,12 @@ The initramfs (`initramfs/init`):
    `/run` … are writable but ephemeral);
 5. mounts the data disk at `/var/lib`, creates `/var/lib/docker`,
    `/var/lib/care/{clinic,backups,builds,logs}`, and writes `1` to
-   `/var/lib/care/.data-schema` on first init;
+   `/var/lib/care/.data-schema` on first init. The write is crash-safe: the
+   directories are synced first, then the value goes to a temp file that is
+   fsynced and renamed into place, and the filesystem is synced, so a hard
+   VM kill leaves the marker either absent (initialised again on the next
+   boot) or complete. An existing marker that is empty or not a number is
+   never rewritten: the boot fails with a FATAL message naming the file;
 6. bind-mounts `/var/lib/care/logs` on `/var/log` so logs persist;
 7. `switch_root`s into OpenRC.
 
@@ -71,7 +76,8 @@ OpenRC then brings up networking (DHCP on `eth0`), chrony, crond, `dockerd`,
 and `care-engine-agent`. The agent only *uses* docker (not *needs*), so
 `/v1/status` keeps answering with `docker_ready: false` when dockerd fails. The
 agent service refuses to start (and logs why) when
-`/var/lib/care/.data-schema` is newer than the schema this engine supports
+`/var/lib/care/.data-schema` is missing, empty or invalid (each with its own
+FATAL message), or newer than the schema this engine supports
 (`/etc/care-engine/data-schema`).
 
 ### Logs
