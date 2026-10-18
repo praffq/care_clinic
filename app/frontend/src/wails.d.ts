@@ -56,6 +56,7 @@ declare global {
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
+          ApplySettings(files: string[], adminPassword: string): Promise<void>;
           PluginCatalog(): Promise<PluginPreset[]>;
           FrontendPlugins(): Promise<FrontendPlugin[]>;
           ListPlugins(): Promise<Plugin[]>;

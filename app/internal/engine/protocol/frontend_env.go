@@ -23,26 +23,48 @@ var (
 	feCompsRE     = regexp.MustCompile(`^(?:\*|[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*)?$`)
 	feAppsRE      = regexp.MustCompile(`^[A-Za-z0-9_./@:,-]{0,1000}$`)
 	feSiteKeyRE   = regexp.MustCompile(`^[A-Za-z0-9_-]{0,100}$`)
-	feUUIDRE      = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	feUUIDRE      = regexp.MustCompile(`^(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	feNumberRE    = regexp.MustCompile(`^[0-9]{0,6}$`)
+	feCountryRE   = regexp.MustCompile(`^(?:[A-Z]{2})?$`)
+	feCodeRE      = regexp.MustCompile(`^[a-z0-9-]{0,40}$`)
+	feToastRE     = regexp.MustCompile(`^(?:(?:top|bottom)-(?:left|right|center))?$`)
 )
 
 var frontendBuildEnv = map[string]*regexp.Regexp{
-	"REACT_APP_TITLE":                               feTitleRE,
-	"REACT_ALLOWED_LOCALES":                         feLocalesRE,
-	"REACT_DEFAULT_ENCOUNTER_TYPE":                  feEncounterRE,
-	"REACT_ALLOWED_ENCOUNTER_CLASSES":               feClassesRE,
-	"REACT_ENABLE_MINIMAL_PATIENT_REGISTRATION":     feBoolRE,
-	"REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED": feDigitRE,
-	"REACT_DEFAULT_PAYMENT_METHOD":                  fePaymentRE,
-	"REACT_DEFAULT_PAYMENT_TERMS":                   feTextRE,
-	"REACT_INVENTORY_DEFAULT_TAX_INCLUSIVE":         feBoolRE,
-	"REACT_ENABLE_AUTO_INVOICE_AFTER_DISPENSE":      feBoolRE,
-	"REACT_CARE_API_URL":                            feURLRE,
-	"REACT_DISABLE_PATIENT_LOGIN":                   feBoolRE,
-	"REACT_RECAPTCHA_SITE_KEY":                      feSiteKeyRE,
-	"REACT_MFE_REGISTERED_COMPONENTS":               feCompsRE,
-	"REACT_ENABLED_APPS":                            feAppsRE,
-	"REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG":    feUUIDRE,
+	"REACT_APP_TITLE":                                feTitleRE,
+	"REACT_ALLOWED_LOCALES":                          feLocalesRE,
+	"REACT_DEFAULT_ENCOUNTER_TYPE":                   feEncounterRE,
+	"REACT_ALLOWED_ENCOUNTER_CLASSES":                feClassesRE,
+	"REACT_ENABLE_MINIMAL_PATIENT_REGISTRATION":      feBoolRE,
+	"REACT_PATIENT_REG_MIN_GEO_ORG_LEVELS_REQUIRED":  feDigitRE,
+	"REACT_DEFAULT_PAYMENT_METHOD":                   fePaymentRE,
+	"REACT_DEFAULT_PAYMENT_TERMS":                    feTextRE,
+	"REACT_INVENTORY_DEFAULT_TAX_INCLUSIVE":          feBoolRE,
+	"REACT_ENABLE_AUTO_INVOICE_AFTER_DISPENSE":       feBoolRE,
+	"REACT_CARE_API_URL":                             feURLRE,
+	"REACT_DISABLE_PATIENT_LOGIN":                    feBoolRE,
+	"REACT_RECAPTCHA_SITE_KEY":                       feSiteKeyRE,
+	"REACT_MFE_REGISTERED_COMPONENTS":                feCompsRE,
+	"REACT_ENABLED_APPS":                             feAppsRE,
+	"REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG":     feUUIDRE,
+	"REACT_DEFAULT_COUNTRY":                          feCountryRE,
+	"REACT_DEFAULT_COUNTRY_NAME":                     feTextRE,
+	"REACT_CUSTOM_DESCRIPTION":                       feTextRE,
+	"REACT_DEFAULT_DISCHARGE_DISPOSITION":            feCodeRE,
+	"REACT_TOAST_POSITION":                           feToastRE,
+	"REACT_AUTO_REFRESH_BY_DEFAULT":                  feBoolRE,
+	"REACT_AUTO_REFRESH_INTERVAL":                    feNumberRE,
+	"REACT_APP_MAX_IMAGE_UPLOAD_SIZE_MB":             feNumberRE,
+	"REACT_INVENTORY_EXPIRY_MONTH_OFFSET":            feNumberRE,
+	"REACT_MAX_FORM_DIALOG_FAVORITES":                feNumberRE,
+	"REACT_ENCOUNTER_DEFAULT_DATE_FILTER":            feNumberRE,
+	"REACT_APPOINTMENTS_DEFAULT_DATE_FILTER":         feNumberRE,
+	"REACT_ENABLE_QUESTIONNAIRE_DRAFT":               feBoolRE,
+	"REACT_ENABLE_TOKEN_GENERATION_IN_PATIENT_HOME":  feBoolRE,
+	"REACT_OPEN_SCHEDULE_AFTER_PATIENT_REGISTRATION": feBoolRE,
+	"REACT_PATIENT_GLOBAL_EDIT_ACCESS_ENABLED":       feBoolRE,
+	"REACT_PAYMENT_LOCATION_REQUIRED":                feBoolRE,
+	"REACT_APPOINTMENTS_USE_AVAILABILITY_STATS_API":  feBoolRE,
 }
 
 // FrontendBuildKeys returns the REACT_* keys a frontend rebuild accepts.

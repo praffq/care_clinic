@@ -34,6 +34,11 @@ func settings(kv ...string) map[string]string {
 	return s
 }
 
+func setFE(h *harness, _ context.Context, s map[string]string) error {
+	_, err := h.c.SetFrontendSettings(context.Background(), s)
+	return err
+}
+
 func (h *harness) frontend() protocol.Digest {
 	h.w.Lock()
 	defer h.w.Unlock()
@@ -56,7 +61,7 @@ func TestFrontendSettingsRebuildThenCareUpdateThenReset(t *testing.T) {
 	ctx := context.Background()
 
 	// The release's own values rebuild nothing.
-	if err := h.c.SetFrontendSettings(ctx, settings()); err != nil {
+	if err := setFE(h, ctx, settings()); err != nil {
 		t.Fatal(err)
 	}
 	if h.w.Count("op image.build") != 0 || h.frontend() != Digest("frontend") || h.status().Installed.Frontend != nil {
@@ -64,7 +69,7 @@ func TestFrontendSettingsRebuildThenCareUpdateThenReset(t *testing.T) {
 	}
 
 	before := len(h.w.CallLog())
-	if err := h.c.SetFrontendSettings(ctx, settings("REACT_APP_TITLE", "Sunrise Clinic", "REACT_ENABLED_APPS", "")); err != nil {
+	if err := setFE(h, ctx, settings("REACT_APP_TITLE", "Sunrise Clinic", "REACT_ENABLED_APPS", "")); err != nil {
 		t.Fatal(err)
 	}
 	h.wantOn("0.1.0", "A")
@@ -94,7 +99,7 @@ func TestFrontendSettingsRebuildThenCareUpdateThenReset(t *testing.T) {
 	}
 
 	// The same settings again: nothing to do.
-	if err := h.c.SetFrontendSettings(ctx, settings("REACT_APP_TITLE", "Sunrise Clinic")); err != nil {
+	if err := setFE(h, ctx, settings("REACT_APP_TITLE", "Sunrise Clinic")); err != nil {
 		t.Fatal(err)
 	}
 	if h.w.Count("op image.build") != 1 {
@@ -115,7 +120,7 @@ func TestFrontendSettingsRebuildThenCareUpdateThenReset(t *testing.T) {
 	}
 
 	// Back to the release's settings: the published frontend.
-	if err := h.c.SetFrontendSettings(ctx, settings()); err != nil {
+	if err := setFE(h, ctx, settings()); err != nil {
 		t.Fatal(err)
 	}
 	h.wantOn("0.1.0", "B")
@@ -132,7 +137,7 @@ func TestFrontendSettingsSurvivePluginChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	be, plugs := h.env()
-	if err := h.c.SetFrontendSettings(ctx, settings("REACT_DEFAULT_ENCOUNTER_TYPE", "amb")); err != nil {
+	if err := setFE(h, ctx, settings("REACT_DEFAULT_ENCOUNTER_TYPE", "amb")); err != nil {
 		t.Fatal(err)
 	}
 	fe := h.frontend()
@@ -171,13 +176,13 @@ func TestFrontendSettingsFailureRollsBack(t *testing.T) {
 			h := newHarness(t, withKitEnv)
 			h.installWithBuilders()
 			ctx := context.Background()
-			if err := h.c.SetFrontendSettings(ctx, settings("REACT_APP_TITLE", "First")); err != nil {
+			if err := setFE(h, ctx, settings("REACT_APP_TITLE", "First")); err != nil {
 				t.Fatal(err)
 			}
 			fe := h.frontend()
 			before := h.w.Count("op image.build")
 			tc.setup(h)
-			err := h.c.SetFrontendSettings(ctx, settings("REACT_APP_TITLE", "Second"))
+			err := setFE(h, ctx, settings("REACT_APP_TITLE", "Second"))
 			oe, ok := errors.AsType[*updates.OpError](err)
 			if !ok || oe.Result != updates.ResultRolledBack || oe.Step != tc.step || oe.Component != updates.ComponentFrontend {
 				t.Fatalf("err = %v, want rolled back at %s", err, tc.step)
@@ -211,7 +216,7 @@ func TestFrontendSettingsRejected(t *testing.T) {
 		{"injection", settings("REACT_APP_TITLE", "x\nRUN id"), "invalid value"},
 		{"markup", settings("REACT_APP_TITLE", "<script>"), "invalid value"},
 	} {
-		err := h.c.SetFrontendSettings(ctx, tc.in)
+		err := setFE(h, ctx, tc.in)
 		if se, ok := errors.AsType[*updates.SettingError](err); !ok || !strings.Contains(se.Error(), tc.want) {
 			t.Errorf("%s: err = %v", tc.name, err)
 		}
@@ -224,12 +229,12 @@ func TestFrontendSettingsRejected(t *testing.T) {
 func TestFrontendSettingsNeedBuilderAndEnv(t *testing.T) {
 	h := newHarness(t, withKitEnv)
 	h.installCare("A") // no builders
-	if err := h.c.SetFrontendSettings(context.Background(), settings("REACT_APP_TITLE", "x")); !errors.Is(err, updates.ErrNoFrontendBuilder) {
+	if err := setFE(h, context.Background(), settings("REACT_APP_TITLE", "x")); !errors.Is(err, updates.ErrNoFrontendBuilder) {
 		t.Fatalf("err = %v", err)
 	}
 	h2 := newHarness(t)
 	h2.installWithBuilders()
-	if err := h2.c.SetFrontendSettings(context.Background(), settings("REACT_APP_TITLE", "x")); !errors.Is(err, updates.ErrFrontendEnvUnknown) {
+	if err := setFE(h2, context.Background(), settings("REACT_APP_TITLE", "x")); !errors.Is(err, updates.ErrFrontendEnvUnknown) {
 		t.Fatalf("err = %v", err)
 	}
 	if h.status().Journal != nil || h2.status().Journal != nil {
@@ -241,7 +246,7 @@ func TestReinstallRebuildsFrontendSettings(t *testing.T) {
 	h := newHarness(t, withKitEnv)
 	h.installWithBuilders()
 	ctx := context.Background()
-	if err := h.c.SetFrontendSettings(ctx, settings("REACT_APP_TITLE", "Sunrise")); err != nil {
+	if err := setFE(h, ctx, settings("REACT_APP_TITLE", "Sunrise")); err != nil {
 		t.Fatal(err)
 	}
 	fe := h.frontend()

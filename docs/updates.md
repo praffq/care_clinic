@@ -61,6 +61,7 @@ as its own journaled operation. Each step of an operation runs at most 3 times
 | `backup` | `backup.run`, then export the set to the host's `backup_dir` (skipped on a fresh install) | `backup_id` |
 | `images` | download tarballs, load/pull every image | |
 | `build` | rebuild the derived backend image with the installed plugin set on the new base when it has custom plugins ([plugins.md](plugins.md)) | `plugins.image` |
+| `build-frontend` | rebuild the frontend with the clinic's `REACT_*` overrides on the new base and builder when it has any ([plugins.md](plugins.md#frontend-settings-react_)) | `frontend.image` |
 | `stop-app` | `stack.stop` backend, celery-worker, celery-beat; db stays up | `stack_stopped` |
 | `write-env` | render the kit pinned to the new digests and upload it | `env_written` |
 | `migrate` | `migrations.run` | `db_migrated` (set before it starts) |
@@ -105,6 +106,9 @@ swapping the running app) is the caller's job.
   `uncertain` (`rolling_back` becomes `rollback_uncertain`). `Apply` refuses
   to run (`ErrInFlight`) until `Resume` (continue forward, or continue the
   rollback) or `Rollback` (undo) is called.
+- A step is tried 3 times, except permanent errors: a deterministic image
+  build failure (`build_failed`), a missing builder or release `build_env`,
+  and rejected plugin specs or settings roll back at once.
 - A rollback that fails 3 times leaves the journal `failed` and records
   `rollback_failed`; `Rollback` retries it.
 

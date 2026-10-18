@@ -418,7 +418,7 @@ test("a saved setting isn't presented as applied when restart acceptance fails",
   await expect(root(page)).toContainText("Settings applied.");
 });
 
-test("the usual visit has no preset until an admin chooses one, then applies with a restart", async ({ page }) => {
+test("the usual visit has no preset until an admin chooses one, then applies by rebuilding the screens", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
   await group(page, "Patients and visits");
@@ -432,8 +432,46 @@ test("the usual visit has no preset until an admin chooses one, then applies wit
     backend: backendEnvironment,
     frontend: frontendEnvironment.replace("REACT_DEFAULT_ENCOUNTER_TYPE=", "REACT_DEFAULT_ENCOUNTER_TYPE=hh"),
   });
-  expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "ClinicAction").map((call) => call.args[0])))
-    .toEqual(["restart"]);
+  expect(await count(page, "ClinicAction")).toBe(0);
+  expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "ApplySettings").map((call) => call.args[0])))
+    .toEqual([["frontend"]]);
+});
+
+test("a screen settings rebuild that fails explains why and keeps the change to retry", async ({ page }) => {
+  await openAdvanced(page);
+  await unlock(page);
+  await group(page, "Patients and visits");
+  const visit = root(page).getByRole("combobox", { name: "Usual visit type", exact: true });
+  await visit.click();
+  await page.getByRole("option", { name: "Home Health", exact: true }).click();
+  await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
+  await root(page).getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect.poll(() => count(page, "ApplySettings")).toBe(1);
+  await page.evaluate(() => window.careTest.finishJob("settings",
+    "frontend update to v1 failed at build-frontend: image build failed: npm ERR! Cannot read config (rolled back)"));
+  await expect(root(page)).toContainText("Settings were saved, but applying them didn't finish");
+  await expect(root(page)).toContainText("The build failed and won't succeed by retrying: npm ERR! Cannot read config.");
+  await expect(root(page)).toContainText("put the previous settings back");
+  await expect(root(page)).not.toContainText("Settings applied.");
+  await expect(root(page).getByRole("button", { name: "Apply saved changes" })).toBeEnabled();
+  await page.evaluate(() => { window.careTest.fixtures.finishJobs = true; });
+  await root(page).getByRole("button", { name: "Apply saved changes" }).click();
+  await expect(root(page)).toContainText("Settings applied.");
+  expect(await count(page, "ApplySettings")).toBe(2);
+});
+
+test("support can only add screen settings CARE can rebuild with", async ({ page }) => {
+  expect(validateExtraSetting("REACT_CARE_ENABLE_DASHBOARD", "false")).toContain("can't apply");
+  expect(validateExtraSetting("REACT_AUTO_REFRESH_INTERVAL", "60")).toBeNull();
+  expect(validateExtraSetting("REACT_CUSTOM_DESCRIPTION", "<script>")).toContain("simple punctuation");
+  expect(validateSetting(SETTING_BY_KEY.get("REACT_APP_TITLE")!, "Clinic $(id)")).toContain("simple punctuation");
+  await openAdvanced(page);
+  await unlock(page);
+  await group(page, "Extra settings (for support)");
+  await addCustomSetting(page, "REACT_CARE_ENABLE_DASHBOARD", "false");
+  await expect(root(page)).toContainText("CARE can't apply this screen setting");
+  await expect(root(page).getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+  expect(await count(page, "WriteEnv")).toBe(0);
 });
 
 test("usual visit choices respect the enabled visit types set by support", async ({ page }) => {
@@ -632,7 +670,7 @@ test("partial saves keep the remaining edits and retry only the unwritten file b
   await unlock(page);
   await group(page, "Extra settings (for support)");
   await addCustomSetting(page, "TIME_ZONE", "Asia/Kolkata");
-  await addCustomSetting(page, "REACT_CARE_ENABLE_DASHBOARD", "false");
+  await addCustomSetting(page, "REACT_AUTO_REFRESH_INTERVAL", "60");
   await page.evaluate(() => {
     const original = Object.getOwnPropertyDescriptor(window.go.main.App, "WriteEnv")!.value as Window["go"]["main"]["App"]["WriteEnv"];
     let written = 0;
@@ -652,8 +690,10 @@ test("partial saves keep the remaining edits and retry only the unwritten file b
   await expect(root(page)).toContainText("Settings applied.");
   expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "WriteEnv").map((call) => call.args[0])))
     .toEqual(["backend", "frontend", "frontend"]);
-  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).toContain("REACT_CARE_ENABLE_DASHBOARD=false");
-  expect(await count(page, "ClinicAction")).toBe(1);
+  expect(await page.evaluate(() => window.careTest.fixtures.env.frontend)).toContain("REACT_AUTO_REFRESH_INTERVAL=60");
+  expect(await count(page, "ClinicAction")).toBe(0);
+  expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "ApplySettings").map((call) => call.args[0])))
+    .toEqual([["backend", "frontend"]]);
 });
 
 test("Advanced unlock expires and removes sensitive drafts without starting an operation", async ({ page }) => {

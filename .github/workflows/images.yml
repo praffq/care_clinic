@@ -270,7 +270,14 @@ jobs:
 
           # images.json: the care + support_images sections of a `release
           # generate` artifacts file (docs/updates-feed.md).
+          # build_env: the REACT_* settings the published frontend was built
+          # with (deployments/frontend.env); the desktop rebuilds the frontend
+          # only when a clinic's settings differ (docs/plugins.md).
+          jq -Rn '[inputs | sub("\r$"; "") | select(test("^REACT_[A-Z0-9_]+="))
+                   | capture("^(?<k>[^=]+)=(?<v>.*)$") | .v |= sub("^([\"\u0027])(?<x>.*)\\1$"; "\(.x)")
+                   | {(.k): .v}] | add // {}' deployments/frontend.env >out/build-env.json
           jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json --slurpfile src out/sources.jsonl \
+            --slurpfile env out/build-env.json \
             --arg released_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
             ($i[0]) as $i | ($s[0]) as $s | ($src[0]) as $src |
             def img($r): {ref: $i[$r].ref, digest: $i[$r].digest};
@@ -285,6 +292,7 @@ jobs:
                            caddy: img("care-caddy"), backup: img("care-backup")},
                   builders: {"backend-builder": img("care-backend-builder"),
                              "frontend-builder": img("care-frontend-builder")},
+                  build_env: $env[0],
                   sources: $src}}
               else {} end )
             + {support_images: $s}' >out/images.json
@@ -292,7 +300,7 @@ jobs:
           jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json \
             --arg sha "$GITHUB_SHA" --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" \
             '{commit: $sha, tag: $tag, run_id: $run, images: $i[0], support_images: $s[0]}' >out/images-meta.json
-          rm out/indexes.json out/support.json out/sources.jsonl
+          rm out/indexes.json out/support.json out/sources.jsonl out/build-env.json
           jq . out/images.json
       - name: Summarize
         run: |

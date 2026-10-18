@@ -1,7 +1,7 @@
 import { quote, type EnvChange, type EnvLine } from "@/lib/env-file";
 import type { Section } from "@/types";
 import { splitList } from "./env-controls";
-import { SETTING_BY_KEY, type Group, type Setting } from "./env-schema";
+import { FRONTEND_SETTING_KEYS, SETTING_BY_KEY, type Group, type Setting } from "./env-schema";
 
 export type EnvDraft = Record<string, string | undefined>;
 
@@ -89,6 +89,8 @@ export function effectiveSetting(setting: Setting, value: string | undefined): s
 
 export function validateExtraSetting(key: string, value: string): string | null {
   if (/[\r\n\0]/.test(value)) return "Keep this value on one line.";
+  if (key.startsWith("REACT_") && !FRONTEND_SETTING_KEYS.has(key)) return "CARE can't apply this screen setting. Ask support for a supported one.";
+  if (key.startsWith("REACT_") && !frontendValueOK(key, value)) return SCREEN_TEXT_PROBLEM;
   if (key === "REACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG") {
     const uuid = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/i;
     if (!uuid.test(value)) return "Enter a valid geographic area ID, or remove this setting to leave the default area unset.";
@@ -118,8 +120,16 @@ export function validateSetting(setting: Setting, value: string | undefined): st
       return chosen.every((entry) => setting.options.some((option) => option.value === entry)) ? null : "Remove any unlisted options before saving this setting.";
     }
     default:
-      return null;
+      return setting.file === "frontend" && !frontendValueOK(setting.key, current) ? SCREEN_TEXT_PROBLEM : null;
   }
+}
+
+const SCREEN_TEXT_PROBLEM = "Use only letters, numbers, spaces and simple punctuation (. , ' ( ) _ : / ! ? # + @ -).";
+
+/** Characters the engine accepts in frontend text settings (see protocol.frontendBuildEnv). */
+function frontendValueOK(key: string, value: string): boolean {
+  if (key === "REACT_APP_TITLE") return /^[\p{L}\p{M}\p{N} .,'()_:/!?#+@-]*$/u.test(value);
+  return /^[\p{L}\p{M}\p{N} .,'()_:/!?#+@%-]*$/u.test(value);
 }
 
 export function groupSummary(group: Group, draft: EnvDraft): string {

@@ -87,6 +87,17 @@ test("reports a plugin change that failed and was rolled back", async ({ page })
     .toContainText("put the previous plugins back");
 });
 
+test("a plugin build that can't succeed says why and isn't retried", async ({ page }) => {
+  await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
+  await card(page).getByRole("button", { name: "Remove care_multihost_files_be" }).click();
+  await dialog(page).getByRole("button", { name: "Remove plugin" }).click();
+  await page.evaluate(() => window.careTest.finishJob("plugins",
+    "plugins update to care-x failed at build: image build failed: ERROR: No matching distribution found for care-x==9.9 (rolled back)"));
+  const alert = page.getByRole("alert").filter({ hasText: "The plugin change didn't finish" });
+  await expect(alert).toContainText("The build failed and won't succeed by retrying: ERROR: No matching distribution found for care-x==9.9.");
+  await expect(alert).toContainText("put the previous plugins back");
+});
+
 test("plugin model parses settings like the service", () => {
   expect(parseLines('A=1\nB=["x"]\n# note\nC=plain text')).toEqual({ configs: { A: 1, B: ["x"], C: "plain text" }, error: "" });
   expect(parseLines("not a setting").error).toContain("KEY=value");

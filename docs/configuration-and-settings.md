@@ -293,8 +293,11 @@ editor can add or change other permitted keys. Before saving, both paths read
 the latest files and merge only the operator's edits.
 
 Frontend values are baked into the frontend image when it is built
-([dev images](dev-images.md)); the installed `frontend.env` is not uploaded to
-the engine, so editing it does not change a running clinic.
+([dev images](dev-images.md)). Saving `frontend.env` from the panel (or
+`ctl frontend set`) rebuilds the frontend in the VM with the changed
+`REACT_*` settings as one journaled operation that rolls back on failure;
+only supported settings and plain values are accepted
+([plugins.md](plugins.md#frontend-settings-react_)).
 Clearing an optional friendly control removes its assignment and lets CARE's
 default apply. In the support editor, an explicitly blank `KEY=` stays blank;
 blank and missing values can behave differently depending on the CARE setting.

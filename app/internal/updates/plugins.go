@@ -438,7 +438,8 @@ func (c *Coordinator) Reinstalled(ctx context.Context) error {
 	}
 	if overrides != nil {
 		c.logf("Re-applying the clinic's frontend settings: %s", frontendSummary(overrides))
-		return c.SetFrontendSettings(ctx, overrides)
+		_, err := c.SetFrontendSettings(ctx, overrides)
+		return err
 	}
 	return nil
 }

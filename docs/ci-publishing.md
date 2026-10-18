@@ -60,8 +60,9 @@ The `images` artifact (90 days) holds:
   generate` artifacts file ([updates-feed.md](updates-feed.md)). Image refs
   are the multi-arch index digests; `backend_rev`/`frontend_rev` are the first
   12 hex digits of the upstream commits. `builders` holds the two builder
-  images and `sources` every resolved repo, ref and commit (backend, frontend,
-  plugins); both go into the feed's CARE release. Support images (postgres, redis,
+  images, `build_env` the `REACT_*` settings from `deployments/frontend.env`
+  that `care-frontend` was built with, and `sources` every resolved repo, ref
+  and commit (backend, frontend, plugins); all go into the feed's CARE release. Support images (postgres, redis,
   silo) are not rebuilt; their upstream index digests are recorded.
 - `images-meta.json`: every image (including demo) with tag, index digest and
   per-arch digests.

@@ -50,6 +50,10 @@ var managedFrontendKeys = map[string]bool{
 	"REACT_RECAPTCHA_SITE_KEY":        true,
 }
 
+// ManagedFrontendKey reports whether CARE Clinic sets key (a clinic cannot
+// override it).
+func ManagedFrontendKey(key string) bool { return managedFrontendKeys[key] }
+
 // FrontendKeys are the REACT_* settings a clinic may override.
 func FrontendKeys() []string {
 	var out []string
@@ -77,6 +81,30 @@ func ParseFrontendEnv(data []byte) (map[string]string, error) {
 	return out, nil
 }
 
+// CheckFrontendSettings rejects unsupported keys and values (without the
+// release's build_env: managed keys are not checked against it).
+func CheckFrontendSettings(settings map[string]string) error {
+	for _, k := range slices.Sorted(maps.Keys(settings)) {
+		if managedFrontendKeys[k] || settings[k] == "" && slices.Contains(protocol.FrontendBuildKeys(), k) {
+			continue
+		}
+		if err := checkFrontendSetting(k, settings[k]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkFrontendSetting(k, v string) error {
+	if protocol.ValidFrontendBuildValue(k, v) {
+		return nil
+	}
+	if !slices.Contains(protocol.FrontendBuildKeys(), k) {
+		return &SettingError{k, "is not a supported frontend setting"}
+	}
+	return &SettingError{k, fmt.Sprintf("invalid value %q", v)}
+}
+
 // frontendOverrides checks settings against base (the release's
 // build_env) and returns those that differ from it. A managed key must keep
 // base's value.
@@ -87,14 +115,11 @@ func frontendOverrides(base, settings map[string]string) (map[string]string, err
 		if bv, ok := base[k]; ok && bv == v || !ok && v == "" {
 			continue // the release's value; an empty value is unset
 		}
-		switch {
-		case managedFrontendKeys[k]:
+		if managedFrontendKeys[k] {
 			return nil, &SettingError{k, "is managed by CARE Clinic"}
-		case !protocol.ValidFrontendBuildValue(k, v):
-			if !slices.Contains(protocol.FrontendBuildKeys(), k) {
-				return nil, &SettingError{k, "is not a supported frontend setting"}
-			}
-			return nil, &SettingError{k, fmt.Sprintf("invalid value %q", v)}
+		}
+		if err := checkFrontendSetting(k, v); err != nil {
+			return nil, err
 		}
 		out[k] = v
 	}
@@ -227,49 +252,51 @@ func (c *Coordinator) FrontendSettings(ctx context.Context) (FrontendSettings, e
 // when no setting differs from the release), write it into the stack env,
 // start and health-check, rolling back to the previous image on failure.
 // settings may hold the whole frontend.env: values equal to the release's
-// are not recorded. It returns an *OpError for a failed operation.
-func (c *Coordinator) SetFrontendSettings(ctx context.Context, settings map[string]string) error {
+// are not recorded. It reports whether the frontend changed (false: the
+// settings were already applied), and returns an *OpError for a failed
+// operation.
+func (c *Coordinator) SetFrontendSettings(ctx context.Context, settings map[string]string) (bool, error) {
 	unlock, err := c.acquire()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer unlock()
 	if j, err := c.st.journal(); err != nil {
-		return err
+		return false, err
 	} else if j != nil {
-		return fmt.Errorf("%w (%s update to %s is %s)", ErrInFlight, j.Component, j.To, j.State)
+		return false, fmt.Errorf("%w (%s update to %s is %s)", ErrInFlight, j.Component, j.To, j.State)
 	}
 	in, err := c.installed()
 	if err != nil {
-		return err
+		return false, err
 	}
 	cur, err := c.current(ctx, in)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur.Base == nil {
-		return ErrNotInstalled
+		return false, ErrNotInstalled
 	}
 	r, rev, err := c.installedRelease(in)
 	if err != nil {
-		return err
+		return false, err
 	}
 	baseEnv := c.releaseEnv(r)
 	if len(baseEnv) == 0 {
-		return ErrFrontendEnvUnknown
+		return false, ErrFrontendEnvUnknown
 	}
 	overrides, err := frontendOverrides(baseEnv, settings)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if maps.Equal(overrides, cur.Overrides) || len(overrides) == 0 && cur.Overrides == nil {
 		c.logf("The frontend settings are unchanged (%s)", frontendSummary(overrides))
-		return nil
+		return false, nil
 	}
 	var builder *Image
 	if len(overrides) > 0 {
 		if builder, _, err = c.installedBuilder(in, protocol.ImageRoleFrontendBuilder); err != nil {
-			return err
+			return false, err
 		}
 	}
 	now := c.now()
@@ -295,5 +322,5 @@ func (c *Coordinator) SetFrontendSettings(ctx context.Context, settings map[stri
 		j.Steps = append(j.Steps, StepRecord{Name: n, Status: StepPending})
 	}
 	c.logf("Changing the CARE frontend settings from %s to %s", j.From, j.To)
-	return c.run(ctx, j)
+	return true, c.run(ctx, j)
 }
