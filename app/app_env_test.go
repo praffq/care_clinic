@@ -30,7 +30,7 @@ func settingsApp(t *testing.T) *App {
 		configFile: filepath.Join(root, "care-clinic", "config.json"),
 		cfg:        Config{SetupDone: true, AdminPwHash: string(hash)},
 		pins:       &release.Pins{},
-		service:    fakeService(t),
+		service:    &fakeAPI{Service: fakeService(t)},
 	}
 	if err := os.MkdirAll(a.installDir(), 0o700); err != nil {
 		t.Fatal(err)
@@ -73,16 +73,6 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 			}
 			return nil
 		},
-		func() error {
-			list, err := a.ReadPlugins()
-			if err != nil {
-				return err
-			}
-			if list == nil || len(list) != 0 {
-				return fmt.Errorf("plugins were not loaded from backend.env")
-			}
-			return nil
-		},
 	}
 	results := make(chan error, len(reads))
 	for _, read := range reads {
@@ -101,15 +91,12 @@ func TestSettingsReadsCanRunConcurrently(t *testing.T) {
 func TestSettingsReadsRespectMutationsAndClosing(t *testing.T) {
 	a := settingsApp(t)
 	a.jobMu.Lock()
-	text, envErr := a.ReadEnv("backend", settingsPassword)
-	list, pluginErr := a.ReadPlugins()
+	text, err := a.ReadEnv("backend", settingsPassword)
 	a.jobMu.Unlock()
-	for _, err := range []error{envErr, pluginErr} {
-		if err == nil || !strings.Contains(err.Error(), "still running") {
-			t.Fatalf("a read bypassed a mutation: %v", err)
-		}
+	if err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("a read bypassed a mutation: %v", err)
 	}
-	if text != "" || list != nil {
+	if text != "" {
 		t.Fatal("a rejected read returned settings")
 	}
 	if _, err := a.ReadEnv("backend", settingsPassword); err != nil {
@@ -138,11 +125,6 @@ func TestSettingsReadsKeepAuthorizationAndLifecycleGuards(t *testing.T) {
 			}
 			if text, err := a.ReadEnv("backend", password); err == nil || text != "" {
 				t.Fatalf("settings read bypassed its guard: %v", err)
-			}
-			if state != "wrong password" {
-				if list, err := a.ReadPlugins(); err == nil || list != nil {
-					t.Fatalf("plugin read bypassed its guard: %v", err)
-				}
 			}
 		})
 	}

@@ -198,6 +198,46 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	return r.Service.Agent().Op(ctx, protocol.StackStop{}, nil, r.frames)
 }
 
+// Down removes the stack's containers. With purge it also deletes every
+// clinic volume, the uploaded config (so the service stops bringing the
+// stack up after boot) and the host copy of the secrets.
+func (r *Runtime) Down(ctx context.Context, purge bool) error {
+	op := protocol.StackDown{}
+	if purge {
+		op = protocol.StackDown{RemoveVolumes: true, ConfirmPurge: protocol.PurgeConfirmation}
+		r.logf("Removing CARE and all of its data")
+	} else {
+		r.logf("Removing CARE's containers (data kept)")
+	}
+	if err := r.Service.Agent().Op(ctx, op, nil, r.frames); err != nil {
+		return err
+	}
+	if !purge {
+		return nil
+	}
+	ag := r.Service.Agent()
+	names := []string{StackEnv, ClinicEnv, SecretsEnv}
+	for _, f := range kitFiles {
+		names = append(names, f.dst)
+	}
+	for _, name := range names {
+		if err := ag.DeleteFile(ctx, protocol.FileAreaConfig, name); err != nil && !isNotFound(err) {
+			return fmt.Errorf("delete %s: %w", name, err)
+		}
+	}
+	dir := r.StateDir
+	if dir == "" {
+		var err error
+		if dir, err = DefaultStateDir(); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, SecretsEnv)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Status reports per-service state.
 func (r *Runtime) Status(ctx context.Context) (protocol.StackStatusResult, error) {
 	var st protocol.StackStatusResult
@@ -242,4 +282,41 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// InstalledImages returns the images the engine's stack.env pins, without
+// tarballs, so an installed clinic can be reconfigured without the image
+// archives. It returns client.ErrNotFound when no clinic is configured.
+func (r *Runtime) InstalledImages(ctx context.Context) ([]Image, error) {
+	rc, err := r.Service.Agent().GetFile(ctx, protocol.FileAreaConfig, StackEnv)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, 64<<10))
+	_ = rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	return ParseStackImages(data)
+}
+
+// ParseStackImages reads the IMAGE_<ROLE>=repo@digest lines Render writes.
+func ParseStackImages(data []byte) ([]Image, error) {
+	refs := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && strings.HasPrefix(k, "IMAGE_") {
+			refs[k] = v
+		}
+	}
+	var out []Image
+	for _, role := range RequiredRoles {
+		key := "IMAGE_" + strings.ToUpper(string(role))
+		repo, dg, ok := strings.Cut(refs[key], "@")
+		if !ok || repo == "" || !protocol.Digest(dg).Valid() {
+			return nil, fmt.Errorf("%s: no digest-pinned %s", StackEnv, key)
+		}
+		out = append(out, Image{Role: role, Repo: repo, Digest: protocol.Digest(dg)})
+	}
+	return out, nil
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
-	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 	"go.yaml.in/yaml/v3"
@@ -38,7 +37,6 @@ func TestClinicBrandingContract(t *testing.T) {
 		{"product", metadata.Info.ProductName, "CARE Clinic"},
 		{"settings directory", appDirName, "care-clinic"},
 		{"single-instance identity", singleInstanceID, "ohc.care-clinic"},
-		{"plugin ownership", plugins.ManagedValue, "care-clinic"},
 		{"certificate identity", trust.CommonName, "CARE Clinic Local CA"},
 	} {
 		if field.got != field.want {

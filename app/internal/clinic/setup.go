@@ -1,35 +1,21 @@
 package clinic
 
-import (
-	"os"
-
-	"github.com/ohcnetwork/care_desktop/app/internal/backup"
-	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
-)
-
+// Setup loads the stack's images into the engine and uploads its config.
+// Start then migrates and brings it up. Without StackImages it reuses the
+// images the engine's clinic already runs (see images).
 func (e *Clinic) Setup() error {
-	if err := backup.CheckLocation(e.backupDir(), e.InstallDir); err != nil {
-		return err
-	}
-	if err := plugins.New(e.InstallDir).InitializeDefaults(); err != nil {
-		return err
-	}
-	if err := e.Backups().InstallCertificate([]byte(e.BackupCertificate)); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(e.backupDir(), 0o755); err != nil {
-		return err
-	}
-	e.logln("Backups will go to: " + e.backupDir())
-	if err := e.Backups().EnsureKeysDir(); err != nil {
-		return err
-	}
 	r, err := e.runtime()
 	if err != nil {
 		return err
 	}
-	if err := r.Images(e.context(), e.StackImages); err != nil {
+	if len(e.StackImages) > 0 {
+		if err := r.Images(e.context(), e.StackImages); err != nil {
+			return err
+		}
+	} else if _, err := e.images(r); err != nil {
 		return err
+	} else {
+		e.logln("Using the CARE images already in the engine.")
 	}
 	if err := e.Configure(); err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 )
@@ -39,7 +40,29 @@ func (e *Clinic) Configure() error {
 	if err != nil {
 		return err
 	}
-	return r.Configure(e.context(), os.DirFS(e.InstallDir), e.host(), nil, e.StackImages)
+	images, err := e.images(r)
+	if err != nil {
+		return err
+	}
+	return r.Configure(e.context(), os.DirFS(e.InstallDir), e.host(), nil, images)
+}
+
+// ErrNoImages means there is nothing to install the clinic from: no image
+// archives were supplied and the engine has no clinic configured.
+var ErrNoImages = errors.New("no CARE images are available to install the clinic from; " +
+	"set CARE_CLINIC_DEV_IMAGES to a scripts/dev-images.sh output folder or install with 'ctl clinic install --images'")
+
+// images are StackImages, or else the ones the engine's clinic already
+// runs, so an installed clinic can be reconfigured without the archives.
+func (e *Clinic) images(r *stack.Runtime) ([]stack.Image, error) {
+	if len(e.StackImages) > 0 {
+		return e.StackImages, nil
+	}
+	images, err := r.InstalledImages(e.context())
+	if errors.Is(err, client.ErrNotFound) {
+		return nil, ErrNoImages
+	}
+	return images, err
 }
 
 func (e *Clinic) Stop() error {

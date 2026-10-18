@@ -1,0 +1,88 @@
+// Package install installs care-clinic-service on this computer from the
+// desktop app with a single administrator prompt. On macOS it mirrors
+// scripts/service-macos.sh install-built: create the care-clinic group and
+// add the user, copy the binary root-owned into place, write the
+// LaunchDaemon plist and bootstrap it. Windows is not supported yet.
+package install
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
+)
+
+// Paths and names the service runs under (see scripts/service-macos.sh).
+const (
+	Label     = "org.ohc.care-clinic"
+	Group     = "care-clinic"
+	Root      = "/Library/Application Support/care-clinic"
+	Binary    = Root + "/bin/care-clinic-service"
+	PlistPath = "/Library/LaunchDaemons/" + Label + ".plist"
+	LogDir    = "/Library/Logs/care-clinic"
+)
+
+// ErrUnsupported is returned where the app can't install the service yet.
+var ErrUnsupported = errors.New("installing the CARE Clinic service from the app is not supported on this system yet")
+
+// Plan is one install.
+type Plan struct {
+	// Binary is the care-clinic-service executable to install, normally the
+	// one inside the app bundle.
+	Binary string
+	// Plist is the LaunchDaemon plist content.
+	Plist []byte
+	// User is added to the care-clinic group so the app can reach the
+	// control socket.
+	User string
+}
+
+var userRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+func (p Plan) validate() error {
+	if !userRE.MatchString(p.User) || p.User == "root" {
+		return fmt.Errorf("can't add user %q to the %s group", p.User, Group)
+	}
+	if !strings.HasPrefix(p.Binary, "/") {
+		return fmt.Errorf("service binary path must be absolute: %q", p.Binary)
+	}
+	if len(p.Plist) == 0 {
+		return errors.New("no LaunchDaemon plist")
+	}
+	return nil
+}
+
+// Script is the root shell script that installs Binary with the plist at
+// plistTmp. It is idempotent: a loaded service is booted out first (it
+// stops CARE and the VM), engine data and slots are kept.
+func Script(p Plan, plistTmp string) (string, error) {
+	if err := p.validate(); err != nil {
+		return "", err
+	}
+	q := elevate.ShQuote
+	label := q("system/" + Label)
+	lines := []string{
+		"set -e",
+		"if ! dseditgroup -o read " + q(Group) + " >/dev/null 2>&1; then dseditgroup -o create -r 'CARE Clinic service users' " + q(Group) + "; fi",
+		"if ! dseditgroup -o checkmember -m " + q(p.User) + " " + q(Group) + " >/dev/null 2>&1; then dseditgroup -o edit -a " + q(p.User) + " -t user " + q(Group) + "; fi",
+		"install -d -o root -g wheel -m 0755 " + q(Root) + " " + q(Root+"/bin") + " " + q(LogDir),
+		"install -o root -g wheel -m 0755 " + q(p.Binary) + " " + q(Binary+".new"),
+		"mv -f " + q(Binary+".new") + " " + q(Binary),
+		"if launchctl print " + label + " >/dev/null 2>&1; then",
+		"  launchctl bootout " + label + " || true",
+		"  i=0; while launchctl print " + label + " >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 300 ] || { echo 'the old service did not stop' >&2; exit 1; }; sleep 0.5; done",
+		"fi",
+		"install -o root -g wheel -m 0644 " + q(plistTmp) + " " + q(PlistPath),
+		"launchctl bootstrap system " + q(PlistPath),
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// Installed reports whether the LaunchDaemon plist is in place.
+func Installed() bool {
+	_, err := os.Stat(PlistPath)
+	return err == nil
+}

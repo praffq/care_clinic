@@ -14,26 +14,15 @@ import (
 const appDirName = "care-clinic"
 
 type Config struct {
-	Role                     string    `json:"role"`
-	ClientURL                string    `json:"client_url"`
-	ClientCertificate        string    `json:"client_certificate,omitempty"`
-	ClientCertificateOwned   bool      `json:"client_certificate_owned,omitempty"`
-	SetupDone                bool      `json:"setup_done"`
-	Removing                 bool      `json:"removing,omitempty"`
-	MDNSName                 string    `json:"mdns_name"`
-	BackupDir                string    `json:"backup_dir"`
-	AdminPwHash              string    `json:"admin_pw_hash"`
-	AdminRecoveryHashes      [6]string `json:"admin_recovery_hashes"`
-	AdminRecoveryPath        string    `json:"admin_recovery_path,omitempty"`
-	RecoveryFailures         int       `json:"recovery_failures,omitempty"`
-	RecoveryRetryAfter       int64     `json:"recovery_retry_after,omitempty"`
-	BackupCertificate        string    `json:"backup_certificate,omitempty"`
-	BackupRecoveryPath       string    `json:"backup_recovery_path,omitempty"`
-	BackupRecoveryVerified   bool      `json:"backup_recovery_verified,omitempty"`
-	BackupKeyEncrypted       string    `json:"backup_key_encrypted,omitempty"`
-	BackupKeyNeedsEnrollment bool      `json:"backup_key_needs_enrollment,omitempty"`
-	AppUpdateChecksOff       bool      `json:"app_update_checks_off,omitempty"`
-	CareUpdateChecksOff      bool      `json:"care_update_checks_off,omitempty"`
+	Role                   string `json:"role"`
+	ClientURL              string `json:"client_url"`
+	ClientCertificate      string `json:"client_certificate,omitempty"`
+	ClientCertificateOwned bool   `json:"client_certificate_owned,omitempty"`
+	SetupDone              bool   `json:"setup_done"`
+	Removing               bool   `json:"removing,omitempty"`
+	MDNSName               string `json:"mdns_name"`
+	AdminPwHash            string `json:"admin_pw_hash"`
+	AppUpdateChecksOff     bool   `json:"app_update_checks_off,omitempty"`
 }
 
 const (
@@ -42,18 +31,7 @@ const (
 )
 
 func (cfg Config) hasServerSettings() bool {
-	return cfg.SetupDone || cfg.Removing || cfg.AdminPwHash != "" || cfg.BackupDir != "" || cfg.MDNSName != "" ||
-		cfg.BackupCertificate != "" || cfg.BackupKeyEncrypted != "" || cfg.BackupKeyNeedsEnrollment || cfg.adminRecoveryCount() > 0
-}
-
-func (cfg Config) adminRecoveryCount() int {
-	count := 0
-	for _, hash := range cfg.AdminRecoveryHashes {
-		if hash != "" {
-			count++
-		}
-	}
-	return count
+	return cfg.SetupDone || cfg.Removing || cfg.AdminPwHash != "" || cfg.MDNSName != ""
 }
 
 func normalizeRole(cfg Config) (Config, error) {
@@ -100,9 +78,6 @@ func loadConfig(path string) (Config, error) {
 	}
 	if cfg == nil {
 		return Config{}, fmt.Errorf("saved settings at %s must be a JSON object", path)
-	}
-	if cfg.BackupDir != "" && !filepath.IsAbs(cfg.BackupDir) {
-		return Config{}, fmt.Errorf("the saved backup directory must be an absolute path: %s", cfg.BackupDir)
 	}
 	if cfg.MDNSName != "" {
 		if err := mdns.ValidateLabel(cfg.MDNSName); err != nil {
@@ -187,7 +162,6 @@ func (a *App) inferInstalledRole() error {
 }
 
 func (a *App) installDirInUse() (bool, error) {
-	// Retained backups are recovery data, not an active server installation.
 	dir := a.installDir()
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -217,10 +191,7 @@ func (a *App) ClearRole() (err error) {
 		if set {
 			return fmt.Errorf("this computer is already set up as a %s; uninstall its current setup first", cfg.Role)
 		}
-		if err := a.resetConfigAfterUninstall(); err != nil {
-			return err
-		}
-		return a.restartAdvertise()
+		return a.resetConfigAfterUninstall()
 	})
 }
 
@@ -229,15 +200,6 @@ func (a *App) ClearRole() (err error) {
 // computer that is only being looked at keeps an empty settings file.
 func (a *App) BeginServerSetup() (err error) {
 	return a.selectRole(roleServer)
-}
-
-// SelectRole is the older entry point and stays for compatibility with an
-// interface that still announces the choice up front.
-func (a *App) SelectRole(role string) (err error) {
-	if role != roleServer && role != roleClient {
-		return fmt.Errorf("choose server or client")
-	}
-	return a.selectRole(role)
 }
 
 func (a *App) selectRole(role string) error {
@@ -253,10 +215,7 @@ func (a *App) selectRole(role string) error {
 			return fmt.Errorf("this computer is already a %s; its role cannot be changed", cfg.Role)
 		}
 		cfg.Role = role
-		if err := a.saveConfig(cfg); err != nil {
-			return err
-		}
-		return a.restartAdvertise()
+		return a.saveConfig(cfg)
 	})
 }
 

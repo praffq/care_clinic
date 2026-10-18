@@ -27,7 +27,6 @@ func TestLoadConfigInfersLegacyServerRole(t *testing.T) {
 		`{"setup_done":true}`,
 		`{"removing":true}`,
 		`{"admin_pw_hash":"partial-install"}`,
-		`{"backup_dir":"/existing/backups"}`,
 		`{"mdns_name":"clinic.local"}`,
 	} {
 		t.Run(data, func(t *testing.T) {
@@ -63,20 +62,20 @@ func TestRoleSelectionIsLockedUntilUninstall(t *testing.T) {
 	for _, role := range []string{roleServer, roleClient} {
 		t.Run(role, func(t *testing.T) {
 			a := roleApp(t)
-			if err := a.SelectRole("invalid"); err == nil {
+			if err := a.selectRole("invalid"); err == nil {
 				t.Fatal("accepted invalid role")
 			}
-			if err := a.SelectRole(role); err != nil {
+			if err := a.selectRole(role); err != nil {
 				t.Fatal(err)
 			}
-			if err := a.SelectRole(role); err != nil {
+			if err := a.selectRole(role); err != nil {
 				t.Fatalf("selecting the same role should be idempotent: %v", err)
 			}
 			other := roleClient
 			if role == roleClient {
 				other = roleServer
 			}
-			if err := a.SelectRole(other); err == nil {
+			if err := a.selectRole(other); err == nil {
 				t.Fatal("changed role")
 			}
 			if err := a.saveConfig(Config{Role: other}); err == nil {
@@ -90,7 +89,7 @@ func TestRoleSelectionIsLockedUntilUninstall(t *testing.T) {
 				t.Fatalf("cleanup forgot selected role: %+v, %v", cfg, err)
 			}
 			a.cfg = cfg
-			if err := a.SelectRole(other); err == nil {
+			if err := a.selectRole(other); err == nil {
 				t.Fatal("changed role after restart")
 			}
 		})
@@ -101,7 +100,7 @@ func TestClearRoleUndoesAnUnusedChoice(t *testing.T) {
 	for _, role := range []string{roleServer, roleClient} {
 		t.Run(role, func(t *testing.T) {
 			a := roleApp(t)
-			if err := a.SelectRole(role); err != nil {
+			if err := a.selectRole(role); err != nil {
 				t.Fatal(err)
 			}
 			if role == roleServer {
@@ -123,7 +122,7 @@ func TestClearRoleUndoesAnUnusedChoice(t *testing.T) {
 			if role == roleClient {
 				other = roleServer
 			}
-			if err := a.SelectRole(other); err != nil {
+			if err := a.selectRole(other); err != nil {
 				t.Fatalf("could not choose %s after going back: %v", other, err)
 			}
 		})
@@ -154,7 +153,7 @@ func TestClearRoleIsLockedOnceSetUp(t *testing.T) {
 	}
 	t.Run("install files", func(t *testing.T) {
 		a := roleApp(t)
-		if err := a.SelectRole(roleServer); err != nil {
+		if err := a.selectRole(roleServer); err != nil {
 			t.Fatal(err)
 		}
 		dir := a.installDir()
@@ -186,7 +185,7 @@ func TestPartialInstallationCannotBecomeClient(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := a.SelectRole(roleClient); err == nil {
+			if err := a.selectRole(roleClient); err == nil {
 				t.Fatal("existing server became a client")
 			}
 			if a.loadConfig().Role != roleServer {
@@ -214,16 +213,10 @@ func TestClientAndUnchosenStateSkipServerChecks(t *testing.T) {
 			if err != nil || state.Role != role || state.ClientURL != a.cfg.ClientURL {
 				t.Fatalf("non-server state consulted server recovery: %+v, %v", state, err)
 			}
-			if state.Docker.Message != "" || state.SetupDone || state.RestorePending {
+			if state.SetupDone || state.MDNSName != "" {
 				t.Fatalf("non-server state included server checks: %+v", state)
 			}
 			a.refreshInstallDir()
-			if err := a.startAdvertise(); err != nil {
-				t.Fatal(err)
-			}
-			if a.clinicRunning() || a.advRunning() {
-				t.Fatal("non-server started server lifecycle services")
-			}
 			if a.beforeClose(context.Background()) || !a.closing {
 				t.Fatal("non-server quit required a server shutdown")
 			}
@@ -234,34 +227,18 @@ func TestClientAndUnchosenStateSkipServerChecks(t *testing.T) {
 
 func TestClientRejectsServerMutations(t *testing.T) {
 	a := roleApp(t)
-	if err := a.SelectRole(roleClient); err != nil {
+	if err := a.selectRole(roleClient); err != nil {
 		t.Fatal(err)
 	}
 	for name, action := range map[string]func() error{
 		"setup": func() error {
-			return a.RunSetup("clinic", settingsPassword, "")
+			return a.RunSetup("clinic", settingsPassword)
 		},
 		"set address": func() error { return a.SetMDNSName("clinic") },
 		"cleanup":     a.CleanupFailedInstall,
-		"purge": func() error {
-			_, err := a.PurgeResidue(true)
-			return err
-		},
-		"remove": a.beginRemoval,
-		"install Docker": func() error {
-			_, err := a.InstallDocker()
-			return err
-		},
-		"install Git": func() error {
-			_, err := a.InstallGit()
-			return err
-		},
-		"open Docker":  a.OpenDocker,
-		"stop on quit": a.stopForQuit,
-		"start":        func() error { return a.ClinicAction("start", "") },
-		"restore":      func() error { return a.RestoreBackup("db", "", "", "") },
-		"import":       func() error { return a.RestoreFromFile("backup", "", "") },
-		"uninstall":    func() error { return a.RunUninstall(false, false, false, "") },
+		"remove":      a.beginRemoval,
+		"start":       func() error { return a.ClinicAction("start") },
+		"uninstall":   func() error { return a.RunUninstall(false, "") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := action(); err == nil || !strings.Contains(err.Error(), "server") {
@@ -383,40 +360,8 @@ func TestDisconnectUnownedCertificateResetsRole(t *testing.T) {
 	if want := (Config{}); err != nil || saved != want || a.loadConfig() != want {
 		t.Fatalf("disconnect did not clear the connection and role: %+v, %v", saved, err)
 	}
-	if err := a.SelectRole(roleServer); err != nil {
+	if err := a.selectRole(roleServer); err != nil {
 		t.Fatalf("completed uninstall did not allow a new role: %v", err)
-	}
-}
-
-func TestUninstallResetAllowsChoiceWithRetainedBackups(t *testing.T) {
-	a := roleApp(t)
-	if err := a.saveConfig(Config{Role: roleServer, SetupDone: true, MDNSName: "clinic"}); err != nil {
-		t.Fatal(err)
-	}
-	dir := a.engine().BackupDirPath()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	backup := filepath.Join(dir, "retained-backup")
-	if err := os.WriteFile(backup, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.resetConfigAfterUninstall(); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := loadConfig(a.configPath())
-	if err != nil || cfg != (Config{}) {
-		t.Fatalf("uninstall did not reset settings: %+v, %v", cfg, err)
-	}
-	a.cfg = cfg
-	if err := a.inferInstalledRole(); err != nil || a.loadConfig().Role != "" {
-		t.Fatalf("retained backup restored server role: %v", err)
-	}
-	if err := a.SelectRole(roleClient); err != nil {
-		t.Fatalf("could not choose client after uninstall: %v", err)
-	}
-	if data, err := os.ReadFile(backup); err != nil || string(data) != "keep" {
-		t.Fatalf("role reset touched retained backup: %q, %v", data, err)
 	}
 }
 
@@ -459,7 +404,7 @@ func TestDisconnectCertificateFailureKeepsRole(t *testing.T) {
 	if err := a.DisconnectClient(); err == nil || a.loadConfig() != cfg {
 		t.Fatalf("failed certificate removal reset client settings: %v", err)
 	}
-	if err := a.SelectRole(roleServer); err == nil {
+	if err := a.selectRole(roleServer); err == nil {
 		t.Fatal("incomplete uninstall allowed a role change")
 	}
 }
@@ -486,18 +431,6 @@ CARE_BE_REPO=backend
 CARE_FE_REPO=frontend
 CARE_BE_REF=main
 CARE_FE_REF=main
-RANCHER_VERSION=1.24.0
-RANCHER_MACOS_ARM64_SHA256=` + strings.Repeat("a", 64) + `
-RANCHER_MACOS_X86_64_SHA256=` + strings.Repeat("b", 64) + `
-RANCHER_WINDOWS_SHA256=` + strings.Repeat("c", 64) + `
-GIT_WINDOWS_VERSION=2.55.0.windows.5
-GIT_WINDOWS_SHA256=` + strings.Repeat("d", 64) + `
-DOCKER_LINUX_VERSION=29.8.1
-DOCKER_LINUX_X86_64_SHA256=` + strings.Repeat("e", 64) + `
-DOCKER_LINUX_AARCH64_SHA256=` + strings.Repeat("f", 64) + `
-COMPOSE_LINUX_VERSION=5.5.1
-COMPOSE_LINUX_X86_64_SHA256=` + strings.Repeat("1", 64) + `
-COMPOSE_LINUX_AARCH64_SHA256=` + strings.Repeat("2", 64) + `
 `)},
 		"install/docker-compose.yml": {Data: []byte("must not be installed\n")},
 	}
@@ -532,7 +465,7 @@ COMPOSE_LINUX_AARCH64_SHA256=` + strings.Repeat("2", 64) + `
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("fresh startup unexpectedly saved settings: %v", err)
 	}
-	if err := a.SelectRole(roleClient); err != nil {
+	if err := a.selectRole(roleClient); err != nil {
 		t.Fatal(err)
 	}
 	a = create()
@@ -548,10 +481,24 @@ COMPOSE_LINUX_AARCH64_SHA256=` + strings.Repeat("2", 64) + `
 	}
 	a = create()
 	state, err := a.GetState()
-	if err != nil || state.Role != roleClient || state.ClientURL != cfg.ClientURL || state.Docker.Message != "" {
+	if err != nil || state.Role != roleClient || state.ClientURL != cfg.ClientURL {
 		t.Fatalf("saved client returned to server startup: %+v, %v", state, err)
 	}
 	if a.loadConfig() != cfg {
 		t.Fatal("client restart lost connection ownership")
+	}
+}
+
+func TestChangeAdminPassword(t *testing.T) {
+	a := settingsApp(t)
+	a.cfg.Role = roleServer
+	if err := a.ChangeAdminPassword("wrong", "AnotherPassword456"); err == nil {
+		t.Fatal("changed with the wrong password")
+	}
+	if err := a.ChangeAdminPassword(settingsPassword, "AnotherPassword456"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.VerifyAdminPassword("AnotherPassword456") || a.VerifyAdminPassword(settingsPassword) {
+		t.Fatal("password not replaced")
 	}
 }

@@ -10,7 +10,6 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
-	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack/stacktest"
 )
@@ -21,8 +20,7 @@ type stackFixture struct {
 }
 
 // fakeStack answers like a running clinic. CARE_FAKE_STATE (stopped,
-// unreachable) and CARE_MIGRATION_FAILURE/CARE_PLUGIN_FAILURE=migration
-// select failures.
+// unreachable) and CARE_MIGRATION_FAILURE select failures.
 func fakeStack(t *testing.T) stackFixture {
 	svc := stacktest.New(t)
 	svc.Fake.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
@@ -39,7 +37,7 @@ func fakeStack(t *testing.T) stackFixture {
 				{Name: protocol.ServiceDB, State: "running"}, {Name: protocol.ServiceBackend, State: backend},
 			}}, nil
 		case *protocol.RunMigrations:
-			if os.Getenv("CARE_MIGRATION_FAILURE") == "migration" || os.Getenv("CARE_PLUGIN_FAILURE") == "migration" {
+			if os.Getenv("CARE_MIGRATION_FAILURE") == "migration" {
 				return nil, errors.New("migration failed")
 			}
 		case *protocol.ManageCmd:
@@ -66,7 +64,7 @@ func TestStartConfiguresMigratesThenStarts(t *testing.T) {
 		for _, role := range stack.RequiredRoles {
 			images = append(images, stack.Image{Role: role, Repo: "example/" + string(role), Digest: protocol.Digest("sha256:" + strings.Repeat("a", 64))})
 		}
-		e := &Clinic{InstallDir: dir, BackupDir: filepath.Join(dir, "backups"), MDNSName: "north", Pins: &release.Pins{},
+		e := &Clinic{InstallDir: dir, MDNSName: "north",
 			AdminPassword: "SyntheticAdminSecret123", Stack: fs.Runtime, StackImages: images, localSetupOffered: true}
 		if err := e.Start(); err != nil {
 			t.Fatal(err)
@@ -95,5 +93,39 @@ func TestStartReportsMigrationFailureBeforeStarting(t *testing.T) {
 	}
 	if got := strings.Join(fs.Methods(), " "); got != "RunMigrations" {
 		t.Fatalf("calls = %q", got)
+	}
+}
+
+func TestSetupReusesInstalledImages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("../../../deployments")); err != nil {
+		t.Fatal(err)
+	}
+	fs := fakeStack(t)
+	e := &Clinic{InstallDir: dir, MDNSName: "north", Stack: fs.Runtime}
+	if err := e.Setup(); !errors.Is(err, ErrNoImages) {
+		t.Fatalf("setup without images or a clinic: %v", err)
+	}
+	var images []stack.Image
+	for _, role := range stack.RequiredRoles {
+		images = append(images, stack.Image{Role: role, Repo: "example/" + string(role), Digest: protocol.Digest("sha256:" + strings.Repeat("b", 64))})
+	}
+	e.StackImages = images
+	if err := e.Configure(); err != nil {
+		t.Fatal(err)
+	}
+	e.StackImages = nil
+	before := len(fs.Methods())
+	if err := e.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range fs.Methods()[before:] {
+		if m == "ImagePull" || m == "ImageLoad" {
+			t.Errorf("setup reloaded images: %s", m)
+		}
+	}
+	env, err := os.ReadFile(filepath.Join(fs.Files, "config", "stack.env"))
+	if err != nil || !strings.Contains(string(env), "example/backend@sha256:bbbb") {
+		t.Fatalf("stack.env lost the installed images: %q %v", env, err)
 	}
 }

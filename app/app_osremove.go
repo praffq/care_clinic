@@ -42,12 +42,7 @@ func (a *App) setUp() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	wizard := Config{
-		Role: cfg.Role, MDNSName: cfg.MDNSName,
-		BackupCertificate: cfg.BackupCertificate, BackupRecoveryPath: cfg.BackupRecoveryPath,
-		BackupRecoveryVerified: cfg.BackupRecoveryVerified, AdminRecoveryHashes: cfg.AdminRecoveryHashes,
-		AdminRecoveryPath: cfg.AdminRecoveryPath,
-	}
+	wizard := Config{Role: cfg.Role, MDNSName: cfg.MDNSName}
 	return installed || cfg != wizard, nil
 }
 
