@@ -7,3 +7,6 @@
 
 # Default backup dir if BACKUP_DIR is unset and compose runs from there.
 /deployments/db-backups/
+
+# Engine VM bundle build output
+/dist/
