@@ -19,7 +19,7 @@
   "info": {
     "companyName": "Open Healthcare Network Foundation",
     "productName": "CARE Clinic",
-    "productVersion": "0.2.2",
+    "productVersion": "0.2.3",
     "copyright": "Copyright (c) 2026 Open Healthcare Network Foundation",
     "comments": "Self-contained, offline CARE for a small clinic."
   }
