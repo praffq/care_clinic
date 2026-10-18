@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
@@ -49,10 +50,15 @@ type Option func(*Client)
 // WithMaxLineBytes sets the maximum size of one op stream frame.
 func WithMaxLineBytes(n int) Option { return func(c *Client) { c.maxLine = n } }
 
+// WithBasePath prefixes every request path with p, e.g. "/v1/agent" to
+// reach the agent through the host service's relay.
+func WithBasePath(p string) Option { return func(c *Client) { c.basePath = strings.TrimRight(p, "/") } }
+
 // Client talks to one agent. It is safe for concurrent use.
 type Client struct {
-	hc      *http.Client
-	maxLine int
+	hc       *http.Client
+	maxLine  int
+	basePath string
 }
 
 // New returns a Client that reaches the agent through dial.
@@ -80,7 +86,7 @@ func New(dial DialFunc, opts ...Option) *Client {
 // do sends a request and returns the response when its status is want; any
 // other status is converted to an error and the body closed.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, size int64, ctype string, want int) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+c.basePath+path, body)
 	if err != nil {
 		return nil, err
 	}
