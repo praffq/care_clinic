@@ -133,7 +133,7 @@ func (a *App) pluginCoordinator(ctx context.Context) (*updates.Coordinator, erro
 	return updates.Open(updates.Options{
 		Dir: filepath.Join(dir, "care-clinic", "updates"), Keys: keys, AllowInsecureURLs: feed.DevBuild,
 		AllowUnsigned: feed.UnsignedFeedAllowed(),
-		Feed:          updates.HTTPFetcher{URL: os.Getenv("CARE_UPDATES_URL")},
+		Feed:          updates.HTTPFetcher{URL: updatesURL()},
 		Service:       c, Agent: updates.ClientAgent{Control: c, Log: a.logln},
 		Stack: updates.RuntimeStack{
 			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: a.logln},

@@ -1,7 +1,7 @@
 import type {
   AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupSet, BackupStatus, CareHealth, CheckResult, ClientPreflight,
   ClientReachability, ClinicUpdates, ConfirmationRequest, HistoryEntry, HomeAccess, HostCheck, HostReport, Journal, NetworkStatus,
-  Plugin, PluginPreset, QuitRequest, RestoreChoice, Section, ServiceState, StepRecord, StorageState, SystemInfo,
+  Plugin, PluginPreset, QuitRequest, ResidueTrace, RestoreChoice, Section, ServiceState, SetupBackupStatus, SetupRecoveryStatus, StepRecord, StorageState, SystemInfo,
   UpdateChecks,
 } from "../../src/types";
 
@@ -13,6 +13,7 @@ type Results = { [K in Method]: Awaited<ReturnType<Host[K]>> };
 type Fixtures = {
   checks: HostCheck[];
   serviceInstalled: boolean;
+  leftovers: ResidueTrace[];
   network: NetworkStatus;
   homeAccess: HomeAccess;
   preflight: ClientPreflight;
@@ -33,6 +34,9 @@ type Fixtures = {
   recoveryGeneration: number;
   recoveryFailures: number;
   recoveryRetryAfter: number;
+  setupCodesPath: string;
+  setupCodesProblem: SetupRecoveryStatus["codes_problem"];
+  setupCodesTarget: string;
   webUsers: Record<string, string>;
   storage: StorageState;
   health: CareHealth;
@@ -47,6 +51,11 @@ type Fixtures = {
   backupSets: BackupSet[];
   backupFolder: string;
   system: SystemInfo;
+  setupBackup: SetupBackupStatus;
+  setupFolder: string;
+  setupFolderProblem: string;
+  recoverySavePath: string;
+  recoveryPickPath: string;
 };
 
 declare global {
@@ -147,6 +156,7 @@ export function installTestHost() {
       { id: "disk", title: "Disk space", level: "ok", detail: "212 GB free." },
     ],
     serviceInstalled: true,
+    leftovers: [],
     network: { applicable: state.platform === "windows", ok: true, message: "", how: "", fixable: true },
     homeAccess: {
       installed: false, running: false, https: false, host: "", url: "", ip: "", enabled: false, conflict: false, unknown: false,
@@ -173,6 +183,9 @@ export function installTestHost() {
     recoveryGeneration: 1,
     recoveryFailures: 0,
     recoveryRetryAfter: 0,
+    setupCodesPath: "",
+    setupCodesProblem: "",
+    setupCodesTarget: "/Users/test/Documents/CARE-care-clinic-admin-codes.txt",
     webUsers: { admin: "ClinicTest123", nurse: "NurseTest123" },
     storage: {
       level: "ok", title: "Enough free space.",
@@ -209,6 +222,11 @@ export function installTestHost() {
       configs: { ALLOWED_HOSTS: ["*.local", "*.ts.net"] }, bundled: true,
     }],
     clinicUpdates, nextCheck, backupSets, backupFolder, system,
+    setupBackup: { backup_saved: false, backup_verified: false, backup_path: "", backup_problem: "" },
+    setupFolder: "/Volumes/ClinicBackup/CARE",
+    setupFolderProblem: "",
+    recoverySavePath: "/Volumes/KEYS/CARE-care-backup-recovery-key.pem",
+    recoveryPickPath: "",
   };
   const careSteps = ["preflight", "backup", "images", "stop-app", "write-env", "migrate", "start-stack", "health"];
   const steps = (names: string[], done: number, failed = -1): StepRecord[] => names.map((name, index) => ({
@@ -293,6 +311,14 @@ export function installTestHost() {
     fixtures.network.ok = false;
   }
   if (scenario === "setup-address") fixtures.addressTaken = true;
+  if (scenario === "setup-cleanup") {
+    fixtures.leftovers = [
+      { id: "engine", label: "Old clinic data", detail: "the database and files of an earlier clinic" },
+      { id: "install-dir", label: "Installed files", detail: "/Users/clinic/Library/Application Support/care-clinic/install" },
+      { id: "hosts", label: "Hosts file entry", detail: "this computer still resolves the old clinic address to itself" },
+    ];
+  }
+  if (scenario === "setup-backup-readonly") fixtures.setupFolderProblem = "That drive is read-only, so backups can't be written to it.";
   if (scenario.startsWith("client-")) state.role = "client";
   if (scenario === "client-saved" || scenario === "client-offline") {
     state.client_url = "https://care.local";
@@ -494,6 +520,44 @@ export function installTestHost() {
       state.mdns_name = name;
     },
     HostChecks: async () => { requireServer(); return hostReport(); },
+    ScanResidue: async () => {
+      requireServer();
+      return { clean: fixtures.leftovers.length === 0, traces: fixtures.leftovers.map((trace) => ({ ...trace })) };
+    },
+    PurgeResidue: async (confirmed: boolean) => {
+      requireServer();
+      if (!confirmed) throw new Error("confirm the removal of the earlier CARE Clinic before it can be removed");
+      await wait(150);
+      fixtures.leftovers = [];
+      return { clean: true, traces: [] };
+    },
+    ValidateBackupDir: async () => { requireServer(); return fixtures.setupFolderProblem; },
+    BackupDirSpace: async (dir: string) => ({ dir: dir || fixtures.backups.dir, free: 418 * GB, total: 500 * GB, need: GB, days_left: -1 }),
+    ChooseFolder: async () => fixtures.setupFolder,
+    GetSetupBackupStatus: async () => { requireServer(); return { ...fixtures.setupBackup }; },
+    SaveSetupBackupRecovery: async () => {
+      requireServer();
+      if (state.setup_started) throw new Error("recovery setup is locked after installation starts");
+      if (fixtures.setupBackup.backup_saved) throw new Error("the recovery file has already been saved; select it using Select saved file");
+      fixtures.setupBackup = { backup_saved: true, backup_verified: false, backup_path: fixtures.recoverySavePath, backup_problem: "" };
+      return true;
+    },
+    ReplaceSetupBackupRecovery: async () => {
+      requireServer();
+      if (state.setup_started) throw new Error("recovery setup is locked after installation starts");
+      fixtures.setupBackup = { backup_saved: true, backup_verified: false, backup_path: fixtures.recoverySavePath, backup_problem: "" };
+      return true;
+    },
+    VerifySetupBackupRecovery: async () => {
+      requireServer();
+      if (!fixtures.setupBackup.backup_saved) throw new Error("save the recovery file before checking it");
+      const picked = fixtures.recoveryPickPath || fixtures.setupBackup.backup_path;
+      fixtures.setupBackup.backup_verified = false;
+      if (picked !== fixtures.setupBackup.backup_path) throw new Error("that recovery file doesn't match this clinic; select the file saved for this setup");
+      fixtures.setupBackup.backup_verified = true;
+      return true;
+    },
+    OpenSetupBackupRecoveryFolder: async () => { logs.push(`Test only: ${fixtures.setupBackup.backup_path} would be shown.`); },
     InstallService: async () => {
       requireServer();
       await wait(150);
@@ -610,6 +674,32 @@ export function installTestHost() {
       fixtures.recoveryFailures = 0;
       fixtures.recoveryRetryAfter = 0;
       emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+    },
+    GetSetupRecoveryStatus: async () => {
+      requireServer();
+      return { codes_saved: !!fixtures.setupCodesPath, codes_path: fixtures.setupCodesPath, codes_problem: fixtures.setupCodesPath ? fixtures.setupCodesProblem : "" };
+    },
+    SaveSetupRecoveryCodes: async () => {
+      requireServer();
+      if (state.setup_done || fixtures.setupStarted) throw new Error("recovery setup is locked after installation starts; retry installation with the recovery codes already saved");
+      const target = fixtures.setupCodesTarget;
+      if (!target) return "";
+      fixtures.recoveryCodes = sampleCodes(++fixtures.recoveryGeneration);
+      fixtures.setupCodesPath = target;
+      fixtures.setupCodesProblem = "";
+      emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+      return target;
+    },
+    OpenSetupRecoveryCodes: async () => {
+      requireServer();
+      if (!fixtures.setupCodesPath || fixtures.setupCodesProblem) throw new Error("the recovery codes file is unavailable; save a fresh set before continuing");
+      logs.push(`Test only: ${fixtures.setupCodesPath} would open.`);
+    },
+    OpenSetupRecoveryFolder: async () => {
+      requireServer();
+      if (state.platform !== "windows") throw new Error("opening the recovery codes folder is available only on Windows");
+      if (!fixtures.setupCodesPath || fixtures.setupCodesProblem) throw new Error("the recovery codes file is unavailable; save a fresh set before continuing");
+      logs.push(`Test only: the folder of ${fixtures.setupCodesPath} would open.`);
     },
     ResetWebPassword: async (username: string, next: string, password: string) => {
       requireAdmin(password);
@@ -760,13 +850,14 @@ export function installTestHost() {
       fixtures.setupStarted = false;
       state.setup_started = false;
     },
-    RunSetup: async (name: string, password: string): Promise<void> => {
+    RunSetup: async (name: string, password: string, _backupDir: string): Promise<void> => {
       if (params.get("simulateInstall") !== "1") throw new Error("This action is disabled in the automated test fixture.");
       requireServer();
       if (!hostReport().ready) throw new Error("this computer isn't ready");
       if (await methods.ValidateDomain(name)) throw new Error("invalid clinic name");
       const problem = await methods.ValidatePassword(password);
       if (problem) throw new Error(problem);
+      if (!fixtures.setupBackup.backup_verified) throw new Error("select and check the saved backup recovery file before installing");
       state.mdns_name = name.endsWith(".local") ? name : `${name}.local`;
       fixtures.adminPassword = password;
       fixtures.setupStarted = true;

@@ -18,7 +18,7 @@ func TestWindowsScript(t *testing.T) {
 		"Enable-WindowsOptionalFeature -Online -FeatureName 'HypervisorPlatform' -All -NoRestart",
 		"$code = 3010",
 		`& 'C:\Program Files\CARE Clinic\care-clinic-service.exe' @args`,
-		"Invoke-Service service install --group $g",
+		"Invoke-Service service install --group $g --log-user 'S-1-5-21-1004336348-1177238915-682003330-1001'",
 		"Invoke-Service service start",
 		`Set-Content -LiteralPath 'C:\Users\o''brien\AppData\Local\Temp\err.txt'`,
 		"exit $code",

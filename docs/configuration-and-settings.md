@@ -141,10 +141,11 @@ Atomic replacement protects a single file. It is not a transaction across the en
 
 ## Setup configuration order
 
-[`RunSetup(name, adminPassword)`](../app/app_onboarding.go) validates the name
-and password, rejects an installed or removing clinic, saves the name and the
-administrator's bcrypt hash (`SetupDone` still false), refreshes the install
-folder, installs the engine if needed, then runs `Clinic.Setup()` and
+[`RunSetup(name, adminPassword, backupDir)`](../app/app_onboarding.go) validates the name,
+password, backup folder and checked backup recovery file, rejects an installed
+or removing clinic, saves the name and the administrator's bcrypt hash
+(`SetupDone` still false), installs the engine if needed, sets the service's
+`backup_dir` and installs the backup key, refreshes the install folder, then runs `Clinic.Setup()` and
 `Clinic.Start()`. Only the job's successful completion persists
 `SetupDone=true`. See [server onboarding](onboarding.md).
 
@@ -181,8 +182,8 @@ supplied CARE Clinic password through their native guards. Start, Stop and
 Restart need no password.
 
 The CARE Clinic password is distinct from the operating-system password used for
-privilege prompts and from the CARE web login after initial setup. There are no recovery codes for the CARE Clinic
-password.
+privilege prompts and from the CARE web login after initial setup. Six one-time
+recovery codes, saved during setup or later from Advanced, can reset it.
 
 ## Environment-file API
 

@@ -18,6 +18,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/appremoval"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/logdir"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
@@ -142,6 +143,7 @@ func copyFile(src, dst string) error {
 // using it.
 func (a *App) startHandoff(p *preparedUpdate) error {
 	ready := filepath.Join(p.Work, "ready")
+	helperLog := a.updateHelperLog(p)
 	var script, name string
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -150,7 +152,7 @@ func (a *App) startHandoff(p *preparedUpdate) error {
 		if err != nil {
 			return err
 		}
-		script = macUpdateHelper(p.Target, p.Staged, p.Work, os.Getpid(), elevated, p.Verification)
+		script = macUpdateHelper(p.Target, p.Staged, p.Work, helperLog, os.Getpid(), elevated, p.Verification)
 		name = filepath.Join(p.Work, "install.sh")
 		cmd = proc.Command("/bin/sh", name)
 	case "windows":
@@ -162,7 +164,7 @@ func (a *App) startHandoff(p *preparedUpdate) error {
 		if err != nil {
 			return err
 		}
-		script = windowsUpdateHelper(exe, p.Installer, p.Work, p.Version, p.Digest, os.Getpid())
+		script = windowsUpdateHelper(exe, p.Installer, p.Work, helperLog, p.Version, p.Digest, os.Getpid())
 		name = filepath.Join(p.Work, "install.ps1")
 		cmd = proc.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name)
 	default:
@@ -172,8 +174,8 @@ func (a *App) startHandoff(p *preparedUpdate) error {
 		return err
 	}
 	a.updateProgress(phaseInstalling, 0, 0)
-	a.logln("Preparing an in-place update of " + p.Target + ". Helper log: " + filepath.Join(p.Work, "helper.log"))
-	if err := startUpdateHelper(cmd, ready); err != nil {
+	a.logln("Preparing an in-place update of " + p.Target + ". Helper log: " + helperLog)
+	if err := startUpdateHelper(cmd, ready, helperLog); err != nil {
 		return err
 	}
 	a.appUpdateMu.Lock()
@@ -214,7 +216,43 @@ func (a *App) abortHandoff() {
 	}
 }
 
-func startUpdateHelper(cmd *exec.Cmd, ready string) error {
+const (
+	appUpdateHelperLog    = "app-update-helper.log"
+	appUpdateHelperLogMax = 1 << 20
+)
+
+func tailOf(path string, n int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	if st, err := f.Stat(); err == nil && st.Size() > n {
+		_, _ = f.Seek(st.Size()-n, io.SeekStart)
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, n))
+	return strings.TrimSpace(string(b))
+}
+
+func (a *App) updateHelperLog(p *preparedUpdate) string {
+	dir := a.log.Folder()
+	if dir == "" {
+		return filepath.Join(p.Work, "helper.log")
+	}
+	path := filepath.Join(dir, appUpdateHelperLog)
+	if st, err := os.Stat(path); err == nil && st.Size() > appUpdateHelperLogMax {
+		_ = os.Rename(path, filepath.Join(dir, logdir.RotatedName(appUpdateHelperLog, 1)))
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return filepath.Join(p.Work, "helper.log")
+	}
+	_, _ = fmt.Fprintf(f, "\n=== CARE Clinic update to %s, %s ===\n", p.Version, time.Now().Format(time.RFC3339))
+	_ = f.Close()
+	return path
+}
+
+func startUpdateHelper(cmd *exec.Cmd, ready, helperLog string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("couldn't start the update helper: %w", err)
 	}
@@ -227,8 +265,8 @@ func startUpdateHelper(cmd *exec.Cmd, ready string) error {
 	for {
 		select {
 		case err := <-done:
-			detail, _ := os.ReadFile(filepath.Join(filepath.Dir(ready), "helper.log"))
-			return fmt.Errorf("the update helper stopped before it was ready (%v): %s", err, strings.TrimSpace(string(detail)))
+			detail := tailOf(helperLog, 4<<10)
+			return fmt.Errorf("the update helper stopped before it was ready (%v): %s", err, detail)
 		case <-deadline.C:
 			_ = cmd.Process.Kill()
 			<-done

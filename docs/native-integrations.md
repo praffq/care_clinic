@@ -239,7 +239,11 @@ method shape Wails expects from its logger.
 | Windows | `%LOCALAPPDATA%\care-clinic\logs`; if unset, `~/AppData/Local/care-clinic/logs` |
 | Linux/default branch | `$XDG_STATE_HOME/care-clinic`; if unset, `~/.local/state/care-clinic` |
 
-The service writes its own log to `/Library/Logs/care-clinic/service.log`.
+The folder is computed by `logdir.Default` ([logdir.go](../app/internal/sys/logdir/logdir.go)),
+which the host service also uses to find the installed user's folder. The
+service writes its own log, the VM console, the guest system log, container
+logs and `collector.log` into the same folder, and enforces retention for
+all of it; see [Local logs](local-logs.md).
 
 The active filename is `care-log.log`. The code first needs `os.UserHomeDir` to
 succeed, even before checking the Windows or XDG overrides. A failed home lookup
@@ -253,11 +257,12 @@ produces an empty log directory.
   The timestamp and marker are additional bytes; this is not a strict 8 KiB
   on-disk record limit.
 - Rotation is triggered when the current size plus the next record would exceed
-  `10 << 20` bytes, or 10 MiB.
-- `maxFiles = 5` means the active log plus normally four numbered archives,
-  `care-log.1.log` through `care-log.4.log`. Rotation briefly uses slot 5 before
-  removing it. Treat approximately 50 MiB as an intended normal bound, not an
-  enforced quota when renames or deletes fail.
+  `logdir.MaxFileBytes` (5 MiB), the limit every file in the log folder uses.
+- `maxFiles = logdir.KeepRotated + 1` means the active log plus normally two
+  numbered archives, `care-log.1.log` and `care-log.2.log`. Rotation briefly
+  uses slot 3 before removing it. Treat approximately 15 MiB as the normal
+  bound; on a server the service's retention sweep also expires the files
+  after 7 days without changes and keeps the folder under 100 MiB.
 
 `Open` appends a session separator. `Header(version, installDir, clinicName)`
 records version, OS/architecture, Go version, install directory, clinic name, and
@@ -289,7 +294,10 @@ The application boundaries are distinct:
   logger itself knows nothing about that event.
 - [app_ui.go](../app/app_ui.go) returns an explicit error if `OpenLogFolder`
   finds no log path. Otherwise it starts `open -R`, `explorer.exe /select,`, or
-  `xdg-open` as appropriate. A launch failure is returned; later opener exit
+  `xdg-open` as appropriate, which opens the log folder (with `care-log.log`
+  selected on macOS and Windows) so every file in it, including the service's
+  engine and container logs, is in view. Every log button in the interface is
+  labelled "Open log folder". A launch failure is returned; later opener exit
   status is ignored.
 
 `Logger.Fatal` is exceptional: it writes a fatal line and invokes `OnFatal` when
@@ -299,8 +307,9 @@ this with ordinary `Error`, which only records a line.
 `PurgeFolder` closes the sink, removes the **whole log folder**, and opens a new
 session log there. It is not limited to deleting numbered files, and successful
 purge does not mean the folder stays absent. `RemoveAll` errors are returned;
-failure to reopen the fresh log is not. Do not store unrelated files in this
-application-owned directory.
+failure to reopen the fresh log is not. Nothing in the app calls it today; it
+would also delete the service's logs in the same folder. Do not store
+unrelated files in this application-owned directory.
 
 The logger and process runner do not provide automatic secret redaction.
 Environment-variable names in this guide are not credential examples. Never

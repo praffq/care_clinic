@@ -9,10 +9,14 @@
   throttling, App Nap-style timer coalescing, or be first in line under
   memory pressure.
 
-  Logs: the service writes its own size-rotated log (10 MiB x 5) via
-  --log-file, which also becomes its stderr so Go crash output is kept.
-  launchd's Standard{Out,Error}Path only catch output from before that file
-  is open (bad flags, an unwritable log dir); launchd itself never rotates.
+  Logs: the service writes service.log, engine-console.log, guest-system.log,
+  containers/ and collector.log into the log folder of the user recorded in
+  /Library/Application Support/care-clinic/log-user
+  (~/Library/Logs/care-clinic), or into --log-dir when that user's folder
+  can't be used (docs/local-logs.md). service.log also becomes its stderr so
+  Go crash output is kept. launchd's Standard{Out,Error}Path only catch
+  output from before that file is open (bad flags, an unwritable log dir);
+  launchd itself never rotates.
 
   ExitTimeOut 120: on SIGTERM the supervisor stops the clinic stack (up to
   60 s) and asks the guest to shut down (up to 30 s) before killing the VM;
@@ -25,8 +29,8 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Library/Application Support/care-clinic/bin/care-clinic-service</string>
-		<string>--log-file</string>
-		<string>/Library/Logs/care-clinic/service.log</string>
+		<string>--log-dir</string>
+		<string>/Library/Logs/care-clinic</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

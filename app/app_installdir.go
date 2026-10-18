@@ -85,7 +85,8 @@ func (a *App) engine() *clinic.Clinic {
 
 // devImages reads the image tarballs from scripts/dev-images.sh named by
 // CARE_CLINIC_DEV_IMAGES. Without them the clinic reuses the images the
-// engine already has (clinic.Setup); release images come in a later slice.
+// engine already has, or installs the newest compatible release from the
+// update feed (clinic.Setup).
 func devImages() ([]stack.Image, error) {
 	dir := os.Getenv("CARE_CLINIC_DEV_IMAGES")
 	if dir == "" {

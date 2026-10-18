@@ -35,8 +35,18 @@ export type AppState = {
 
 export type ClientConnectPhase = "finding" | "connecting" | "checking" | "opening";
 
-export type SetupPage = "computer" | "address" | "admin" | "review" | "install";
-export type SetupFailure = { can_retry: boolean };
+export type SetupPage = "computer" | "cleanup" | "address" | "backup" | "admin" | "review" | "install";
+
+export type SetupBackupStatus = {
+  backup_saved: boolean;
+  backup_verified: boolean;
+  backup_path: string;
+  backup_problem: "" | "missing" | "unreadable" | "mismatch";
+};
+
+export type BackupSpace = { dir: string; free: number; total: number; need: number; days_left: number };
+
+export type SetupFailure = { can_retry: boolean; message?: string };
 
 /** One row of HostChecks: what this computer needs before setup. */
 export type HostCheck = {
@@ -47,6 +57,10 @@ export type HostCheck = {
   action?: "install-service";
 };
 export type HostReport = { checks: HostCheck[]; ready: boolean };
+export type SetupRecoveryStatus = { codes_saved: boolean; codes_path: string; codes_problem: "" | "missing" | "unreadable" | "mismatch" };
+
+export type ResidueTrace = { id: string; label: string; detail: string };
+export type ResidueReport = { clean: boolean; traces: ResidueTrace[] | null };
 
 export type SummaryLevel = "ok" | "busy" | "warn" | "error";
 export type Summary = {

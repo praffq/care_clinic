@@ -71,6 +71,7 @@ All of these files belong to Go `package main`, even though they are organized b
 | [`app_client.go`](../app/app_client.go) | Native client connection, pinned trust/ownership journal, TLS verification, and exact-certificate removal with role reset after success. | [Native integrations](native-integrations.md). |
 | [`app_installdir.go`](../app/app_installdir.go) | Install-folder path, unpacking/preservation rules, creation of a configured `Clinic`, dev images. | [Configuration](configuration-and-settings.md). |
 | [`app_service.go`](../app/app_service.go) | Service client, bundle layout, status summary and the `service-status` watcher, engine install and readiness. | [Architecture](architecture.md). |
+| [`app_residue.go`](../app/app_residue.go) | `ScanResidue`, `PurgeResidue`. | [Server onboarding](onboarding.md#2-cleanup-of-an-earlier-setup). |
 | [`app_onboarding.go`](../app/app_onboarding.go) | `HostChecks`, `InstallService`, `RunSetup`, `RetrySetup`, `CleanupFailedInstall`, name checks. | [Server onboarding](onboarding.md). |
 | [`app_actions.go`](../app/app_actions.go) | Read/write job gates, async runner, lifecycle/admin guards, `ClinicAction`, `ClinicStatus`. | [Wails application](wails-application.md), [clinic lifecycle](clinic-lifecycle.md). |
 | [`app_status.go`](../app/app_status.go) | State, network, name/password validation, `MDNSStatus`, admin password check and change. | [Wails application](wails-application.md). |
@@ -110,13 +111,15 @@ app/internal/
 |-- feed/            # signed updates.json
 |-- hostcheck/       # onboarding computer checks
 |-- release/         # release pins
+|-- residue/         # earlier-setup scan and cleanup
 |-- service/
 |   |-- advertise/   # mDNS watcher
 |   |-- api/         # control-socket types
 |   |-- control/     # control-socket client and server
 |   |-- hostfwd/     # host listeners for 80/443/8480
+|   |-- hostlogs/    # copies VM, guest and container logs to the user's log folder
 |   |-- install/     # one-prompt LaunchDaemon install
-|   |-- logfile/
+|   |-- logfile/     # service.log, also the process's stderr
 |   |-- settings/
 |   |-- slots/       # engine bundle slots, install and activate
 |   `-- supervisor/  # engine VM watchdog
@@ -124,7 +127,7 @@ app/internal/
 |-- versions/        # versions.yml
 `-- sys/
     |-- applog/  appremoval/  atomicfile/  diskspace/  elevate/
-    `-- hosts/  mdns/  netfix/  proc/  tailscale/  trust/
+    `-- hosts/  logdir/  mdns/  netfix/  proc/  tailscale/  trust/
 ```
 
 ### Where each package is explained
@@ -133,6 +136,7 @@ app/internal/
 | --- | --- | --- |
 | [`internal/clinic`](../app/internal/clinic) | Clinic operations on top of the stack runtime; no Wails dependency. | [Clinic lifecycle](clinic-lifecycle.md), [cleanup](cleanup-and-uninstall.md). |
 | [`internal/stack`](../app/internal/stack) | Renders the kit and generated env files, uploads them, runs agent ops. | [Clinic lifecycle](clinic-lifecycle.md). |
+| [`internal/residue`](../app/internal/residue) | Scan for and remove what an earlier CARE Clinic (v1 or v2) left on this computer. | [Server onboarding](onboarding.md#2-cleanup-of-an-earlier-setup). |
 | [`internal/hostcheck`](../app/internal/hostcheck) | Virtualization, memory, disk and service checks. | [Server onboarding](onboarding.md#1-computer-checks). |
 | [`internal/bundle`](../app/internal/bundle) | Locates the bundled service binary and engine tarball, with env overrides. | [Bundle layout](releases.md#macos-app-bundle-layout). |
 | [`internal/service/*`](../app/internal/service) | The host service's packages and the app's control client. | [care-clinic-service](../app/cmd/care-clinic-service/README.md). |
@@ -143,6 +147,9 @@ app/internal/
 | [`sys/atomicfile`](../app/internal/sys/atomicfile) | Durable single-file replacement across OSes. | [Native integrations](native-integrations.md). |
 | [`sys/appremoval`](../app/internal/sys/appremoval) | Locating and removing the installed desktop app (macOS Trash, Windows uninstaller), other-instance and other-account checks. | [Cleanup](cleanup-and-uninstall.md#3-removing-the-desktop-app). |
 | [`sys/applog`](../app/internal/sys/applog) | Diagnostic sink, native log location, bounded rotation. | [Native integrations](native-integrations.md). |
+| [`sys/logdir`](../app/internal/sys/logdir) | The shared log folder: per-user location, symlink-safe file access, rotation, the non-blocking console queue and the retention sweep. | [Local logs](local-logs.md). |
+| [`service/hostlogs`](../app/internal/service/hostlogs) | The service's log collector: resolves the installed user's folder, streams `logs.system` and `logs.containers` with saved positions, reconnects and sweeps. | [Local logs](local-logs.md). |
+| [`engine/agent/logs.go`](../app/internal/engine/agent/logs.go), [`engine/protocol/logs.go`](../app/internal/engine/protocol/logs.go) | The guest side of log collection: following `/var/log` files with inode/offset cursors and `docker logs` of every container. | [Local logs](local-logs.md). |
 | [`sys/diskspace`](../app/internal/sys/diskspace) | Platform free-space measurement (used by the disk check). | [Server onboarding](onboarding.md#1-computer-checks). |
 | [`sys/elevate`](../app/internal/sys/elevate) | Interpreter quoting and batching privileged native steps. | [Native integrations](native-integrations.md). |
 | [`sys/hosts`](../app/internal/sys/hosts) | Owned loopback hostname entries and verified removal. | [Native integrations](native-integrations.md). |

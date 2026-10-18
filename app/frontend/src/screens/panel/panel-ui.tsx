@@ -80,8 +80,8 @@ export function PanelLogButton() {
   return <div className="panel-log">
     <Button variant="ghost" size="sm" disabled={task.working}
       onClick={() => void task.run(() => bridge.OpenLogFolder(),
-        "Couldn't open the log file. Try again, or ask the person who looks after this computer.")}>
-      <FileText aria-hidden="true" />Open log file
+        "Couldn't open the log folder. Try again, or ask the person who looks after this computer.")}>
+      <FileText aria-hidden="true" />Open log folder
     </Button>
     {task.error ? <p className="panel-inline-error" role="alert">{task.error}</p> : null}
   </div>;

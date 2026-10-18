@@ -135,6 +135,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	baseCtx, cancelStreams := context.WithCancel(context.Background())
+	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
+	srv.RegisterOnShutdown(cancelStreams)
+	defer cancelStreams()
 
 	var listeners []net.Listener
 	if *vsockPort != 0 {

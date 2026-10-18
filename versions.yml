@@ -2,11 +2,11 @@
 schema: 1
 
 desktop:
-  version: "0.2.0"
+  version: "0.2.1"
   requires: { engine: ">=0.1.0 <0.2.0" }
 
 engine:
-  version: "0.1.7"
+  version: "0.1.8"
   requires: { desktop: ">=0.2.0" }
 
 care:

@@ -43,6 +43,7 @@
 .install-screen .install-failure-card .on-tile { color: #b91c1c; background: #fdecec; }
 .install-screen .install-failure-card h2 { font-size: 15px; line-height: 1.5; letter-spacing: 0; }
 .install-screen .install-failure-card p { font-size: 13px; }
+.install-screen .install-failure-card .install-failure-reason { margin-top: 8px; color: #7f1d1d; font-weight: 500; }
 .install-screen .install-failure-card .on-log { margin-top: 16px; }
 .install-screen .install-failure-card .on-log button { border: 1px solid var(--on-line); background: #fff; color: #33403a; }
 .install-screen .install-retry-consequences { border-color: #f6b4b4; background: #fffafa; }

@@ -1,6 +1,6 @@
 /var/log/docker.log /var/log/care-engine-agent.log {
-	size 10M
-	rotate 5
+	size 5M
+	rotate 2
 	compress
 	missingok
 	notifempty

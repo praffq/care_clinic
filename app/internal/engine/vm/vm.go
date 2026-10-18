@@ -63,6 +63,7 @@ type Config struct {
 	// is rotated to ConsoleLog+".1" when it would exceed ConsoleLogMaxBytes.
 	ConsoleLog         string
 	ConsoleLogMaxBytes int64
+	Console            io.Writer
 	// ConsoleMirror, if set, also receives the console output.
 	ConsoleMirror io.Writer
 	// ExtraCmdline is appended to the kernel command line, e.g. "care.debug".

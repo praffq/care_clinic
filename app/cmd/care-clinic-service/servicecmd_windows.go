@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/service/hostlogs"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -17,11 +18,13 @@ import (
 const serviceUsage = `usage: care-clinic-service service <command>
 
 commands (from an elevated prompt):
-  install [--root dir] [--group name] [--no-qemu]
+  install [--root dir] [--group name] [--log-user SID] [--no-qemu]
                  copy this binary and qemu\ into <root>\bin and register the
                  CareClinic service (LocalSystem, delayed automatic start,
                  restarted on failure) and open TCP 80/443 and UDP 5353 in
-                 Windows Firewall; re-running it updates the service
+                 Windows Firewall; re-running it updates the service.
+                 --log-user records whose log folder
+                 (%LOCALAPPDATA%\care-clinic\logs) the service writes to
   uninstall      stop and remove the service, its firewall rules and
                  %ProgramData%\CARE Clinic\bin (the clinic's data is kept)
   start | stop   start or stop the service
@@ -77,6 +80,7 @@ func serviceInstall(args []string) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	root := fs.String("root", systemRoot, "state directory")
 	group := fs.String("group", "care-clinic", "local group whose members may use the control pipe")
+	logUser := fs.String("log-user", "", "SID of the user whose log folder receives the service, engine and container logs")
 	noQEMU := fs.Bool("no-qemu", false, "do not copy qemu\\ (for testing the service without an engine)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -90,6 +94,11 @@ func serviceInstall(args []string) error {
 	}
 	if err := secureDir(*root); err != nil {
 		return err
+	}
+	if *logUser != "" {
+		if err := hostlogs.WriteUser(*root, *logUser); err != nil {
+			return err
+		}
 	}
 	m, err := mgr.Connect()
 	if err != nil {
@@ -117,7 +126,7 @@ func serviceInstall(args []string) error {
 		ErrorControl:     mgr.ErrorNormal,
 		ServiceType:      windows.SERVICE_WIN32_OWN_PROCESS,
 	}
-	svcArgs := []string{"--root", *root, "--group", *group, "--log-file", filepath.Join(*root, "logs", "service.log")}
+	svcArgs := []string{"--root", *root, "--group", *group, "--log-dir", filepath.Join(*root, "logs")}
 	if exists {
 		cfg.BinaryPathName = quoteCommandLine(append([]string{filepath.Join(bin, serviceExe)}, svcArgs...))
 		cfg.ServiceStartName = "LocalSystem"

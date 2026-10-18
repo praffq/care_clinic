@@ -203,6 +203,11 @@ the [demo feed](../demo/README.md).
 
 ## Tests
 
+- `app/internal/updates` `install_test.go`: first-install release choice
+  (newest, blocked, app or engine too old, unreachable or invalid feed), the
+  exact images pinned (images, support images, builders), the disk check and
+  the installed record. `app/internal/clinic` `setup_test.go`: the digests
+  pulled, their progress, and a retry that skips images already pulled.
 - `app/internal/updates`: every failure point of both operations (rolled back
   to a healthy clinic), a crash before and after every step followed by
   `Resume` or `Rollback`, crashes during rollback, rollback failure and
@@ -221,9 +226,22 @@ the [demo feed](../demo/README.md).
   rolled back via the database restore, a replayed revision and a tampered
   signature rejected, and "update not available" with its reason.
 
+## First install
+
+Setup on a computer with no CARE images uses the coordinator too
+(`install.go`): `LatestCompatible` fetches and verifies the feed like `Check`
+(same `verified.json`, same unsigned-feed rule and warning) and picks the
+newest compatible CARE release; `PrepareInstall` checks free disk and
+downloads development tarballs; the clinic pulls the release's images,
+support images and builders through `Runtime.Images`; and `RecordInstall`
+writes `installed.json` as a committed CARE update would, with an `applied`
+history entry carrying the feed revision. Fetch failures (here and in
+`Check`) wrap `ErrFeedUnreachable`. See
+[onboarding](onboarding.md#where-the-images-come-from).
+
 ## Adoption
 
-A clinic installed without the coordinator (e.g. `ctl clinic install`) has an
+A clinic installed without the coordinator (e.g. `ctl clinic install --images`) has an
 empty `installed.json`. On `Check` and `Apply` the coordinator adopts it: the
 engine from the service's current slot, and CARE by matching the running
 backend and frontend image digests (`stack.status`) against the feed's CARE

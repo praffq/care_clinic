@@ -101,7 +101,7 @@ func TestRunSetupRejectsAnInstalledClinicSynchronously(t *testing.T) {
 	if err := a.saveConfig(Config{Role: roleServer, SetupDone: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.RunSetup("care", settingsPassword); err == nil {
+	if err := a.RunSetup("care", settingsPassword, ""); err == nil {
 		t.Fatal("setup accepted an installed clinic")
 	}
 	if a.activeJob.Load() != nil && a.activeJob.Load() != "" {
@@ -116,7 +116,7 @@ func TestRunSetupValidatesBeforeLocking(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, pw string }{{"care", "weak"}, {"not a label!", settingsPassword}} {
-		if err := a.RunSetup(tc.name, tc.pw); err == nil {
+		if err := a.RunSetup(tc.name, tc.pw, ""); err == nil {
 			t.Fatalf("RunSetup(%q, %q) accepted", tc.name, tc.pw)
 		}
 	}

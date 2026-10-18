@@ -20,19 +20,23 @@ type UninstallOptions struct {
 	RemoveData bool
 	// RemoveInstallDir deletes this computer's copy of the deployment kit.
 	RemoveInstallDir bool
+	SkipStack        bool
 }
 
 // Uninstall removes the CARE stack from the engine and undoes this
 // computer's hosts entry, certificate trust and home access. The service and
 // engine stay installed.
 func (e *Clinic) Uninstall(opts UninstallOptions) error {
-	r, err := e.runtime()
-	if err != nil {
-		return err
-	}
-	rootPEM := e.caddyRootPEM()
-	if err := r.Down(e.context(), opts.RemoveData); err != nil {
-		return fmt.Errorf("couldn't remove CARE from the engine: %w", err)
+	rootPEM := ""
+	if !opts.SkipStack {
+		r, err := e.runtime()
+		if err != nil {
+			return err
+		}
+		rootPEM = e.caddyRootPEM()
+		if err := r.Down(e.context(), opts.RemoveData); err != nil {
+			return fmt.Errorf("couldn't remove CARE from the engine: %w", err)
+		}
 	}
 	var failed []error
 	for _, detail := range e.revertSystemChanges(rootPEM) {

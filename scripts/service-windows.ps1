@@ -2,7 +2,9 @@
 #
 #   scripts\service-windows.ps1 install           build, stage QEMU and install; start at boot
 #   scripts\service-windows.ps1 uninstall [-Purge] stop and remove (-Purge also
-#                                                 deletes the engine data disk)
+#                                                 deletes the engine data disk;
+#                                                 %LOCALAPPDATA%\care-clinic\logs
+#                                                 is always kept)
 #   scripts\service-windows.ps1 status            service and engine status
 #
 # Run from a normal PowerShell as your admin account: install builds as you,
@@ -20,7 +22,7 @@ $service = 'CareClinic'
 $group = 'care-clinic'
 $root = Join-Path $env:ProgramData 'CARE Clinic'
 $bin = Join-Path $root 'bin\care-clinic-service.exe'
-$log = Join-Path $root 'logs\service.log'
+$log = Join-Path $env:LOCALAPPDATA 'care-clinic\logs\service.log'
 $repo = Split-Path -Parent $PSScriptRoot
 
 function Die([string]$msg) {
@@ -70,7 +72,7 @@ function Install-Built {
 
     # Copies the service and qemu\ to $root\bin, registers the service and
     # opens the firewall; stops a running service first.
-    Invoke-Native $exe @('service', 'install', '--group', $group)
+    Invoke-Native $exe @('service', 'install', '--group', $group, '--log-user', $UserSid)
     Invoke-Native $bin @('service', 'start')
     Write-Host "installed and started $service"
     if ($whpx -eq 'EnablePending') {
@@ -136,7 +138,7 @@ function Uninstall-Cmd {
     Write-Host "removed $service (the $group group is kept)"
     if ($Purge) {
         Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-        Write-Host "purged $root"
+        Write-Host "purged $root (the logs in %LOCALAPPDATA%\care-clinic\logs are kept)"
     } else {
         Write-Host "kept engine data and slots in $root (use -Purge to delete them)"
     }
@@ -179,7 +181,7 @@ switch ($Command) {
     }
     'status' { Status-Cmd }
     default {
-        Get-Content $PSCommandPath | Select-Object -Skip 1 -First 8 | ForEach-Object { [Console]::Error.WriteLine($_) }
+        Get-Content $PSCommandPath | Select-Object -Skip 1 -First 10 | ForEach-Object { [Console]::Error.WriteLine($_) }
         exit 2
     }
 }

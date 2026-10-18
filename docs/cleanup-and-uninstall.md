@@ -13,13 +13,13 @@ the engine.
 | --- | --- | --- | --- |
 | Pause the clinic | `ClinicAction("stop")` | Nothing; the stack stops. | Containers, data, configuration. |
 | Remove the clinic | `RunUninstall(removeData, adminPassword)` | The stack in the engine; with **also delete clinic data**, its database, files and uploaded configuration. This computer's hosts entry, certificate trust, firewall rules and Tailscale home access; the install folder; `config.json` is reset to `{}`. | The service, the engine and its slots, the app, logs. Without **also delete clinic data**, the clinic's volumes in the engine. |
+| Remove an earlier setup before a new one | `ScanResidue()`, `PurgeResidue(true)` from the setup wizard | Everything [the scan reports](onboarding.md#2-cleanup-of-an-earlier-setup): the earlier clinic in the engine with its data, v1 Docker resources and start-at-login entry, the install folder, `secrets.env`, the hosts entry, certificate trust, CARE firewall rules, Tailscale home access, saved settings other than the role. | The service, the engine and its slots, exported backups and the backup key, recovery codes, logs. |
 | Recover from failed first setup | `CleanupFailedInstall()` | The unfinished clinic in the engine (with its data) and the install folder. If the service isn't answering, only the install folder. The saved name and password hash are forgotten. | The role, the service and the engine. |
 | Disconnect a client | `DisconnectClient()` | This client's hosts entry and owned certificate, then the role. See [native integrations](native-integrations.md#removing-client-access). | Certificates this client did not install. |
 | Remove the desktop app | `RemoveApp()`, or the Windows uninstaller | The app. | Everything else. |
 | Remove the service and engine | `scripts/service-macos.sh uninstall [--purge]` | See [section 4](#4-removing-the-service-and-engine). | |
 
-Backups, residue scans and "Remove everything" were removed in v2;
-they return later via engine agent ops.
+"Remove everything" was removed in v2.
 
 ## 2. Uninstall, phase by phase
 
@@ -90,14 +90,34 @@ The app never removes `care-clinic-service`. On macOS:
 
 ```sh
 scripts/service-macos.sh uninstall          # stop and remove the LaunchDaemon and binary
-scripts/service-macos.sh uninstall --purge  # also delete engine slots, VM data and logs
+scripts/service-macos.sh uninstall --purge  # also delete engine slots, VM data and /Library/Logs/care-clinic
 ```
 
 Without `--purge`, `/Library/Application Support/care-clinic` (engine slots
-and VM disks, including any clinic data still in them) and
-`/Library/Logs/care-clinic` are kept. The `care-clinic` group is kept either
-way. Run the clinic uninstall first if its hosts entry and certificate
-trust should be reverted too.
+and VM disks, including any clinic data still in them, and the saved log
+positions in `logs-state.json`) and `/Library/Logs/care-clinic` are kept.
+The `care-clinic` group is kept either way. Run the clinic uninstall first if
+its hosts entry and certificate trust should be reverted too.
+
+### Logs are always kept
+
+No removal path deletes the log folder, so the logs stay usable after the VM,
+the service or the app is gone:
+
+| Platform | Log folder |
+| --- | --- |
+| macOS | `~/Library/Logs/care-clinic/` |
+| Windows | `%LOCALAPPDATA%\care-clinic\logs\` |
+| Linux | `$XDG_STATE_HOME/care-clinic/` (default `~/.local/state/care-clinic/`) |
+
+It holds `care-log.log` (the app), `service.log`, `engine-console.log`,
+`guest-system.log`, `containers/<name>.log`, `collector.log` and
+`app-update-helper.log`; see [Local logs](local-logs.md). Neither the clinic
+uninstall, the app's removal, the Windows uninstaller, `service-macos.sh
+uninstall --purge` nor `service-windows.ps1 uninstall -Purge` touches it.
+The files are small (at most 100 MiB together) and expire on their own after
+7 days without changes while the service runs; delete the folder by hand to
+remove them sooner.
 
 ## 5. Invariants
 

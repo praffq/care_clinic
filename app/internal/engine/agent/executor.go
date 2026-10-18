@@ -44,6 +44,9 @@ type Executor interface {
 	Manage(ctx context.Context, op protocol.ManageCmd, password []byte, em Emitter) error
 	BackupRun(ctx context.Context, em Emitter) (protocol.BackupRunResult, error)
 
+	LogsSystem(ctx context.Context, op protocol.LogsSystem, em Emitter) error
+	LogsContainers(ctx context.Context, op protocol.LogsContainers, em Emitter) error
+
 	// Containers returns one human-readable line per container for diagnostics.
 	Containers(ctx context.Context) ([]string, error)
 	// SetTime sets the VM clock.
@@ -56,6 +59,9 @@ type Executor interface {
 var readOnlyOps = map[string]bool{
 	protocol.OpStackStatus: true,
 	protocol.OpStackLogs:   true,
+
+	protocol.OpLogsSystem:     true,
+	protocol.OpLogsContainers: true,
 }
 
 // emptyResult is the result payload of ops that return nothing.
@@ -93,6 +99,10 @@ func dispatch(ctx context.Context, ex Executor, op protocol.Op, body io.Reader, 
 		return none(ex.Manage(ctx, *o, password, em))
 	case *protocol.BackupRun:
 		return ex.BackupRun(ctx, em)
+	case *protocol.LogsSystem:
+		return none(ex.LogsSystem(ctx, *o, em))
+	case *protocol.LogsContainers:
+		return none(ex.LogsContainers(ctx, *o, em))
 	}
 	return nil, &protocol.OpError{Code: protocol.CodeNotImplemented, Message: "no executor for op " + op.OpName()}
 }

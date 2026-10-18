@@ -116,7 +116,7 @@ func (m *vzMachine) Start(ctx context.Context) (err error) {
 // startConsole opens the console log and returns the write end of a pipe
 // whose output is copied to it (and to ConsoleMirror).
 func (m *vzMachine) startConsole() (*os.File, error) {
-	log, err := openConsoleLog(m.cfg.ConsoleLog, m.cfg.ConsoleLogMaxBytes)
+	log, err := m.cfg.openConsole()
 	if err != nil {
 		return nil, err
 	}

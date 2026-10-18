@@ -41,8 +41,8 @@ func TestRotation(t *testing.T) {
 		}
 		return string(b)
 	}
-	cur, one, two := read(path), read(path+".1"), read(path+".2")
-	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
+	cur, one, two := read(path), read(filepath.Join(dir, "service.1.log")), read(filepath.Join(dir, "service.2.log"))
+	if _, err := os.Stat(filepath.Join(dir, "service.3.log")); !os.IsNotExist(err) {
 		t.Fatalf("kept more than 2 rotated files: %v", err)
 	}
 	for _, s := range []string{cur, one, two} {
@@ -54,6 +54,6 @@ func TestRotation(t *testing.T) {
 		t.Fatalf("current log = %q", cur)
 	}
 	if !strings.Contains(one, "line 17") || strings.Contains(one, "line 19") {
-		t.Fatalf("service.log.1 = %q", one)
+		t.Fatalf("service.1.log = %q", one)
 	}
 }

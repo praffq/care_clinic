@@ -47,7 +47,7 @@ export function Callout({ title, children, tone = "neutral" }: {
   );
 }
 
-export function LogButton({ label = "Open log file" }: { label?: string }) {
+export function LogButton({ label = "Open log folder" }: { label?: string }) {
   const { log } = useCare();
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -61,7 +61,7 @@ export function LogButton({ label = "Open log file" }: { label?: string }) {
         setError("");
         void bridge.OpenLogFolder().catch((e) => {
           log(`open log: ${errorText(e)}`);
-          setError("Couldn't open the log file. Try again, or ask the person who looks after this computer.");
+          setError("Couldn't open the log folder. Try again, or ask the person who looks after this computer.");
         }).finally(() => { pending.current = false; setBusy(false); });
       }}><FileText aria-hidden="true" />{label}</Button>
       {error ? <span role="alert" className="on-error">{error}</span> : null}

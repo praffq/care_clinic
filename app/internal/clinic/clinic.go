@@ -29,6 +29,7 @@ type Clinic struct {
 	// StackPlugs is the ADDITIONAL_PLUGS StackImages are installed with
 	// (updates.Coordinator.InstallPlugs); "" means the catalog defaults.
 	StackPlugs string
+	FromFeed   ReleaseFunc
 	// Progress receives the setup steps (Step* constants).
 	Progress progress.Func
 

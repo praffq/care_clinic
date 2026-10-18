@@ -27,17 +27,15 @@ func (c *Coordinator) adopt(ctx context.Context, m *feed.Manifest, in Installed)
 		return c.st.save(InstalledFile, in)
 	}
 	if in.Engine == nil {
-		sl, err := c.o.Service.Slots(ctx)
+		e, err := c.activeEngine(ctx)
 		if err != nil {
-			return in, fmt.Errorf("engine slots: %w", err)
+			return in, err
 		}
-		for _, s := range sl.Slots {
-			if sl.Current != "" && s.Version == sl.Current {
-				in.Engine = &InstalledEngine{Version: s.Version, DataSchema: s.DataSchema, SHA256: s.TarballSHA256}
-				c.logf("Adopted the installed engine %s", s.Version)
-				if err := save(); err != nil {
-					return in, err
-				}
+		if e != nil {
+			in.Engine = e
+			c.logf("Adopted the installed engine %s", e.Version)
+			if err := save(); err != nil {
+				return in, err
 			}
 		}
 	}
@@ -80,6 +78,19 @@ func (c *Coordinator) adopt(ctx context.Context, m *feed.Manifest, in Installed)
 		}
 	}
 	return in, nil
+}
+
+func (c *Coordinator) activeEngine(ctx context.Context) (*InstalledEngine, error) {
+	sl, err := c.o.Service.Slots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("engine slots: %w", err)
+	}
+	for _, s := range sl.Slots {
+		if sl.Current != "" && s.Version == sl.Current {
+			return &InstalledEngine{Version: s.Version, DataSchema: s.DataSchema, SHA256: s.TarballSHA256}, nil
+		}
+	}
+	return nil, nil
 }
 
 func short(d protocol.Digest) string {

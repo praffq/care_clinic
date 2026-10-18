@@ -40,7 +40,7 @@ export function StartUpdateCard({ controller, context = "start" }: {
       log(`open ${kind}: ${errorText(error)}`);
       setActionError(kind === "notes"
         ? "Couldn't open what's new. Try again."
-        : "Couldn't open the log file. Try again, or ask the person who looks after this computer.");
+        : "Couldn't open the log folder. Try again, or ask the person who looks after this computer.");
     } finally {
       openingRef.current = false;
       setOpening(false);
@@ -182,7 +182,7 @@ export function StartUpdateCard({ controller, context = "start" }: {
               </Button>
               {showLog ? (
                 <Button variant="glass" size="sm" disabled={opening} onClick={() => void open("log")}>
-                  <FileText aria-hidden="true" />Open log file
+                  <FileText aria-hidden="true" />Open log folder
                 </Button>
               ) : null}
             </div>

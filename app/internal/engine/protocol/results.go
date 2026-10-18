@@ -99,10 +99,13 @@ type Progress struct {
 
 // LogLine is one line of service or command output.
 type LogLine struct {
-	Service Service   `json:"service,omitempty"`
-	Time    time.Time `json:"time,omitzero"`
-	Stream  string    `json:"stream,omitempty"` // stdout or stderr
-	Line    string    `json:"line"`
+	Service   Service   `json:"service,omitempty"`
+	Time      time.Time `json:"time,omitzero"`
+	Stream    string    `json:"stream,omitempty"` // stdout or stderr
+	Line      string    `json:"line"`
+	Source    string    `json:"source,omitempty"`
+	Container string    `json:"container,omitempty"`
+	Cursor    string    `json:"cursor,omitempty"`
 }
 
 // OpError is a terminal failure of a streamed op.

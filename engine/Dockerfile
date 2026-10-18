@@ -37,6 +37,7 @@ RUN apk add --no-cache \
  && rc-update add hostname boot \
  && rc-update add bootmisc boot \
  && rc-update add syslog boot \
+ && rc-update add klogd boot \
  && rc-update add networking boot \
  && rc-update add chronyd default \
  && rc-update add crond default \

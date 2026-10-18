@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
+import { completeBackups, saveRecoveryCodes } from "./helpers/setup";
 
 const samplePassword = "ClinicTest123";
 const forward = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
@@ -46,6 +47,7 @@ async function address(page: Page, platform = "darwin") {
 async function admin(page: Page, platform = "darwin") {
   await address(page, platform);
   await forward(page).click();
+  await completeBackups(page);
   await expect(page.getByRole("heading", { name: "Creating the admin password" })).toBeVisible();
 }
 async function fillPassword(page: Page, password = samplePassword) {
@@ -62,6 +64,7 @@ test("admin setup reminds the user to save the password securely", async ({ page
 async function review(page: Page, platform = "darwin") {
   await admin(page, platform);
   await fillPassword(page);
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
   await forward(page).click();
   await expect(page.getByRole("heading", { name: "Review before installing" })).toBeVisible();
@@ -399,7 +402,7 @@ test("address check failures offer a log without putting technical causes on scr
   await page.getByLabel("Clinic address", { exact: true }).fill("care-hospital");
   await expect(page.getByText("Couldn't check or save this clinic address. Try again, or share the log file with your support contact.")).toBeVisible();
   await expect(forward(page)).toBeDisabled();
-  await page.getByRole("button", { name: "Open log file", exact: true }).click();
+  await page.getByRole("button", { name: "Open log folder", exact: true }).click();
   expect(await calls(page, "OpenLogFolder")).toBe(1);
   expect(await page.locator("body").innerText()).not.toContain("private multicast lookup failed");
   await page.getByRole("button", { name: "Check again", exact: true }).click();
@@ -436,6 +439,7 @@ test("a synchronous invalid-address retry releases the update lock", async ({ pa
 test("password validity resets immediately when input changes and stale validation cannot pass", async ({ page }) => {
   await admin(page);
   await fillPassword(page);
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
   await page.evaluate(() => window.careTest.hold("ValidatePassword"));
   await fillPassword(page, "weak");
@@ -460,6 +464,7 @@ test("password validator failures never log submitted credentials or host secret
   }
   expect(await page.locator("body").innerText()).not.toContain(privateError);
   await fillPassword(page, "UpdatedClinic123");
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
 });
 
@@ -471,7 +476,45 @@ test("a missing background service can be installed from the computer step", asy
   await expect(forward(page)).toBeEnabled();
   expect(await calls(page, "InstallService")).toBe(1);
   await forward(page).click();
+  await expect(page.getByRole("heading", { name: "Removing stale files from an earlier setup" })).toBeVisible();
+  await forward(page).click();
   await expect(page.getByRole("heading", { name: "Choosing the clinic address" })).toBeVisible();
+});
+
+test("leftovers from an earlier setup block Continue until they are removed", async ({ page }) => {
+  await page.goto("/tests/fixtures/index.html?scenario=setup-cleanup");
+  await expect(page.getByRole("heading", { name: "Checking this computer" })).toBeVisible();
+  await forward(page).click();
+  await expect(page.getByRole("heading", { name: "Removing stale files from an earlier setup" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Still on this computer" })).toBeVisible();
+  for (const label of ["Old clinic data", "Installed files", "Hosts file entry"]) {
+    await expect(page.locator(".on-leftovers li", { hasText: label })).toBeVisible();
+  }
+  await expect(forward(page)).toBeDisabled();
+  expect(await calls(page, "PurgeResidue")).toBe(0);
+  await page.evaluate(() => window.careTest.failNext("PurgeResidue", "could not remove the hosts entry: permission denied"));
+  await page.getByRole("button", { name: "Remove it all", exact: true }).click();
+  await expect(page.getByText("Cleanup didn't finish.", { exact: false })).toBeVisible();
+  await expect(page.locator(".on-leftovers li", { hasText: "Hosts file entry" })).toContainText("Still here");
+  await expect(forward(page)).toBeDisabled();
+  await page.locator(".on-card").getByRole("button", { name: "Try again", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Nothing from the earlier setup is left" })).toBeVisible();
+  await expect(page.locator(".on-leftovers li", { hasText: "Old clinic data" })).toContainText("Removed");
+  expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "PurgeResidue").map((call) => call.args))).toEqual([[true], [true]]);
+  await expect(forward(page)).toBeEnabled();
+  await forward(page).click();
+  await expect(page.getByRole("heading", { name: "Choosing the clinic address" })).toBeVisible();
+  expect(await calls(page, "RunSetup")).toBe(0);
+});
+
+test("a clean computer passes the cleanup step without removing anything", async ({ page }) => {
+  await page.goto("/tests/fixtures/index.html?scenario=current&role=server");
+  await continueTo(page, "Removing stale files from an earlier setup");
+  await expect(page.getByRole("heading", { name: "Nothing from the earlier setup is left" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove it all", exact: true })).toHaveCount(0);
+  await expect(forward(page)).toBeEnabled();
+  expect(await calls(page, "ScanResidue")).toBeGreaterThan(0);
+  expect(await calls(page, "PurgeResidue")).toBe(0);
 });
 
 test("a failing computer check blocks Continue until Re-check passes", async ({ page }) => {
@@ -537,20 +580,20 @@ test("RunSetup rejection before acceptance stays on Review; acceptance alone ent
   expect(await page.evaluate(() => {
     const attempts = window.careTest.calls.filter((call) => call.method === "RunSetup");
     return attempts[attempts.length - 1]?.args;
-  })).toEqual(["care.local", samplePassword]);
+  })).toEqual(["care.local", samplePassword, ""]);
 });
 
-test("installation preserves the 5-step wizard rail", async ({ page }) => {
+test("installation preserves the 7-step wizard rail", async ({ page }) => {
   await review(page);
   const rail = page.getByRole("complementary", { name: "Setup progress" });
   const labels = rail.locator(".on-rail-step > span:nth-child(2)");
-  await expect(rail).toContainText("Step 4 of 5");
+  await expect(rail).toContainText("Step 6 of 7");
   const reviewedPages = await labels.allTextContents();
-  expect(reviewedPages).toHaveLength(5);
+  expect(reviewedPages).toHaveLength(7);
   await page.evaluate(() => window.careTest.respond("RunSetup", undefined));
   await install(page).click();
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
-  await expect(rail).toContainText("Step 5 of 5");
+  await expect(rail).toContainText("Step 7 of 7");
   await expect(labels).toHaveText(reviewedPages);
   await expect(rail.locator('[aria-current="step"]')).toContainText("Install");
   await capture(page, "onboarding-install-rail");
@@ -564,13 +607,20 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     await expect(forward(page)).toBeEnabled();
     await fits(page); await capture(page, `onboarding-computer-${size.width}x${size.height}`);
     await forward(page).click();
+    await expect(page.getByRole("heading", { name: "Removing stale files from an earlier setup" })).toBeVisible();
+    await expect(forward(page)).toBeEnabled();
+    await fits(page); await capture(page, `onboarding-cleanup-${size.width}x${size.height}`);
+    await forward(page).click();
     await expect(page.getByRole("heading", { name: "Choosing the clinic address" })).toBeVisible();
     await expect(forward(page)).toBeEnabled();
     await fits(page); await capture(page, `onboarding-address-${size.width}x${size.height}`);
     await forward(page).click();
-    await expect(page.getByRole("heading", { name: "Creating the admin password" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Setting up backups" })).toBeVisible();
+    await fits(page); await capture(page, `onboarding-backup-${size.width}x${size.height}`);
+    await completeBackups(page);
     await fits(page); await capture(page, `onboarding-admin-${size.width}x${size.height}`);
     await fillPassword(page);
+    await saveRecoveryCodes(page);
     await expect(forward(page)).toBeEnabled();
     await forward(page).click();
     await expect(install(page)).toBeEnabled();
@@ -605,6 +655,7 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     for (const [scenario, title] of [
       ["setup-service", "Checking this computer"],
       ["setup-memory", "Checking this computer"],
+      ["setup-cleanup", "Removing stale files from an earlier setup"],
       ["setup-address", "Choosing the clinic address"],
     ] as const) {
       await page.goto(`/tests/fixtures/index.html?scenario=${scenario}`);

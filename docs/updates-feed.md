@@ -59,6 +59,8 @@ which the tests sign and verify.
   An optional `tar` URL points at an image tarball for development feeds that
   side-load locally built images; it must be saved under the `ref`'s
   repository (its `index.json` image name), which the coordinator checks.
+  An optional `size` (bytes, >= 0) is the image's download size; a first
+  install uses it to check the engine's free disk space before downloading.
 - `build_env` is the `REACT_*` settings the release's frontend was built with
   (CI publishes `deployments/frontend.env`); keys match
   `^REACT_[A-Z0-9_]{1,60}$`; known keys (`protocol.FrontendBuildKeys`) follow
@@ -184,6 +186,16 @@ If the feed later adds engine `0.2.0` requiring desktop `>=0.3.0` while no
 such desktop is published, the plan still takes engine `0.1.1` and the new
 CARE, and `Held` reports why engine `0.2.0` was skipped. These cases are
 covered by `TestResolvePlan` in `app/internal/feed/plan_test.go`.
+
+## First install
+
+A computer with no clinic does not plan an update; it installs one CARE
+release (`feed.LatestCompatibleCare`): the newest by `CareRelease.Newer` that
+is not `blocked` and whose `requires.desktop` and `requires.engine` hold for
+the running app and engine. When none fits, the error names what the newest
+unblocked release needs, e.g. "CARE 3.1.0 needs app ≥ 0.3.0 (this app is
+0.2.0); update the app first." See
+[onboarding](onboarding.md#where-the-images-come-from).
 
 ## Release tooling: `app/cmd/release`
 

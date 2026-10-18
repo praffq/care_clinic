@@ -129,7 +129,8 @@ export function FailedScreen() {
         <div className="on-card-head">
           <span className="on-tile on-large on-bad" aria-hidden="true"><AlertTriangle /></span>
           <div className="on-grow"><h2 id="install-failure-heading">CARE couldn't finish setting up the clinic</h2>
-            <p>{failedStep ? `It stopped at “${failedStep.label}”.` : "It stopped partway through."} The details are in the log file.</p></div>
+            <p>{failedStep ? `It stopped at “${failedStep.label}”.` : "It stopped partway through."} The details are in the log file.</p>
+            {run.failure?.message ? <p className="install-failure-reason" role="alert">{run.failure.message}</p> : null}</div>
         </div>
         <LogButton />
       </section>

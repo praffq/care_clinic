@@ -418,8 +418,14 @@ func TestDown(t *testing.T) {
 	svc := stacktest.New(t)
 	state := t.TempDir()
 	r := &Runtime{Service: svc, StateDir: state}
+	if configured, err := r.Configured(ctxT(t)); err != nil || configured {
+		t.Fatalf("a fresh engine reported a clinic: %v, %v", configured, err)
+	}
 	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages(), ""); err != nil {
 		t.Fatal(err)
+	}
+	if configured, err := r.Configured(ctxT(t)); err != nil || !configured {
+		t.Fatalf("an installed clinic was not reported: %v, %v", configured, err)
 	}
 	if err := r.Down(ctxT(t), false); err != nil {
 		t.Fatal(err)
@@ -439,6 +445,9 @@ func TestDown(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, SecretsEnv)); !os.IsNotExist(err) {
 		t.Errorf("host secrets kept after purge: %v", err)
+	}
+	if configured, err := r.Configured(ctxT(t)); err != nil || configured {
+		t.Errorf("a purged clinic was still reported: %v, %v", configured, err)
 	}
 }
 
