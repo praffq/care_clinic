@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
+import { continueServerChecks, saveRecoveryCodes } from "./helpers/setup";
 
 const password = "ClinicTest123";
 const reminder = (page: Page) => page.getByLabel("Recovery codes reminder", { exact: true });
@@ -117,4 +118,93 @@ test("the recovery banner and save dialog fit a small window", async ({ page }) 
   expect(bounds!.y).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(720);
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(560);
+});
+
+const forward = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
+const codesCard = (page: Page) => page.getByRole("region", { name: "Recovery codes", exact: true });
+const setupCalls = (page: Page, method: string) => page.evaluate((name) =>
+  window.careTest.calls.filter((call) => call.method === name).length, method);
+
+async function setupAdmin(page: Page, platform = "darwin") {
+  await page.goto(`/tests/fixtures/index.html?scenario=current&role=server&platform=${platform}`);
+  await continueServerChecks(page);
+  await page.getByLabel("Clinic address", { exact: true }).fill("care");
+  await expect(forward(page)).toBeEnabled();
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Creating the admin password");
+}
+async function fillSetupPassword(page: Page, value = password) {
+  await page.getByLabel("Password", { exact: true }).fill(value);
+  await page.getByLabel("Confirm password", { exact: true }).fill(value);
+}
+
+test("setup asks for recovery codes after the password and blocks Continue until they are saved", async ({ page }) => {
+  await setupAdmin(page);
+  const choose = codesCard(page).getByRole("button", { name: "Choose where to save", exact: true });
+  await expect(codesCard(page)).toContainText("Forgot your CARE Clinic password?");
+  await expect(choose).toBeDisabled();
+  await expect(codesCard(page)).toContainText("Set your password first.");
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await expect(codesCard(page)).toContainText("Confirm your password first.");
+  await page.getByLabel("Confirm password", { exact: true }).fill(password);
+  await expect(choose).toBeEnabled();
+  await expect(forward(page)).toBeDisabled();
+  await expect(page.getByText("Choose a password and save your recovery codes to continue.")).toBeVisible();
+
+  await page.evaluate(() => { window.careTest.fixtures.setupCodesTarget = ""; });
+  await choose.click();
+  await expect.poll(() => setupCalls(page, "SaveSetupRecoveryCodes")).toBe(1);
+  await expect(choose).toBeEnabled();
+  await expect(forward(page)).toBeDisabled();
+
+  await page.evaluate(() => { window.careTest.fixtures.setupCodesTarget = "/Users/test/Documents/CARE-care-clinic-admin-codes.txt"; });
+  await saveRecoveryCodes(page);
+  await expect(codesCard(page)).toContainText("Saved to /Users/test/Documents/CARE-care-clinic-admin-codes.txt");
+  await expect(codesCard(page).getByRole("button", { name: "Open folder" })).toHaveCount(0);
+  await expect(forward(page)).toBeEnabled();
+
+  await codesCard(page).getByRole("button", { name: "Open to print", exact: true }).click();
+  await expect.poll(() => setupCalls(page, "OpenSetupRecoveryCodes")).toBe(1);
+  const before = await page.evaluate(() => window.careTest.fixtures.recoveryCodes[0]);
+  await codesCard(page).getByRole("button", { name: "Save a new set", exact: true }).click();
+  await expect.poll(() => setupCalls(page, "SaveSetupRecoveryCodes")).toBe(3);
+  expect(await page.evaluate(() => window.careTest.fixtures.recoveryCodes[0])).not.toBe(before);
+
+  await fillSetupPassword(page, "ChangedClinic456");
+  await expect(codesCard(page)).toContainText("Recovery codes saved");
+  await expect(forward(page)).toBeEnabled();
+  await forward(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Review before installing");
+  await expect(page.getByRole("region", { name: "Admin login" })).toContainText("Password set · six recovery codes saved");
+});
+
+test("setup recovery code problems explain what to do", async ({ page }) => {
+  await setupAdmin(page);
+  await fillSetupPassword(page);
+  await page.evaluate(() => window.careTest.failNext("SaveSetupRecoveryCodes", "keep recovery files outside CARE's settings, installation, logs and backup folders (/private)"));
+  await codesCard(page).getByRole("button", { name: "Choose where to save", exact: true }).click();
+  await expect(page.getByText("That folder belongs to CARE.", { exact: false })).toBeVisible();
+  await expect(page.getByText("/private", { exact: false })).toHaveCount(0);
+  await expect(forward(page)).toBeDisabled();
+
+  await saveRecoveryCodes(page);
+  await expect(page.getByText("That folder belongs to CARE.", { exact: false })).toHaveCount(0);
+  await page.evaluate(() => { window.careTest.fixtures.setupCodesProblem = "missing"; });
+  await codesCard(page).getByRole("button", { name: "Open to print", exact: true }).click();
+  await expect(page.getByText("The recovery codes file couldn't be opened.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Check saved files again", exact: true }).click();
+  await expect(page.getByText("The recovery codes file isn't available")).toBeVisible();
+  await expect(forward(page)).toBeDisabled();
+  await codesCard(page).getByRole("button", { name: "Choose where to save", exact: true }).click();
+  await expect(page.getByText("The recovery codes file isn't available")).toHaveCount(0);
+  await expect(forward(page)).toBeEnabled();
+});
+
+test("setup on Windows can open the recovery codes folder and warns about OneDrive", async ({ page }) => {
+  await setupAdmin(page, "windows");
+  await expect(page.getByText("Desktop may sync to OneDrive.", { exact: false })).toBeVisible();
+  await fillSetupPassword(page);
+  await saveRecoveryCodes(page);
+  await codesCard(page).getByRole("button", { name: "Open folder", exact: true }).click();
+  await expect.poll(() => setupCalls(page, "OpenSetupRecoveryFolder")).toBe(1);
 });

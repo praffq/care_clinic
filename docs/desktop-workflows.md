@@ -40,7 +40,9 @@ yet. The full sequence is in [server onboarding](onboarding.md).
 3. **Admin password.** Choose the CARE Clinic password: 8 to 20 characters
    with an uppercase letter, a lowercase letter and a digit. It also becomes
    the password of the CARE web login `admin`. Save it in a password manager.
-   After setup the control panel asks you to save one-time recovery codes.
+   Then save six one-time recovery codes to a file you choose; Continue stays
+   disabled until they are saved. You can open the sheet to print it, or save
+   a new set, which cancels the old one.
 4. **Install.** CARE installs the engine if needed, then the clinic, and
    streams progress from the log. The bar is indeterminate. Success opens the
    control panel; at the end CARE offers to set up this computer's browser for

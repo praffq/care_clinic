@@ -181,8 +181,8 @@ supplied CARE Clinic password through their native guards. Start, Stop and
 Restart need no password.
 
 The CARE Clinic password is distinct from the operating-system password used for
-privilege prompts and from the CARE web login after initial setup. There are no recovery codes for the CARE Clinic
-password.
+privilege prompts and from the CARE web login after initial setup. Six one-time
+recovery codes, saved during setup or later from Advanced, can reset it.
 
 ## Environment-file API
 

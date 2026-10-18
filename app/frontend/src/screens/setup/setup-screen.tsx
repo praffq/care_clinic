@@ -12,7 +12,7 @@ import type { SetupForm } from "@/state/forms";
 import type { HostReport, SetupPage } from "@/types";
 import { AddressStep, AdminStep, ComputerStep, ReviewStep, type AddressResult, type SetupIssue } from "./configuration-steps";
 import { SetupLayout } from "./setup-layout";
-import { installServiceProblem } from "./setup-model";
+import { EMPTY_RECOVERY, installServiceProblem, recoveryProblem } from "./setup-model";
 
 const STEPS: SetupPage[] = ["computer", "address", "admin", "review", "install"];
 
@@ -61,6 +61,8 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const reportRef = useRef<HostReport | null>(null);
   const [serviceProblem, setServiceProblem] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [recovery, setRecovery] = useState(EMPTY_RECOVERY);
+  const [recoveryError, setRecoveryError] = useState("");
   const [address, setAddress] = useState<AddressResult>({ name: "", state: "waiting", message: "" });
   const [addressPending, setAddressPending] = useState(0);
   const [addressQueued, setAddressQueued] = useState(false);
@@ -79,7 +81,8 @@ function SetupWizard({ form, patch, update, onBusy }: {
   const busy = operation !== "" || addressQueued || addressPending > 0 || care.busy;
   const locked = busy || update.active;
   const computerReady = report?.ready === true;
-  const adminReady = strength.strong && !!form.adminConfirm && form.adminPassword === form.adminConfirm && !passwordError;
+  const adminReady = strength.strong && !!form.adminConfirm && form.adminPassword === form.adminConfirm && !passwordError
+    && recovery.codes_saved && !recovery.codes_problem && !recoveryError;
   const addressReady = address.state === "ready" && address.name === normaliseHost(form.hostInput) && isClinicName(form.hostInput);
   const syncBusy = useCallback(() => {
     onBusy(workRef.current || addressQueuedRef.current || addressTasks.current.size > 0);
@@ -95,6 +98,11 @@ function SetupWizard({ form, patch, update, onBusy }: {
   }, []);
 
   const markDone = (step: SetupPage, value: boolean) => setDone((prev) => ({ ...prev, [step]: value }));
+  const loadRecovery = async () => {
+    const status = await bridge.GetSetupRecoveryStatus();
+    if (mounted.current) { setRecovery(status); setRecoveryError(""); }
+    return status;
+  };
   const changeForm = (values: Partial<SetupForm>) => {
     formRef.current = { ...formRef.current, ...values };
     patch(values);
@@ -174,6 +182,9 @@ function SetupWizard({ form, patch, update, onBusy }: {
       result.push({ step: "admin", message: "Choose a stronger admin password before installing." });
     } else if (latest.adminPassword !== latest.adminConfirm) {
       result.push({ step: "admin", message: "Both passwords must match before installing." });
+    } else {
+      const status = await loadRecovery();
+      if (!status.codes_saved || status.codes_problem) result.push({ step: "admin", message: "Save your recovery codes before installing." });
     }
     setIssues(result);
     setVerified(true);
@@ -192,18 +203,21 @@ function SetupWizard({ form, patch, update, onBusy }: {
     setEditing(editingRef.current);
     if (target === "computer") { await checkComputer(); return; }
     if (target === "address") { await checkAddress(formRef.current.hostInput); return; }
+    if (target === "admin") { await loadRecovery(); return; }
     if (target === "review") { await validateReview(); return; }
   };
 
-  const execute = async (name: string, fn: () => Promise<void>) => {
+  const execute = async (name: string, fn: () => Promise<void>, recoveryAction = false) => {
     if (workRef.current || addressQueuedRef.current || addressTasks.current.size || update.isActive() || care.busy) return;
     workRef.current = true;
     onBusy(true);
     setOperation(name);
     setProblem("");
+    if (recoveryAction) setRecoveryError("");
     try { await fn(); } catch (e) {
       care.log(`setup ${name}: ${errorText(e)}`);
-      setProblem("This step couldn't finish. Try again. If it keeps happening, share the log file with your support contact.");
+      if (recoveryAction) setRecoveryError(recoveryProblem(errorText(e)));
+      else setProblem("This step couldn't finish. Try again. If it keeps happening, share the log file with your support contact.");
     } finally {
       workRef.current = false;
       syncBusy();
@@ -291,13 +305,25 @@ function SetupWizard({ form, patch, update, onBusy }: {
     else if (target === "address") ok = await checkAddress(latest.hostInput);
     else if (target === "admin") {
       const invalid = await bridge.ValidatePassword(latest.adminPassword);
-      ok = !invalid && latest.adminPassword === latest.adminConfirm;
-      if (!ok) setPasswordError("Choose and confirm a valid password before continuing.");
+      const status = await loadRecovery();
+      ok = !invalid && latest.adminPassword === latest.adminConfirm && status.codes_saved && !status.codes_problem;
+      if (invalid || latest.adminPassword !== latest.adminConfirm) setPasswordError("Choose and confirm a valid password before continuing.");
+      else if (!ok) setRecoveryError("Save your recovery codes before continuing.");
     }
     markDone(target, ok);
     if (ok) await visit(editingRef.current ? "review" : nextAfter(target));
   });
 
+  const saveCodes = () => void execute("save-codes", async () => {
+    const latest = formRef.current;
+    const invalid = await bridge.ValidatePassword(latest.adminPassword);
+    if (invalid || latest.adminPassword !== latest.adminConfirm) {
+      setPasswordError("Choose and confirm a valid password before saving the recovery codes.");
+      return;
+    }
+    if (await bridge.SaveSetupRecoveryCodes()) await loadRecovery();
+  }, true);
+  const reloadRecovery = () => void execute("read-recovery", async () => { await loadRecovery(); }, true);
   const edit = (target: SetupPage) => void execute("edit", () => visit(target, "edit"));
 
   const titles: Record<SetupPage, [string, string]> = {
@@ -315,7 +341,7 @@ function SetupWizard({ form, patch, update, onBusy }: {
     : editing ? "Choose Continue to return to Review when this step is ready."
     : page === "computer" ? computerReady ? "This computer is ready." : "Fix the computer checks to continue."
     : page === "address" ? addressReady ? "Next: the admin password." : "Pick an address that is free to continue."
-    : page === "admin" ? adminReady ? "Almost done — one last look before installing." : "Choose and confirm a password to continue."
+    : page === "admin" ? adminReady ? "Almost done — one last look before installing." : "Choose a password and save your recovery codes to continue."
     : issues.length ? "Fix the highlighted step; you come back to this screen." : "Nothing has been installed yet.";
   const blocked = issues.map((issue) => issue.step);
   if (page === "computer" && report && !report.ready) blocked.push("computer");
@@ -327,7 +353,10 @@ function SetupWizard({ form, patch, update, onBusy }: {
       {page === "computer" ? <ComputerStep report={report} problem={serviceProblem} busy={locked} installing={operation === "install-service"}
         onInstallService={installService} onCheck={recheck} />
         : page === "address" ? <AddressStep value={form.hostInput} result={address} disabled={operation !== "" || update.active || care.busy} onChange={changeHost} onCheck={() => void checkAddress(formRef.current.hostInput)} />
-        : page === "admin" ? <AdminStep form={form} patch={changeForm} strength={strength} passwordError={passwordError} busy={locked} />
+        : page === "admin" ? <AdminStep form={form} patch={changeForm} strength={strength} passwordError={passwordError} recovery={recovery} recoveryError={recoveryError} busy={locked} action={operation}
+          onSave={saveCodes} onReload={reloadRecovery}
+          onPrint={() => void execute("open-codes", () => bridge.OpenSetupRecoveryCodes(), true)}
+          onOpenFolder={() => void execute("open-codes-folder", () => bridge.OpenSetupRecoveryFolder(), true)} />
         : <ReviewStep steps={STEPS} form={form} report={report} issues={issues} verified={verified} busy={locked} onEdit={edit} />}
       {problem ? <Callout tone="danger" title={page === "review" ? "Nothing has been installed yet" : "This step couldn't finish"}>{problem}
         <div className="on-actions"><Button disabled={locked} onClick={() => void execute("checking", () => visit(pageRef.current, editingRef.current ? "edit" : "back"))}>Try again</Button><LogButton /></div>

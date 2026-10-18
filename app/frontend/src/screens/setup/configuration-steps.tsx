@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, CheckCircle2, Cpu, Download, Globe, KeyRound, Lock, Minus, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Cpu, Download, FolderOpen, Globe, KeyRound, Lock, Minus, RefreshCw, X } from "lucide-react";
 import { useState } from "react";
 
 import { Callout, ClinicAddressInput, LogButton, StatusBadge } from "@/components/onboarding";
@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PasswordStrength } from "@/hooks/use-password-strength";
 import { cn } from "@/lib/utils";
+import { useCare } from "@/state/care-store";
 import type { SetupForm } from "@/state/forms";
-import type { HostCheck, HostReport, SetupPage } from "@/types";
+import type { HostCheck, HostReport, SetupPage, SetupRecoveryStatus } from "@/types";
 
 export type AddressResult = { name: string; state: "waiting" | "checking" | "ready" | "bad" | "failed"; message: string };
 
@@ -69,10 +70,12 @@ export function ComputerStep({ report, problem, busy, installing, onInstallServi
   );
 }
 
-export function AdminStep({ form, patch, strength, passwordError, busy }: {
+export function AdminStep({ form, patch, strength, passwordError, recovery, recoveryError, busy, action, onSave, onPrint, onReload, onOpenFolder }: {
   form: SetupForm; patch: (form: Partial<SetupForm>) => void; strength: PasswordStrength;
-  passwordError: string; busy: boolean;
+  passwordError: string; recovery: SetupRecoveryStatus; recoveryError: string; busy: boolean; action: string;
+  onSave: () => void; onPrint: () => void; onReload: () => void; onOpenFolder: () => void;
 }) {
+  const { platform } = useCare();
   const [show, setShow] = useState(false);
   const length = [...form.adminPassword].length;
   const rules = [
@@ -81,27 +84,50 @@ export function AdminStep({ form, patch, strength, passwordError, busy }: {
     { label: "A number", ok: /\p{Nd}/u.test(form.adminPassword) },
   ];
   const matching = !!form.adminConfirm && form.adminConfirm === form.adminPassword;
+  const passwordReady = matching && strength.strong && !passwordError;
+  const saved = recovery.codes_saved && !recovery.codes_problem;
   return (
-    <section className="on-card on-pad on-password-card">
-      <div className="on-row" style={{ flexWrap: "wrap" }}><span className="on-eyebrow">Username</span><StatusBadge><span className="on-mono">admin</span></StatusBadge><span className="on-small">You can add more staff logins inside CARE later.</span></div>
-      <div className="on-field">
-        <label htmlFor="adminpw">Password</label>
-        <div className="on-input"><Lock aria-hidden="true" /><Input className="on-text-input" id="adminpw" type={show ? "text" : "password"} autoComplete="new-password" placeholder="Choose a password" value={form.adminPassword} disabled={busy} aria-describedby="password-rules password-verdict" onChange={(e) => patch({ adminPassword: e.target.value })} />
-          <Button variant="ghost" aria-label={show ? "Hide passwords" : "Show passwords"} aria-pressed={show} disabled={busy} onClick={() => setShow((v) => !v)}>{show ? "Hide" : "Show"}</Button>
+    <>
+      <section className="on-card on-pad on-password-card">
+        <div className="on-row" style={{ flexWrap: "wrap" }}><span className="on-eyebrow">Username</span><StatusBadge><span className="on-mono">admin</span></StatusBadge><span className="on-small">You can add more staff logins inside CARE later.</span></div>
+        <div className="on-field">
+          <label htmlFor="adminpw">Password</label>
+          <div className="on-input"><Lock aria-hidden="true" /><Input className="on-text-input" id="adminpw" type={show ? "text" : "password"} autoComplete="new-password" placeholder="Choose a password" value={form.adminPassword} disabled={busy} aria-describedby="password-rules password-verdict" onChange={(e) => patch({ adminPassword: e.target.value })} />
+            <Button variant="ghost" aria-label={show ? "Hide passwords" : "Show passwords"} aria-pressed={show} disabled={busy} onClick={() => setShow((v) => !v)}>{show ? "Hide" : "Show"}</Button>
+          </div>
+          <div id="password-rules">
+            <div className="on-strength" aria-hidden="true">{rules.map((rule) => <span key={rule.label} className={rule.ok ? "on-filled" : ""} />)}</div>
+            <div className="on-chips">{rules.map((rule) => <span key={rule.label} className={cn("on-chip", rule.ok && "on-ok")}>{rule.ok ? <Check aria-hidden="true" /> : <Minus aria-hidden="true" />}{rule.label}<span className="sr-only">{rule.ok ? ": met" : ": not met"}</span></span>)}</div>
+          </div>
+          <p id="password-verdict" className={cn("on-hint", passwordError && "on-error")} role="status">{passwordError || (form.adminPassword && !strength.strong ? strength.message : null)}</p>
         </div>
-        <div id="password-rules">
-          <div className="on-strength" aria-hidden="true">{rules.map((rule) => <span key={rule.label} className={rule.ok ? "on-filled" : ""} />)}</div>
-          <div className="on-chips">{rules.map((rule) => <span key={rule.label} className={cn("on-chip", rule.ok && "on-ok")}>{rule.ok ? <Check aria-hidden="true" /> : <Minus aria-hidden="true" />}{rule.label}<span className="sr-only">{rule.ok ? ": met" : ": not met"}</span></span>)}</div>
+        <div className="on-field">
+          <label htmlFor="adminpw-confirm">Confirm password</label>
+          <div className={cn("on-input", form.adminConfirm && !matching && "on-invalid")}><Lock aria-hidden="true" /><Input className="on-text-input" id="adminpw-confirm" type={show ? "text" : "password"} autoComplete="new-password" placeholder="Type it again" value={form.adminConfirm} disabled={busy} aria-invalid={!!form.adminConfirm && !matching} aria-describedby="confirm-verdict" onChange={(e) => patch({ adminConfirm: e.target.value })} /></div>
+          <p id="confirm-verdict" role="status" className={cn("on-hint", matching ? "on-success" : "on-error")}>{matching ? <><CheckCircle2 aria-hidden="true" />Both passwords match.</> : form.adminConfirm ? "These don't match. Type the same password again, including capital letters." : null}</p>
         </div>
-        <p id="password-verdict" className={cn("on-hint", passwordError && "on-error")} role="status">{passwordError || (form.adminPassword && !strength.strong ? strength.message : null)}</p>
-      </div>
-      <div className="on-field">
-        <label htmlFor="adminpw-confirm">Confirm password</label>
-        <div className={cn("on-input", form.adminConfirm && !matching && "on-invalid")}><Lock aria-hidden="true" /><Input className="on-text-input" id="adminpw-confirm" type={show ? "text" : "password"} autoComplete="new-password" placeholder="Type it again" value={form.adminConfirm} disabled={busy} aria-invalid={!!form.adminConfirm && !matching} aria-describedby="confirm-verdict" onChange={(e) => patch({ adminConfirm: e.target.value })} /></div>
-        <p id="confirm-verdict" role="status" className={cn("on-hint", matching ? "on-success" : "on-error")}>{matching ? <><CheckCircle2 aria-hidden="true" />Both passwords match.</> : form.adminConfirm ? "These don't match. Type the same password again, including capital letters." : null}</p>
-      </div>
-      <p className="on-small">Save this password in your password manager or write it down somewhere secure before starting installation. It can't be recovered if it's lost.</p>
-    </section>
+        <p className="on-small">Save this password in your password manager or write it down somewhere secure before starting installation.</p>
+      </section>
+      <section className="on-card" aria-label="Recovery codes">
+        <div className="on-data-row" style={{ paddingTop: 20, paddingBottom: 20 }}>
+          <span className={cn("on-tile", saved && "on-solid")}>{saved ? <Check /> : <KeyRound />}</span>
+          <div className="on-grow"><h3>{saved ? "Recovery codes saved" : "Recovery codes"}</h3>
+            {saved ? <p>Six codes, each usable once. Saved to <span className="on-mono">{recovery.codes_path}</span> — print it or keep it somewhere separate.</p>
+              : <p>Forgot your <strong>CARE Clinic</strong> password? Use one of these six codes to reset it. Each code works once. Save them somewhere safe.</p>}
+          </div>
+          {saved ? <><StatusBadge tone="ok"><Check />Saved</StatusBadge><Button disabled={busy} onClick={onPrint}>Open to print</Button><Button disabled={busy || !passwordReady} onClick={onSave}>{action === "save-codes" ? <Spinner /> : null}Save a new set</Button></>
+            : <div className="on-admin-save">
+              <Button variant="primary" className="on-save-primary" disabled={busy || !passwordReady} onClick={onSave}>{action === "save-codes" ? <Spinner /> : <FolderOpen aria-hidden="true" />}Choose where to save</Button>
+              {!passwordReady ? <p className="on-small">{strength.strong ? "Confirm your password first." : "Set your password first."}</p> : null}
+            </div>}
+          {platform === "windows" && saved ? <Button disabled={busy} onClick={onOpenFolder}>Open folder</Button> : null}
+        </div>
+        {saved ? <p className="on-small" style={{ padding: "0 20px 14px" }}>Saving a new set cancels every code on the old sheet.</p> : null}
+      </section>
+      {recovery.codes_problem ? <Callout title="The recovery codes file isn't available">Save a fresh set before continuing. The old codes stop working once the new set is saved.</Callout> : null}
+      {recoveryError ? <Callout tone="danger" title="The recovery codes couldn't be saved or checked">{recoveryError}<div className="on-actions"><Button disabled={busy} onClick={onReload}>Check saved files again</Button><LogButton /></div></Callout> : null}
+      {platform === "windows" ? <Callout title="Keep recovery codes private">Desktop may sync to OneDrive. Choose a secure location if you don't want these codes uploaded to your cloud account.</Callout> : null}
+    </>
   );
 }
 
@@ -113,7 +139,7 @@ export function ReviewStep({ steps, form, report, issues, verified, busy, onEdit
   const rows = [
     { id: "computer" as const, icon: Cpu, label: "This computer", value: report ? `${passed} of ${report.checks.length} computer checks passed` : "", detail: verified ? "Checked just now" : "Checking before installation" },
     { id: "address" as const, icon: Globe, label: "Clinic address", value: `https://${form.hostInput.trim().toLowerCase()}.local`, detail: "What staff type in their browser" },
-    { id: "admin" as const, icon: KeyRound, label: "Admin login", value: "admin", detail: "Password set" },
+    { id: "admin" as const, icon: KeyRound, label: "Admin login", value: "admin", detail: "Password set · six recovery codes saved" },
   ];
   return (
     <>

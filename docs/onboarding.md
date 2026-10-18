@@ -84,8 +84,31 @@ detected.
 The CARE Clinic admin password must be 8 to 20 characters with an uppercase
 letter, a lowercase letter and a digit (`ValidatePassword`). It protects the
 Advanced settings, uninstall and update-check switches, and becomes the
-password of the CARE web login `admin`. Only its bcrypt hash is saved. There
-are no recovery codes.
+password of the CARE web login `admin`. Only its bcrypt hash is saved.
+
+Once the password is valid and confirmed, the admin step asks for six one-time
+recovery codes and keeps Continue disabled until they are saved:
+
+- `SaveSetupRecoveryCodes()` opens a save dialog and writes the sheet to the
+  chosen file. It never overwrites a file, and refuses CARE's install,
+  settings, clinic state, log and backup folders. "" means the dialog was
+  cancelled. Saving again issues a new set; the old codes stop working.
+- `GetSetupRecoveryStatus()` reports `codes_saved`, `codes_path` and
+  `codes_problem` (`missing`, `unreadable` or `mismatch` when the sheet was
+  moved, damaged or no longer holds every active code).
+- `OpenSetupRecoveryCodes()` opens the sheet for printing;
+  `OpenSetupRecoveryFolder()` selects it in Explorer (Windows only).
+
+The codes use the same storage as the control panel's: only their hashes are
+kept, in `admin-recovery.json` in the clinic state folder. They are
+independent of the password, so changing the password after saving them
+keeps them valid, and `RunSetup` leaves the file alone. After installation
+`GetAdminRecoveryCodeCount` reports 6 and `ResetAdminPassword` accepts them.
+These setup calls are locked once `RunSetup` has stored the password hash, the
+clinic is installed or it is being removed; after that, new codes come from
+Advanced and need the admin password. Review checks the codes again before
+installing. Cleaning up a failed install keeps the saved codes for the next
+attempt; Uninstall deletes them.
 
 ## 3. Install
 

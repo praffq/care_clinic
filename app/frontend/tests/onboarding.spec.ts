@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
+import { saveRecoveryCodes } from "./helpers/setup";
 
 const samplePassword = "ClinicTest123";
 const forward = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
@@ -62,6 +63,7 @@ test("admin setup reminds the user to save the password securely", async ({ page
 async function review(page: Page, platform = "darwin") {
   await admin(page, platform);
   await fillPassword(page);
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
   await forward(page).click();
   await expect(page.getByRole("heading", { name: "Review before installing" })).toBeVisible();
@@ -436,6 +438,7 @@ test("a synchronous invalid-address retry releases the update lock", async ({ pa
 test("password validity resets immediately when input changes and stale validation cannot pass", async ({ page }) => {
   await admin(page);
   await fillPassword(page);
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
   await page.evaluate(() => window.careTest.hold("ValidatePassword"));
   await fillPassword(page, "weak");
@@ -460,6 +463,7 @@ test("password validator failures never log submitted credentials or host secret
   }
   expect(await page.locator("body").innerText()).not.toContain(privateError);
   await fillPassword(page, "UpdatedClinic123");
+  await saveRecoveryCodes(page);
   await expect(forward(page)).toBeEnabled();
 });
 
@@ -571,6 +575,7 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     await expect(page.getByRole("heading", { name: "Creating the admin password" })).toBeVisible();
     await fits(page); await capture(page, `onboarding-admin-${size.width}x${size.height}`);
     await fillPassword(page);
+    await saveRecoveryCodes(page);
     await expect(forward(page)).toBeEnabled();
     await forward(page).click();
     await expect(install(page)).toBeEnabled();
