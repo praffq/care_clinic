@@ -25,6 +25,7 @@ type fakeAPI struct {
 	installed []string // "<size>:<sha>"
 	activated []string
 	starts    int
+	copies    int
 	installFn func(data []byte, sha string) (slots.Slot, error)
 }
 
@@ -96,4 +97,14 @@ func (f *fakeAPI) Activate(_ context.Context, version string) (api.EngineStatus,
 	f.activated = append(f.activated, version)
 	f.status.Slots.Current = version
 	return f.status.Engine, nil
+}
+
+func (f *fakeAPI) CopyBackups(context.Context) (api.BackupStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.copies++
+	if f.status.Backups == nil {
+		return api.BackupStatus{}, nil
+	}
+	return *f.status.Backups, nil
 }

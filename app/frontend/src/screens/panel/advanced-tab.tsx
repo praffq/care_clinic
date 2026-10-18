@@ -13,6 +13,7 @@ import { bridge } from "@/lib/bridge";
 import { useCare } from "@/state/care-store";
 import type { Section } from "@/types";
 import { AdminPasswordForm, AdminPasswordSettings } from "./admin-password";
+import { BackupSettings } from "./backup-settings";
 import {
   AdvancedError, AdvancedLockProvider, AdvancedLogButton, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
 } from "./advanced-ui";
@@ -96,6 +97,7 @@ function AdvancedContent() {
       <AdminPasswordSettings adminPassword={adminPassword} onPasswordChanged={unlock} />
       <WebPasswordReset adminPassword={adminPassword} />
       <UpdateCheckSettings adminPassword={adminPassword} />
+      <BackupSettings adminPassword={adminPassword} />
       <PluginSettings adminPassword={adminPassword} />
       <EnvEditor adminPassword={adminPassword} groupId={groupId} onGroupChange={setGroupId} onWorkingChange={setWorking}
         pendingFiles={pendingSettings} onPendingFilesChange={setPendingSettings} onApplicationAccepted={() => setApplyingSettings(true)} />

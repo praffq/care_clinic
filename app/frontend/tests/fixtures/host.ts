@@ -1,6 +1,7 @@
 import type {
-  AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, CareHealth, ClientPreflight, ClientReachability, ConfirmationRequest,
-  HomeAccess, HostCheck, HostReport, NetworkStatus, Plugin, PluginPreset, QuitRequest, Section, ServiceState, StorageState,
+  AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupStatus, CareHealth, ClientPreflight, ClientReachability,
+  ConfirmationRequest, HomeAccess, HostCheck, HostReport, NetworkStatus, Plugin, PluginPreset, QuitRequest, RestoreChoice, Section,
+  ServiceState, StorageState,
   UpdateChecks,
 } from "../../src/types";
 
@@ -37,6 +38,9 @@ type Fixtures = {
   health: CareHealth;
   catalog: PluginPreset[];
   plugins: Plugin[];
+  backups: BackupStatus;
+  restoreChoice: RestoreChoice | null;
+  copyFolder: string;
 };
 
 declare global {
@@ -140,6 +144,14 @@ export function installTestHost() {
       healthy: true, code: 200, detail: "CARE is answering", checkedAt: new Date(0).toISOString(),
       services: [{ name: "backend", state: "running" }, { name: "db", state: "running" }, { name: "frontend", state: "running" }],
     },
+    backups: {
+      dir: "/Library/Application Support/CARE Clinic/backups", pending: 0,
+      last_exported: "daily-20261018T000000Z", verified_at: "2026-10-18T00:05:00Z",
+    },
+    restoreChoice: {
+      set_dir: "/Volumes/CARE USB/backups/daily-20261018T000000Z", id: "daily-20261018T000000Z", created_at: "2026-10-18T00:00:00Z",
+    },
+    copyFolder: "/Volumes/CARE USB/backups",
     catalog: [
       {
         id: "care_multihost_files_be", package: "git+https://github.com/ohcnetwork/care_multihost_files_be.git", version: "@main",
@@ -172,6 +184,14 @@ export function installTestHost() {
     fixtures.health = {
       healthy: false, code: 502, detail: "CARE answered HTTP 502 Bad Gateway", checkedAt: new Date(0).toISOString(),
       services: [{ name: "backend", state: "restarting" }, { name: "db", state: "running" }],
+    };
+  }
+  if (scenario === "panel-backups-critical") {
+    fixtures.backups = {
+      ...fixtures.backups, pending: 2, critical: true, oldest_pending_at: "2026-10-17T00:00:00Z",
+      last_error: "the backup folder is not available (is its drive connected?)",
+      message: "Backup not copied out since 18/10/2026, 00:05:00: the backup folder is not available (is its drive connected?). 2 backups are waiting in the engine, which keeps no more: the next one replaces the oldest.",
+      copy: { dir: "/Volumes/CARE USB/backups", connected: false, message: "The extra backup copy (/Volumes/CARE USB/backups) isn't connected; last copied never" },
     };
   }
   if (scenario.startsWith("setup-")) state.role = "server";
@@ -244,6 +264,7 @@ export function installTestHost() {
           { name: "http", listen: ":80", vsock_port: 8080, listening: running },
         ] },
         mdns: { enabled: true, name: (state.mdns_name || "care.local").replace(/\.local$/, ""), advertising: running },
+        backups: structuredClone(fixtures.backups),
       },
       summary: running
         ? { level: "ok", title: "Running", detail: "Staff can open CARE on the clinic Wi-Fi.", running: true }
@@ -464,6 +485,40 @@ export function installTestHost() {
       fixtures.webUsers[username] = next;
     },
     StorageStatus: async () => structuredClone(fixtures.storage),
+    ExportBackupRecoveryKey: async (password: string) => {
+      requireAdmin(password);
+      return "/Volumes/KEYS/CARE-care-backup-recovery-key.pem";
+    },
+    ChooseBackupToRestore: async (otherKey: boolean) => {
+      requireServer();
+      if (!fixtures.restoreChoice) return null;
+      const choice = structuredClone(fixtures.restoreChoice);
+      return otherKey ? { ...choice, key_path: "/Volumes/KEYS/old-clinic-key.pem" } : choice;
+    },
+    RestoreBackup: async (_setDir: string, _keyPath: string, password: string) => {
+      requireAdmin(password);
+      acceptJob("restore");
+    },
+    SetBackupCopyDir: async (password: string) => {
+      requireAdmin(password);
+      if (!fixtures.copyFolder) return "";
+      fixtures.backups.copy = { dir: fixtures.copyFolder, connected: true, last_copied: fixtures.backups.last_exported, copied_at: "2026-10-18T00:06:00Z" };
+      emitService();
+      return fixtures.copyFolder;
+    },
+    ClearBackupCopyDir: async (password: string) => {
+      requireAdmin(password);
+      delete fixtures.backups.copy;
+      emitService();
+    },
+    CopyBackupsNow: async () => {
+      const copy = fixtures.backups.copy;
+      if (copy && !copy.connected) throw new Error(copy.message ?? "not connected");
+    },
+    PruneEngineImages: async () => {
+      requireServer();
+      acceptJob("prune-images");
+    },
     CheckCareHealth: async () => structuredClone(fixtures.health),
     RunUninstall: async (_removeData: boolean, password: string) => {
       requireAdmin(password);

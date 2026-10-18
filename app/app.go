@@ -14,6 +14,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/bundle"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/hostcheck"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/install"
@@ -77,10 +78,15 @@ type App struct {
 	// stateDir overrides stack.DefaultStateDir (tests).
 	stateDir string
 	// nameCheck overrides mdns.CheckAvailable (tests).
-	nameCheck  func(string) error
-	stopWatch  context.CancelFunc
-	statusMu   sync.Mutex
-	lastStatus *ServiceState
+	nameCheck func(string) error
+	// backupDialogs, restoreSet and pruneImages replace the native dialogs
+	// and engine operations of the backup actions (tests).
+	backupDialogs *backupDialogs
+	restoreSet    func(ctx context.Context, setDir string, key []byte) error
+	pruneImages   func(ctx context.Context) (protocol.ImagePruneResult, error)
+	stopWatch     context.CancelFunc
+	statusMu      sync.Mutex
+	lastStatus    *ServiceState
 
 	osUninstall  bool
 	removeTarget string

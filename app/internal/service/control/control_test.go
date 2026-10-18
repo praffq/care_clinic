@@ -651,6 +651,7 @@ func rawPost(t *testing.T, sock, path, body string) (int, error) {
 type fakeBackups struct {
 	mu      sync.Mutex
 	exports int
+	copies  int
 }
 
 func (f *fakeBackups) Status() api.BackupStatus {
@@ -659,6 +660,9 @@ func (f *fakeBackups) Status() api.BackupStatus {
 	st := api.BackupStatus{Dir: "/backups", Pending: 3 - f.exports}
 	if f.exports == 0 {
 		st.Critical, st.Message = true, "3 backups are waiting in the engine"
+	}
+	if f.copies > 0 {
+		st.Copy = &api.BackupCopyStatus{Dir: "/usb", Message: "Backup copy folder /usb isn't connected; last copied never"}
 	}
 	return st
 }
@@ -672,6 +676,13 @@ func (f *fakeBackups) Export(context.Context) error {
 	defer f.mu.Unlock()
 	f.exports++
 	return errors.New("engine unreachable")
+}
+
+func (f *fakeBackups) Copy(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.copies++
+	return errors.New("not connected")
 }
 
 func TestBackupRoutes(t *testing.T) {
@@ -688,5 +699,8 @@ func TestBackupRoutes(t *testing.T) {
 	}
 	if bs, err := e.cl.ExportBackups(t.Context()); err != nil || bs.Pending != 2 || bs.Critical {
 		t.Fatalf("export = %+v, %v", bs, err)
+	}
+	if bs, err := e.cl.CopyBackups(t.Context()); err != nil || bs.Copy == nil || bs.Copy.Dir != "/usb" {
+		t.Fatalf("copy = %+v, %v", bs, err)
 	}
 }

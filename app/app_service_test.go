@@ -83,6 +83,15 @@ func TestSummarize(t *testing.T) {
 		"port closed": {running(func(s *api.ServiceStatus) {
 			s.Forward = &api.ForwardStatus{Listeners: []api.ForwardListener{{Name: "https", Listen: ":443", Error: "address in use"}}}
 		}), levelWarn, "is running", true, "address in use"},
+		"backup not copied out": {running(func(s *api.ServiceStatus) {
+			s.Backups = &api.BackupStatus{Pending: 1, Message: "Backup not copied out since 09:00"}
+		}), levelWarn, "is running", true, "not copied out since"},
+		"backups critical": {running(func(s *api.ServiceStatus) {
+			s.Backups = &api.BackupStatus{Pending: 2, Critical: true, Message: "Backup not copied out since 09:00. 2 backups are waiting"}
+		}), levelError, "is running", true, "2 backups are waiting"},
+		"extra copy not connected": {running(func(s *api.ServiceStatus) {
+			s.Backups = &api.BackupStatus{Copy: &api.BackupCopyStatus{Dir: "/Volumes/USB/care", Message: "The extra backup copy isn't connected; last copied never"}}
+		}), levelWarn, "is running", true, "isn't connected"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := tc.state.Summary

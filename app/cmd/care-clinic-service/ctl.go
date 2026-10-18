@@ -28,14 +28,17 @@ commands:
   activate <version>        switch to an installed engine and boot it
   start | stop | restart    control the engine VM
   prune                     delete slots other than current and previous
+  engine prune [flags]      remove unused docker images in the engine VM
+                            (ctl engine for help)
   config [key=value ...]    show or change the service configuration (config.json):
                               mdns_name=<name>         advertise <name>.local
                               proxy_protocol=true|false PROXY v2 to the guest
                               backup_dir=<abs path>    where backups are copied out to
+                              backup_copy_dir=<abs path> extra copy (USB/share); empty turns it off
   agent-status              agent status through the relay
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
   clinic <command>          install and drive the CARE stack (ctl clinic for help)
-  backup <command>          run | list | status | restore <id> (ctl backup for help)
+  backup <command>          run | list | status | copy | restore (ctl backup for help)
   update <command>          check for and apply updates (ctl update for help)
   plugins <command>         list, enable, add or disable CARE backend plugins
                             (ctl plugins for help)
@@ -78,6 +81,10 @@ func ctl(args []string) int {
 		fmt.Fprint(os.Stderr, frontendUsage)
 		return 2
 	}
+	if errors.Is(err, errEngineUsage) {
+		fmt.Fprint(os.Stderr, engineUsage)
+		return 2
+	}
 	if errors.Is(err, errPluginsUsage) {
 		fmt.Fprint(os.Stderr, pluginsUsage)
 		return 2
@@ -97,9 +104,11 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
-	if cmd == "clinic" || cmd == "backup" || cmd == "update" || cmd == "plugins" || cmd == "frontend" {
+	if cmd == "clinic" || cmd == "backup" || cmd == "update" || cmd == "plugins" || cmd == "frontend" || cmd == "engine" {
 		sub := clinicCtl
 		switch cmd {
+		case "engine":
+			sub = engineCtl
 		case "backup":
 			sub = backupCtl
 		case "update":
@@ -116,7 +125,7 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 		return printJSON(v)
 	}
 	nargs := map[string][]int{
-		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 3},
+		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 4},
 	}[cmd]
 	if nargs == nil {
 		nargs = []int{0, 0}
@@ -182,6 +191,8 @@ func configUpdate(args []string) (api.ServiceConfigUpdate, error) {
 			u.ProxyProtocol = &on
 		case "backup_dir":
 			u.BackupDir = &val
+		case "backup_copy_dir":
+			u.BackupCopyDir = &val
 		default:
 			return u, fmt.Errorf("unknown config key %q", key)
 		}

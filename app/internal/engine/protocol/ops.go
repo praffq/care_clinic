@@ -254,7 +254,8 @@ func checkPinnedRef(v *validator, field, ref string) {
 	v.check(m != nil && m[1] != "" && len(ref) <= 255, field, "must be a lowercase image reference pinned with @sha256 digest")
 }
 
-// ImagePrune removes unused images except those in Keep.
+// ImagePrune removes unused images except those in Keep and those the
+// stack env pins.
 type ImagePrune struct {
 	Keep []Digest `json:"keep,omitempty"`
 }

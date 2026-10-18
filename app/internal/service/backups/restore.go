@@ -70,3 +70,30 @@ func Restore(ctx context.Context, ag RestoreAgent, setDir string, recoveryKey []
 	}
 	return ag.Op(ctx, protocol.DBRestore{BackupID: id}, nil, onFrame)
 }
+
+// FindSet resolves what the user picked to restore from: a set folder
+// itself (it holds manifest.json), or a backup folder (the host backup
+// folder, the extra copy, or either copied to a new computer) and an id in
+// it, or its newest set when id is "".
+func FindSet(path, id string) (string, error) {
+	if _, err := os.Stat(filepath.Join(path, protocol.BackupManifestName)); err == nil {
+		if id != "" && id != filepath.Base(path) {
+			return "", fmt.Errorf("%s is backup %s, not %s", path, filepath.Base(path), id)
+		}
+		return path, nil
+	}
+	if id != "" {
+		if err := (protocol.DBRestore{BackupID: id}).Validate(); err != nil {
+			return "", err
+		}
+		return filepath.Join(path, id), nil
+	}
+	sets, err := HostSets(path)
+	if err != nil {
+		return "", err
+	}
+	if len(sets) == 0 {
+		return "", fmt.Errorf("no backup in %s", path)
+	}
+	return sets[0].Path, nil
+}

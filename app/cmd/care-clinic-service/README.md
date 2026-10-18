@@ -72,8 +72,10 @@ for each one
    set is always on the host), then deletes the set in the engine.
 
 A failure leaves the set in the engine and retries 5 minutes later;
-`ctl status` (under `backups`) then says `not copied out since <time>`, and
-more than 2 sets waiting in the engine sets `critical`. A crash between the
+`ctl status` (under `backups`) then says `Backup not copied out since <time>`.
+The engine keeps at most 2 sets that weren't copied out (`backup.sh` rotates
+the oldest out and never deletes the newest), and 2 waiting sets set
+`critical`. A crash between the
 rename and the engine delete is safe: a verified `<id>/` is reused, not
 downloaded again. `backup_dir` defaults to
 `/Library/Application Support/care-clinic/backups`.
@@ -88,7 +90,14 @@ backup can be read.
 "$B" ctl backup list               # host and engine sets
 "$B" ctl backup status
 "$B" ctl backup restore daily-20260101T000000Z [--recovery-key key.pem]
+"$B" ctl backup restore --from /Volumes/USB/backups --recovery-key old-key.pem
+"$B" ctl backup copy set /Volumes/USB/backups   # extra copy (folder must exist)
+"$B" ctl backup copy now | copy clear
+"$B" ctl engine prune --desktop-version <v>    # remove unused images in the VM
 ```
+
+The extra copy, restoring on a new computer and the recovery key are covered
+in [docs/backups.md](../../../docs/backups.md).
 
 `restore` verifies the host set, uploads it with the recovery key to the
 engine's `restore-input` area, runs `db.restore` and removes the inputs
@@ -128,6 +137,7 @@ B='/Library/Application Support/care-clinic/bin/care-clinic-service'
 "$B" ctl config mdns_name=clinic-east       # advertise clinic-east.local
 "$B" ctl config proxy_protocol=true
 "$B" ctl config backup_dir=/Volumes/ClinicBackup/care   # where backups are copied out to
+"$B" ctl config backup_copy_dir=/Volumes/USB/backups     # extra copy ('' turns it off)
 ```
 
 ### Without root

@@ -15,6 +15,7 @@
 //	GET  /v1/backups                    api.BackupList (host and engine sets)
 //	GET  /v1/backups/status             api.BackupStatus
 //	POST /v1/backups/export             api.BackupStatus after an export pass
+//	POST /v1/backups/copy               api.BackupStatus after an extra-copy pass
 //	*    /v1/agent/v1/...               agent routes (status, ops, files, backups, diagnostics)
 package control
 
@@ -64,6 +65,8 @@ type Backups interface {
 	List(ctx context.Context) (api.BackupList, error)
 	// Export copies every complete engine set out now.
 	Export(ctx context.Context) error
+	// Copy brings the extra copy folder up to the newest host set.
+	Copy(ctx context.Context) error
 }
 
 // Settings is the persisted service configuration.
@@ -149,6 +152,7 @@ func NewServer(cfg Config) *Server {
 		s.mux.HandleFunc("GET /v1/backups", s.handleBackups)
 		s.mux.HandleFunc("GET /v1/backups/status", s.handleBackupStatus)
 		s.mux.HandleFunc("POST /v1/backups/export", s.handleBackupExport)
+		s.mux.HandleFunc("POST /v1/backups/copy", s.handleBackupCopy)
 	}
 	s.mux.HandleFunc(api.AgentPrefix+"/", s.handleAgent)
 	return s
@@ -231,7 +235,7 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		s.commandError(w, err)
 		return
 	}
-	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName, "proxy_protocol", cfg.ProxyProtocol, "backup_dir", cfg.BackupDir)
+	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName, "proxy_protocol", cfg.ProxyProtocol, "backup_dir", cfg.BackupDir, "backup_copy_dir", cfg.BackupCopyDir)
 	writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -252,6 +256,14 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 	if err := s.backups.Export(r.Context()); err != nil {
 		s.log.Warn("backup export failed", "err", err)
+	}
+	writeJSON(w, http.StatusOK, s.backups.Status())
+}
+
+// handleBackupCopy runs an extra-copy pass; failures are in the status.
+func (s *Server) handleBackupCopy(w http.ResponseWriter, r *http.Request) {
+	if err := s.backups.Copy(r.Context()); err != nil {
+		s.log.Warn("backup copy failed", "err", err)
 	}
 	writeJSON(w, http.StatusOK, s.backups.Status())
 }

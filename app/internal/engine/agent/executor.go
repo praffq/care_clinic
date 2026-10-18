@@ -36,7 +36,7 @@ type Executor interface {
 	// ImageLoad reads the image tarball from tar.
 	ImageLoad(ctx context.Context, op protocol.ImageLoad, tar io.Reader, em Emitter) error
 	ImageBuild(ctx context.Context, op protocol.ImageBuild, em Emitter) (protocol.ImageBuildResult, error)
-	ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) error
+	ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) (protocol.ImagePruneResult, error)
 	DBDump(ctx context.Context, op protocol.DBDump, em Emitter) (protocol.DBDumpResult, error)
 	DBRestore(ctx context.Context, op protocol.DBRestore, em Emitter) error
 	// Manage runs a management command. password holds the contents of
@@ -84,7 +84,7 @@ func dispatch(ctx context.Context, ex Executor, op protocol.Op, body io.Reader, 
 	case *protocol.ImageBuild:
 		return ex.ImageBuild(ctx, *o, em)
 	case *protocol.ImagePrune:
-		return none(ex.ImagePrune(ctx, *o, em))
+		return ex.ImagePrune(ctx, *o, em)
 	case *protocol.DBDump:
 		return ex.DBDump(ctx, *o, em)
 	case *protocol.DBRestore:

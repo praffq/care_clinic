@@ -18,6 +18,7 @@ import type {
   Plugin,
   PluginPreset,
   QuitRequest,
+  RestoreChoice,
   ServiceState,
   StorageState,
   UpdateChecks,
@@ -89,6 +90,16 @@ declare global {
           ResetAdminPassword(code: string, newPassword: string): Promise<void>;
           StorageStatus(): Promise<StorageState>;
           CheckCareHealth(): Promise<CareHealth>;
+          /** Resolves to the saved key's path, or "" when the save dialog was cancelled. */
+          ExportBackupRecoveryKey(adminPassword: string): Promise<string>;
+          /** Resolves to null when a dialog was cancelled. */
+          ChooseBackupToRestore(otherKey: boolean): Promise<RestoreChoice | null>;
+          RestoreBackup(setDir: string, keyPath: string, adminPassword: string): Promise<void>;
+          /** Resolves to the chosen folder, or "" when the dialog was cancelled. */
+          SetBackupCopyDir(adminPassword: string): Promise<string>;
+          ClearBackupCopyDir(adminPassword: string): Promise<void>;
+          CopyBackupsNow(): Promise<void>;
+          PruneEngineImages(): Promise<void>;
         };
       };
     };

@@ -237,12 +237,15 @@ func (a *App) recoveryLocation(path string) error {
 	}
 	ctx, cancel := context.WithTimeout(a.clientContext(), serviceCallTimeout)
 	defer cancel()
-	if st, err := a.svc().Status(ctx); err == nil && st.Backups != nil && st.Backups.Dir != "" {
+	if st, err := a.svc().Status(ctx); err == nil && st.Backups != nil {
 		protected = append(protected, st.Backups.Dir)
+		if st.Backups.Copy != nil {
+			protected = append(protected, st.Backups.Copy.Dir)
+		}
 	}
 	for _, dir := range protected {
 		if dir != "" && insideDir(path, dir) {
-			return fmt.Errorf("keep recovery codes outside CARE's settings, installation, logs and backup folder (%s)", dir)
+			return fmt.Errorf("keep recovery files outside CARE's settings, installation, logs and backup folders (%s)", dir)
 		}
 	}
 	return nil

@@ -170,6 +170,10 @@ func failureTitle(label string) string {
 		return "The CARE Clinic update didn't finish"
 	case jobService:
 		return "The CARE Clinic service couldn't be installed"
+	case restoreJob:
+		return "The backup couldn't be restored"
+	case pruneJob:
+		return "Unused images couldn't be removed"
 	}
 	return "CARE couldn't finish that"
 }

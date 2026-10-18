@@ -28,6 +28,7 @@ type serviceAPI interface {
 	Slots(ctx context.Context) (api.SlotList, error)
 	InstallEngine(ctx context.Context, tarball io.Reader, size int64, sha256 string) (slots.Slot, error)
 	Activate(ctx context.Context, version string) (api.EngineStatus, error)
+	CopyBackups(ctx context.Context) (api.BackupStatus, error)
 }
 
 const (
@@ -150,7 +151,31 @@ func summarize(s ServiceState) Summary {
 			}
 		}
 	}
+	backupNotes(&sum, st.Backups)
 	return sum
+}
+
+// backupNotes adds the backup export's and extra copy's problems. Two sets
+// waiting in the engine is critical: the next one replaces the oldest.
+func backupNotes(sum *Summary, b *api.BackupStatus) {
+	if b == nil {
+		return
+	}
+	if b.Message != "" {
+		sum.Notes = append(sum.Notes, b.Message)
+		switch {
+		case b.Critical && (sum.Level == levelOK || sum.Level == levelWarn):
+			sum.Level = levelError
+		case sum.Level == levelOK:
+			sum.Level = levelWarn
+		}
+	}
+	if c := b.Copy; c != nil && c.Message != "" {
+		sum.Notes = append(sum.Notes, c.Message)
+		if sum.Level == levelOK {
+			sum.Level = levelWarn
+		}
+	}
 }
 
 func stackSummary(st *api.StackStatus, m *api.MDNSStatus) Summary {

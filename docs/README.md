@@ -35,6 +35,7 @@ application's own user or API documentation.
 | [Update coordinator](updates.md) | How updates are checked, applied, journaled, resumed and rolled back: CARE, engine slot swaps and desktop downloads. |
 | [Plugins](plugins.md) | CARE backend plugins: catalog presets, custom plugins built in the VM, the journaled change and rollback, frontend plugins via CARE admin. |
 | [Releasing CARE Clinic](releases.md) | Preparing a version, starting the release, the macOS app bundle layout, reviewing and publishing the draft, signing limitations, and retrying safely. |
+| [Backups and restore](backups.md) | Copying backups out of the engine, the 2-set limit and critical alert, the extra USB/share copy, the recovery key, restoring on a new computer and pruning engine images. |
 | [Home access](home-access.md) | Letting doctors open CARE from home through Tailscale, without exposing the clinic to the internet. |
 
 For a first reading, follow the table from top to bottom. If you are fixing one behavior, use the task map below instead.
@@ -54,6 +55,7 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | "Which `backend.env` does the editor read?" | [Configuration and settings](configuration-and-settings.md). |
 | "Why didn't a setting take effect?" | [Applying settings](configuration-and-settings.md#applying-settings). |
 | "How are patient data and uploaded files stored?" | [Clinic lifecycle](clinic-lifecycle.md). |
+| "How do I move the clinic to a new computer?" | [Backups and restore](backups.md). |
 | "What happens if uninstall is interrupted?" | [Cleanup and uninstall](cleanup-and-uninstall.md). |
 | "The app works here but not on another device." | [Native integrations](native-integrations.md). |
 | "How do staff computers connect?" | [Native client setup and initial trust](native-integrations.md#native-client-setup-and-trust-on-first-use). |
@@ -95,9 +97,10 @@ An arrow in an architecture diagram means "calls or depends on" unless stated ot
 
 These guides describe the code in this checkout: the UI-only app, the
 `care-clinic-service`, the engine VM and the Silo-backed storage service.
-Backups and restore, storage monitoring, CARE software updates,
-recovery codes, web password reset, start at login and residue cleanup were
-removed in v2; they return later via engine agent ops.
+Backups, extra copies and restore are described in [backups.md](backups.md).
+Storage monitoring, CARE software updates, recovery codes, web password
+reset, start at login and residue cleanup were removed in v2; they return
+later via engine agent ops.
 
 The implementation and these guides are the source of truth; removed design
 boards and historical notes are not runtime specifications.

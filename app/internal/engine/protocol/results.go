@@ -34,6 +34,13 @@ type ImageBuildResult struct {
 	Digest Digest `json:"digest"`
 }
 
+// ImagePruneResult is the result of OpImagePrune: images removed, and
+// images docker refused to remove (in use by a container).
+type ImagePruneResult struct {
+	Removed int `json:"removed"`
+	Skipped int `json:"skipped"`
+}
+
 // DBDumpResult is the result of OpDBDump.
 type DBDumpResult struct {
 	BackupID string `json:"backup_id"`

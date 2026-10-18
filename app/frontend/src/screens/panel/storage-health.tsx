@@ -1,4 +1,4 @@
-import { Activity, HardDrive, RefreshCw } from "lucide-react";
+import { Activity, Eraser, HardDrive, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
@@ -8,7 +8,7 @@ import { diskSize, errorText } from "@/lib/format";
 import { useCare } from "@/state/care-store";
 import type { CareHealth, DiskUsage, StorageLevel, StorageState } from "@/types";
 import type { PanelTone } from "./panel-status";
-import { PanelBadge } from "./panel-ui";
+import { PanelBadge, usePanelTask } from "./panel-ui";
 
 import "./storage-health.css";
 
@@ -34,7 +34,8 @@ function serviceTone(state: string): PanelTone {
 
 /** Disk space and CARE's health, refreshed while Overview is showing. */
 export function StorageHealthCard() {
-  const { tab, flow, service } = useCare();
+  const { tab, flow, service, busy, runJob } = useCare();
+  const prune = usePanelTask();
   const active = flow === "panel" && tab === "overview";
   const [storage, setStorage] = useState<StorageState | null>(null);
   const [health, setHealth] = useState<CareHealth | null>(null);
@@ -64,7 +65,10 @@ export function StorageHealthCard() {
     void load();
     const timer = window.setInterval(() => void load(), REFRESH_MS);
     return () => { window.clearInterval(timer); generation.current++; };
-  }, [active, running, load]);
+  }, [active, running, busy, load]);
+  const freeUp = () => void prune.run(
+    () => runJob("prune-images", "Removing unused images", () => bridge.PruneEngineImages()),
+    "Unused images couldn't be removed. Try again, or open the log file for support.");
 
   return <section className="panel-card panel-card-pad panel-storage-health" aria-label="Storage and health">
     <div className="panel-row panel-between">
@@ -78,6 +82,14 @@ export function StorageHealthCard() {
       {storage.level !== "ok" ? <p className={`panel-storage-title panel-state-${LEVEL[storage.level][1]}`}
         role={storage.level === "critical" ? "alert" : "status"}>{storage.title}</p> : null}
       {storage.disks.map((disk) => <DiskRow key={disk.kind} disk={disk} />)}
+      {running ? <div className="panel-row panel-between panel-prune">
+        <p className="panel-small">Old versions of CARE's software stay on the clinic disk after updates.
+          Removing them keeps this version and the one before it.</p>
+        <Button variant="ghost" size="sm" disabled={busy || prune.working} onClick={freeUp}>
+          {prune.working ? <Spinner /> : <Eraser aria-hidden="true" />}Remove unused images
+        </Button>
+      </div> : null}
+      {prune.error ? <p className="panel-inline-error" role="alert">{prune.error}</p> : null}
     </div> : !error ? <p className="panel-small">Checking…</p> : null}
     {health ? <HealthRows health={health} /> : null}
   </section>;

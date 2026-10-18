@@ -12,3 +12,4 @@
 .panel-meter-fill.panel-tone-danger { color: #b91c1c; }
 .panel-meter-fill.panel-tone-neutral { color: #9aa8a1; }
 .panel-health-services { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.panel-prune { gap: 12px; align-items: center; }

@@ -329,6 +329,10 @@ func TestDockerImageLoad(t *testing.T) {
 
 func TestDockerImagePrune(t *testing.T) {
 	keepID, keepDigest := string(digestOf("1")), string(digestOf("2"))
+	// The stack env pins the backup image by repo digest and the derived
+	// backend by image ID; neither is in Keep.
+	pinnedDigest, pinnedID := string(digestOf("8")), string(digestOf("9"))
+	env := "IMAGE_BACKUP=ghcr.io/x/backup@" + pinnedDigest + "\nIMAGE_BACKEND=care-clinic/backend-plugins@" + pinnedID + "\nADDITIONAL_PLUGS=[]\n"
 	ls := strings.Join([]string{
 		`{"ID":"` + keepID + `","Repository":"care/backend","Tag":"local","Digest":"<none>"}`,
 		`{"ID":"sha256:` + strings.Repeat("3", 64) + `","Repository":"ghcr.io/x/frontend","Tag":"<none>","Digest":"` + keepDigest + `"}`,
@@ -336,6 +340,8 @@ func TestDockerImagePrune(t *testing.T) {
 		`{"ID":"sha256:` + strings.Repeat("4", 64) + `","Repository":"old/app","Tag":"v2","Digest":"<none>"}`,
 		`{"ID":"sha256:` + strings.Repeat("5", 64) + `","Repository":"<none>","Tag":"<none>","Digest":"<none>"}`,
 		`{"ID":"sha256:` + strings.Repeat("6", 64) + `","Repository":"busy/app","Tag":"v1","Digest":"<none>"}`,
+		`{"ID":"sha256:` + strings.Repeat("7", 64) + `","Repository":"ghcr.io/x/backup","Tag":"<none>","Digest":"` + pinnedDigest + `"}`,
+		`{"ID":"` + pinnedID + `","Repository":"care-clinic/backend-plugins","Tag":"0123456789ab","Digest":"<none>"}`,
 	}, "\n")
 	d, r := newDocker(func(c Command) fakeRun {
 		if c.Args[2] == "ls" {
@@ -346,9 +352,19 @@ func TestDockerImagePrune(t *testing.T) {
 		}
 		return fakeRun{}
 	})
+	d.ReadFile = func(name string) ([]byte, error) {
+		if name != ComposeEnvFile {
+			t.Fatalf("read %s", name)
+		}
+		return []byte(env), nil
+	}
 	em := &recEmitter{}
-	if err := d.ImagePrune(context.Background(), protocol.ImagePrune{Keep: []protocol.Digest{protocol.Digest(keepID), protocol.Digest(keepDigest)}}, em); err != nil {
+	res, err := d.ImagePrune(context.Background(), protocol.ImagePrune{Keep: []protocol.Digest{protocol.Digest(keepID), protocol.Digest(keepDigest)}}, em)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if res != (protocol.ImagePruneResult{Removed: 2, Skipped: 1}) {
+		t.Fatalf("result = %+v", res)
 	}
 	expectArgv(t, r,
 		[]string{"docker", "image", "ls", "--digests", "--no-trunc", "--format", "{{json .}}"},
@@ -357,6 +373,19 @@ func TestDockerImagePrune(t *testing.T) {
 		[]string{"docker", "image", "rm", "busy/app:v1"})
 	if last := em.progress[len(em.progress)-1]; last.Message != "removed 2 images" {
 		t.Fatalf("progress = %+v", last)
+	}
+}
+
+func TestDockerImagePruneRefusesWithNothingToKeep(t *testing.T) {
+	d, r := newDocker(nil)
+	d.ReadFile = func(string) ([]byte, error) { return nil, os.ErrNotExist }
+	_, err := d.ImagePrune(context.Background(), protocol.ImagePrune{}, &recEmitter{})
+	var oe *protocol.OpError
+	if !errors.As(err, &oe) || !strings.Contains(oe.Message, "nothing is pruned") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(r.argv()) != 0 {
+		t.Fatalf("ran %q", r.argv())
 	}
 }
 
