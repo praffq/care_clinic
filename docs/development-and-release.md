@@ -217,7 +217,9 @@ flowchart TD
 ### `stage-install.mjs`
 
 The script derives `app/wails.json`'s numeric installer version from
-`CARE_CLINIC_VERSION` in `deployments/.env` (stripping `-dev` for local builds).
+`desktop.version` in [`versions.yml`](../versions.yml) (stripping `-dev` for
+local builds), and writes it as `CARE_CLINIC_VERSION` at the top of the staged
+`app/install/.env`. `deployments/.env` must not set `CARE_CLINIC_VERSION`.
 Run it before invoking Wails for production builds, as Wails reads its metadata
 before its pre-build hook. CI does this explicitly.
 
@@ -280,11 +282,11 @@ UI suite because all screens share them.
 
 ## Release identity and pins
 
-[`deployments/.env`](../deployments/.env) is the common release manifest consumed by Go and packaging. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
+The staged `app/install/.env` (`deployments/.env` with `CARE_CLINIC_VERSION` from `versions.yml` prepended) is the release manifest consumed by Go. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
 
 | Group | Required keys |
 | --- | --- |
-| Desktop identity | `CARE_CLINIC_VERSION`. |
+| Desktop identity | `CARE_CLINIC_VERSION` (from `versions.yml` `desktop.version`). |
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
 | CARE sources | `CARE_BE_REPO`, `CARE_FE_REPO`, `CARE_BE_REF`, `CARE_FE_REF`. |
@@ -305,9 +307,9 @@ into `main`, or the commit selected for a manual run):
 
 | Source | Expected value |
 | --- | --- |
-| `CARE_CLINIC_VERSION` | Numeric `X.Y.Z`, without `-dev`. |
+| `versions.yml` `desktop.version` | Numeric `X.Y.Z`, without `-dev`. |
 | `app/wails.json` -> `info.productVersion` | Derived as `X.Y.Z` before building. |
-| Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
+| Automatically created tag | `desktop-vX.Y.Z`, pointing to the workflow's source commit. |
 | CARE backend and frontend refs | A branch name or a full commit hash. |
 
 The workflow rejects missing/duplicate manifest identity values and an existing

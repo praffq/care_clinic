@@ -33,8 +33,10 @@ written atomically (temp file, fsync, rename):
 
 ## Check
 
-1. Fetch `updates.json` and `updates.json.sig`.
-2. Verify: bad signature, unknown key, revision lower than `highest_revision`,
+1. Fetch `updates.json` and `updates.json.sig` (a 404 for the signature means
+   unsigned).
+2. Verify: bad signature, unknown key, a missing signature (unless the build
+   has no production key; see [unsigned feeds](updates-feed.md#trust-model)), revision lower than `highest_revision`,
    expired or invalid feeds are rejected and `verified.json` is left alone.
 3. Plan (desktop → engine → CARE). No path yields `Available: false` with the
    reason; nothing newer yields "everything is up to date".

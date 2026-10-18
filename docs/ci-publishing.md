@@ -6,7 +6,8 @@ Three workflows publish what an installed clinic downloads, and a fourth
 (`track.yml`) chains them to follow upstream refs. Everything goes to
 this repository (`praffq/care_clinic`): images to GHCR under
 `ghcr.io/praffq/care_clinic/`, engine bundles to GitHub Releases, and the
-signed feed to GitHub Pages.
+feed (signed when `FEED_SIGNING_KEY` is set) to GitHub Pages. Desktop
+installers are built by `release.yml` ([releases](releases.md)).
 
 ```mermaid
 flowchart LR
@@ -14,7 +15,7 @@ flowchart LR
   track -->|then| publish
   images[images.yml] -->|"images" artifact: images.json| publish[publish.yml]
   engine[engine.yml] -->|"release engine-v&lt;ver&gt;: engine.json"| publish
-  publish -->|updates.json + .sig| pages[GitHub Pages]
+  publish -->|"updates.json (+ .sig)"| pages[GitHub Pages]
 ```
 
 ## images.yml
@@ -79,15 +80,17 @@ dispatched with `replace: true`; normally bump the engine version instead.
 
 ## publish.yml (manual, or called by track.yml)
 
-1. Fails immediately if the `FEED_SIGNING_KEY` secret is missing.
+1. Checks for the `FEED_SIGNING_KEY` secret. Without it the run warns and
+   publishes the feed unsigned (see [feed signing](#feed-signing)).
 2. Downloads `images.json` from the latest successful `images.yml` run on
    `main` (or `images_run_id`) and `engine.json` from release
    `engine-v<engine/VERSION>`.
 3. Fetches the current `https://praffq.github.io/care_clinic/updates.json` (if
    any) as `--previous`, and runs `release generate` with revision = previous
-   + 1, then `release sign` and `release verify`. It refuses the development
-   key.
-4. Deploys `updates.json`, `updates.json.sig` and `feed.pub` to GitHub Pages.
+   + 1, then, with the key, `release sign` and `release verify`. It refuses
+   the development key.
+4. Deploys `updates.json` to GitHub Pages, with `updates.json.sig` and
+   `feed.pub` when signed.
 
 Inputs: `care`, `engine` (which sections to publish), `migrations`,
 `expires_days` (default 30), `block` (space-separated `component:version`).
@@ -96,13 +99,10 @@ Inputs: `care`, `engine` (which sections to publish), `migrations`,
 
 Keeps clinics on the latest commits of the refs in `versions.yml`:
 
-1. Without `FEED_SIGNING_KEY` (it would build images it cannot publish), a
-   scheduled run logs a notice and skips everything as a success; a manual
-   dispatch fails.
-2. Resolves the backend, frontend and plugin refs (`git ls-remote`) and
+1. Resolves the backend, frontend and plugin refs (`git ls-remote`) and
    compares them with `sources` of the newest CARE release in the published
    feed. No feed or no recorded sources counts as changed.
-3. If anything moved (or on dispatch with `force`), calls `images.yml` with
+2. If anything moved (or on dispatch with `force`), calls `images.yml` with
    the resolved sources, then `publish.yml` with `care: true, engine: false`.
    The new CARE version gets a `.pl.<hash>` build suffix over the plugin
    commits, so a plugin-only change is a new release.
@@ -112,9 +112,30 @@ Dispatch inputs: `refs` (space-separated `NAME=REF`, `NAME` being `backend`,
 the next scheduled run goes back to `versions.yml`. Publish the first feed
 manually (engine section included) before relying on the schedule.
 
+It runs with or without `FEED_SIGNING_KEY`; without it the feed is published
+unsigned.
+
+## Feed signing
+
+| `FEED_SIGNING_KEY` | Published | Accepted by |
+| --- | --- | --- |
+| set | `updates.json`, `updates.json.sig`, `feed.pub` | apps that trust its public key (`feed.ProductionKeyCurrent`/`ProductionKeyNext`) |
+| not set (as on `praffq/care_clinic`) | `updates.json` only, with a `::warning::` and a note in the run summary | only apps built with **no** production key compiled in |
+
+The app decides from its build ([`feed.UnsignedFeedAllowed`](../app/internal/feed/keys.go)):
+
+- **No production key** (`ProductionKeyCurrent` and `ProductionKeyNext`
+  both empty, as on this fork): a feed without `updates.json.sig` (the `.sig`
+  URL returns 404) is accepted, and the coordinator logs "the update feed is
+  unsigned…" and reports `"unsigned": true` in `check` and `status`. A signature
+  that is present is still checked when the build has keys to check it with
+  (development builds trust the dev key).
+- **A production key compiled in**: a missing or bad signature is rejected,
+  as before. Once a key is added to `keys.go`, publish only signed feeds.
+
 ## One-time setup
 
-1. **Signing key.** From a trusted machine (never commit the private key):
+1. **Signing key** (optional; without it the feed is unsigned). From a trusted machine (never commit the private key):
 
    ```sh
    cd app

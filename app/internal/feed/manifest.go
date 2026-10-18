@@ -46,6 +46,10 @@ type Manifest struct {
 	Care          []CareRelease                   `json:"care"`
 	SupportImages map[protocol.ImageRole]ImageRef `json:"support_images"`
 	Blocked       []string                        `json:"blocked"`
+
+	// Unsigned is set by Verify when it accepted the feed without checking a
+	// signature (VerifyOptions.AllowUnsigned).
+	Unsigned bool `json:"-"`
 }
 
 // DesktopRelease is one installable desktop app version.

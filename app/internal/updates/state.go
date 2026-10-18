@@ -37,6 +37,9 @@ type Verified struct {
 	ManifestSHA256  string    `json:"manifest_sha256"`
 	Manifest        []byte    `json:"manifest,omitempty"`  // exact updates.json bytes
 	Signature       []byte    `json:"signature,omitempty"` // exact updates.json.sig bytes
+	// Unsigned means the feed was accepted without a signature check
+	// (Options.AllowUnsigned).
+	Unsigned bool `json:"unsigned,omitempty"`
 }
 
 // Image is one digest-pinned image. URL is the feed's tarball URL (dev

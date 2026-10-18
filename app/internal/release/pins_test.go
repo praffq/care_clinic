@@ -12,7 +12,8 @@ func deploymentPins(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data
+	// The staged kit gets the desktop version prepended (stage-install.mjs).
+	return append([]byte("CARE_CLINIC_VERSION=0.0.0-dev\n"), data...)
 }
 
 func TestDeploymentSourcesAcceptBranchesAndCommits(t *testing.T) {

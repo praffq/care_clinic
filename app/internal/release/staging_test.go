@@ -67,8 +67,9 @@ func main() {
 		{"development", "2.3.4-dev"},
 	} {
 		t.Run(tc.state, func(t *testing.T) {
-			manifest := "CARE_CLINIC_VERSION=" + tc.version + "\n"
-			write("deployments/.env", manifest)
+			write("versions.yml", "schema: 1\n\ndesktop:\n  version: \""+tc.version+"\"\n  requires: { engine: \">=0.1.0\" }\n\nengine:\n  version: \"9.9.9\"\n")
+			write("deployments/.env", pinsEnv)
+			manifest := "CARE_CLINIC_VERSION=" + tc.version + "\n" + pinsEnv
 			install := filepath.Join(root, "app", "install")
 			switch tc.state {
 			case "deleted-again":
@@ -102,7 +103,7 @@ func main() {
 				t.Fatal(err)
 			}
 			if info.Info.ProductVersion != strings.TrimSuffix(tc.version, "-dev") || info.Name != "care-clinic" || info.Info.ProductName != "CARE Clinic" {
-				t.Fatalf("installer metadata was not derived from .env: %s", metadata)
+				t.Fatalf("installer metadata was not derived from versions.yml: %s", metadata)
 			}
 			cmd = proc.Command("go", "run", "main.go")
 			cmd.Dir = filepath.Join(root, "app")
@@ -125,23 +126,29 @@ func main() {
 			}
 		})
 	}
-	for _, value := range []string{
-		"",
-		"CARE_CLINIC_VERSION=invalid\n",
-		"CARE_CLINIC_VERSION=01.2.3\n",
-		"CARE_CLINIC_VERSION=1.2.3\nCARE_CLINIC_VERSION=2.0.0\n",
+	for name, tc := range map[string]struct{ versions, env string }{
+		"no-desktop":     {"schema: 1\nengine:\n  version: \"1.2.3\"\n", pinsEnv},
+		"empty":          {"desktop:\n  version: \"\"\n", pinsEnv},
+		"invalid":        {"desktop:\n  version: \"invalid\"\n", pinsEnv},
+		"leading-zero":   {"desktop:\n  version: \"01.2.3\"\n", pinsEnv},
+		"duplicate":      {"desktop:\n  version: \"1.2.3\"\n  version: \"2.0.0\"\n", pinsEnv},
+		"engine-only":    {"desktop:\n  requires: {}\nengine:\n  version: \"1.2.3\"\n", pinsEnv},
+		"version-in-env": {"desktop:\n  version: \"1.2.3\"\n", "CARE_CLINIC_VERSION=1.2.3\n" + pinsEnv},
 	} {
-		t.Run("invalid-version-"+strings.TrimSpace(value), func(t *testing.T) {
-			write("deployments/.env", value)
+		t.Run("invalid-"+name, func(t *testing.T) {
+			write("versions.yml", tc.versions)
+			write("deployments/.env", tc.env)
 			cmd := proc.Command(command[0], command[1:]...)
 			cmd.Dir = bin
 			if output, err := cmd.CombinedOutput(); err == nil {
 				t.Fatalf("invalid release version was accepted: %s", output)
 			}
 			data, err := os.ReadFile(filepath.Join(root, "app", "install", ".env"))
-			if err != nil || string(data) != "CARE_CLINIC_VERSION=2.3.4-dev\n" {
+			if err != nil || string(data) != "CARE_CLINIC_VERSION=2.3.4-dev\n"+pinsEnv {
 				t.Fatalf("invalid version changed the staged kit: %q, %v", data, err)
 			}
 		})
 	}
 }
+
+const pinsEnv = "POSTGRES_IMAGE=postgres:17\n"

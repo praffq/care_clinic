@@ -21,22 +21,21 @@ const workflow = fs.readFileSync(".github/workflows/release.yml", "utf8");
 const match = workflow.match(/          node <<'NODE'\n([\s\S]*?)\n          NODE/);
 if (!match) throw new Error("Release identity validator is missing");
 const validator = match[1].replace(/^          /gm, "");
-const pins = fs.readFileSync("deployments/.env", "utf8");
-const version = pins.match(/^CARE_CLINIC_VERSION=(.+)$/m)[1].trim();
-const change = (key, value) => pins.replace(new RegExp("^" + key + "=.*$", "m"), key + "=" + value);
+const pins = fs.readFileSync("versions.yml", "utf8");
+const version = pins.match(/^desktop:\n  version: "([^"]+)"/m)[1];
+const engine = pins.match(/^engine:\n  version: "([^"]+)"/m)[1];
+const desktop = value => pins.replace(/^(desktop:\n  version: ).*$/m, "$1" + value);
 const cases = [
   {name: "manual release"},
-  {name: "version bump", pins: change("CARE_CLINIC_VERSION", "1.2.3"), version: "1.2.3"},
-  {name: "invalid version", pins: change("CARE_CLINIC_VERSION", "01.2.3"), fails: true},
-  {name: "branch backend", pins: change("CARE_BE_REF", "develop")},
-  {name: "branch frontend", pins: change("CARE_FE_REF", "develop")},
-  {name: "empty backend ref", pins: change("CARE_BE_REF", ""), fails: true},
-  {name: "backend ref with spaces", pins: change("CARE_BE_REF", "not a ref"), fails: true},
-  {name: "development version", pins: change("CARE_CLINIC_VERSION", version + "-dev"), fails: true},
-  {name: "missing version", pins: pins.replace(/^CARE_CLINIC_VERSION=.*\n/m, ""), fails: true},
-  {name: "duplicate version", pins: pins + "\nCARE_CLINIC_VERSION=" + version + "\n", fails: true},
-  {name: "empty duplicate version", pins: pins + "\nCARE_CLINIC_VERSION=\n", fails: true},
-  {name: "duplicate frontend", pins: pins + "\nCARE_FE_REF=\n", fails: true},
+  {name: "version bump", pins: desktop('"1.2.3"'), version: "1.2.3"},
+  {name: "unquoted version", pins: desktop("1.2.3 # comment"), version: "1.2.3"},
+  {name: "invalid version", pins: desktop('"01.2.3"'), fails: true},
+  {name: "development version", pins: desktop('"' + version + '-dev"'), fails: true},
+  {name: "empty version", pins: desktop('""'), fails: true},
+  {name: "missing desktop", pins: pins.replace(/^desktop:\n  version: .*\n/m, "desktop:\n"), fails: true},
+  {name: "duplicate version", pins: pins.replace(/^desktop:\n/m, 'desktop:\n  version: "9.9.9"\n'), fails: true},
+  {name: "development engine", pins: pins.replace(/^(engine:\n  version: ).*$/m, '$1"' + engine + '-dev"'), fails: true},
+  {name: "missing engine", pins: pins.replace(/^engine:\n  version: .*\n/m, "engine:\n"), fails: true},
 ];
 for (const test of cases) {
   let output = "";
@@ -47,7 +46,7 @@ for (const test of cases) {
         if (name !== "fs") throw new Error("Unexpected module");
         return {
           readFileSync: path => {
-            if (path === "deployments/.env") return test.pins === undefined ? pins : test.pins;
+            if (path === "versions.yml") return test.pins === undefined ? pins : test.pins;
             throw new Error("Unexpected input path");
           },
           appendFileSync: (path, value) => {
@@ -64,7 +63,7 @@ for (const test of cases) {
     failed = true;
   }
   if (failed !== Boolean(test.fails)) throw new Error(test.name + ": unexpected validation result");
-  if (!failed && output !== "version=" + (test.version || version) + "\n") throw new Error(test.name + ": incorrect artifact version");
+  if (!failed && output !== "version=" + (test.version || version) + "\nengine_tag=engine-v" + engine + "\n") throw new Error(test.name + ": incorrect artifact version: " + output);
 }
 `
 	cmd := proc.Command("node", "-e", script)
@@ -119,7 +118,7 @@ for (const signing of ["false", "true"]) for (const windowsSigning of ["unsigned
 const files = new Map([
   ["CARE-Clinic-1.2.3-macos.dmg", "macOS application"],
   ["CARE-Clinic-1.2.3-windows-amd64-setup.exe", "Windows installer"],
-  ["release-config.env", "CARE_CLINIC_VERSION=1.2.3\n"],
+  ["versions.yml", "desktop:\n  version: \"1.2.3\"\n"],
 ]);
 const key = path => {
   assert.ok(path.startsWith("release-assets/"));
@@ -127,7 +126,7 @@ const key = path => {
 };
 const env = {
   SIGN_MACOS: signing, WINDOWS_SIGNING: windowsSigning,
-  VERSION: "1.2.3", GITHUB_SHA: "a".repeat(40),
+  VERSION: "1.2.3", ENGINE_TAG: "engine-v0.4.5", GITHUB_SHA: "a".repeat(40),
   GITHUB_SERVER_URL: "https://github.com", GITHUB_REPOSITORY: "ohcnetwork/care_desktop",
   GITHUB_RUN_ID: "123",
 };
@@ -153,11 +152,12 @@ const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 const manifest = JSON.parse(files.get("release-manifest.json"));
 assert.equal(manifest.version, env.VERSION);
 assert.equal(manifest.source_commit, env.GITHUB_SHA);
+assert.equal(manifest.engine, "0.4.5");
 assert.deepEqual(manifest.signing, {
   macos: signing === "true" ? "developer-id-notarized" : "ad-hoc",
   windows: windowsSigning,
 });
-assert.equal(manifest.configuration_sha256, hash(files.get("release-config.env")));
+assert.equal(manifest.versions_sha256, hash(files.get("versions.yml")));
 assert.equal(manifest.run_url, "https://github.com/ohcnetwork/care_desktop/actions/runs/123");
 const lines = files.get("SHA256SUMS").trim().split("\n");
 assert.equal(lines.length, 4);
@@ -190,6 +190,13 @@ func TestMacSigningRetainsExistingConfiguration(t *testing.T) {
 	for _, required := range []string{
 		"--options runtime", `notarize "$dmg"`, `xcrun stapler validate "$app"`,
 		`xcrun stapler validate "$dmg"`, `if: always() && env.SIGN_MACOS == 'true'`,
+		// Without the certificate the app is ad-hoc signed and the nested
+		// service keeps its virtualization entitlement.
+		`echo "::warning::MACOS_CERT_P12 is not set;`,
+		`codesign --force --sign - --entitlements "$entitlements" "$service"`,
+		`codesign --force --sign - "$app"`,
+		"com.apple.security.virtualization",
+		"**UNSIGNED** (ad-hoc signature, not notarized)",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("macOS signing contract is missing %q", required)
@@ -227,6 +234,11 @@ func TestTestCertificateIsLabelledAndOnlyAcceptedInTestMode(t *testing.T) {
 		`if ($env:WINDOWS_SIGNING -eq 'signpath-test') { $accepted += 'UnknownError', 'NotTrusted' }`,
 		`if ($signature.Status -notin $accepted -or -not $signature.SignerCertificate) { throw`,
 		"**Test build: do not publish.**",
+		`echo "::warning::SignPath is not configured; the Windows installer will be unsigned."`,
+		`echo "::error::SignPath is partly configured`,
+		"secrets.SIGNPATH_API_TOKEN", "vars.SIGNPATH_ORGANIZATION_ID",
+		"vars.SIGNPATH_PROJECT_SLUG", "vars.SIGNPATH_SIGNING_POLICY_SLUG",
+		"- Windows: **UNSIGNED.**",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("SignPath test mode contract is missing %q", required)

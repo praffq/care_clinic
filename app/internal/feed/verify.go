@@ -37,16 +37,24 @@ type VerifyOptions struct {
 	MinRevision uint64
 	// AllowInsecureURLs permits http URLs; set it only in devfeed builds.
 	AllowInsecureURLs bool
+	// AllowUnsigned accepts a feed with no signature (empty sig), or one
+	// whose signature cannot be checked because Keys is empty; the manifest
+	// is then marked Unsigned. A signature present with Keys set is always
+	// checked. Set it only when UnsignedFeedAllowed.
+	AllowUnsigned bool
 }
 
 // Verify checks the detached signature over data and then decodes and
 // validates the manifest. The signature is checked before any parsing.
 func Verify(data, sig []byte, opts VerifyOptions) (*Manifest, error) {
-	if len(opts.Keys) == 0 {
-		return nil, fmt.Errorf("%w: no trusted keys", ErrUnknownKey)
-	}
-	if err := opts.Keys.verify(data, sig); err != nil {
-		return nil, err
+	unsigned := opts.AllowUnsigned && (len(sig) == 0 || len(opts.Keys) == 0)
+	if !unsigned {
+		if len(opts.Keys) == 0 {
+			return nil, fmt.Errorf("%w: no trusted keys", ErrUnknownKey)
+		}
+		if err := opts.Keys.verify(data, sig); err != nil {
+			return nil, err
+		}
 	}
 	var m Manifest
 	if err := decodeStrict(data, &m); err != nil {
@@ -68,6 +76,7 @@ func Verify(data, sig []byte, opts VerifyOptions) (*Manifest, error) {
 	if err := m.validate(opts.AllowInsecureURLs); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	m.Unsigned = unsigned
 	return &m, nil
 }
 

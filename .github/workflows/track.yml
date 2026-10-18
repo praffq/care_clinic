@@ -5,7 +5,7 @@ name: Track CARE refs
 # a commit and compares them with the sources recorded in the newest CARE
 # release of the published feed. When anything moved, it builds the images
 # (images.yml, which smoke-tests the backend with every plugin) and publishes
-# a new signed feed revision (publish.yml); clinics then apply it through
+# a new feed revision (publish.yml; unsigned when FEED_SIGNING_KEY is not set); clinics then apply it through
 # their update coordinator. See docs/ci-publishing.md.
 on:
   schedule:
@@ -38,32 +38,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      skip: ${{ steps.key.outputs.skip }}
       changed: ${{ steps.compare.outputs.changed }}
       sources: ${{ steps.compare.outputs.sources }}
     steps:
-      - name: Require the signing key
-        id: key
-        env:
-          FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
-        run: |
-          if [ -z "$FEED_SIGNING_KEY" ] && [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            echo "::notice title=Tracking skipped::FEED_SIGNING_KEY is not set, so nothing can be published. See docs/ci-publishing.md."
-            echo "skip=true" >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "skip=false" >>"$GITHUB_OUTPUT"
-          if [ -z "$FEED_SIGNING_KEY" ]; then
-            echo "::error title=FEED_SIGNING_KEY is not set::Tracking publishes signed feed revisions and cannot run without the key. Create it with 'go run ./cmd/release keygen --out feed.key' (in app/) and 'gh secret set FEED_SIGNING_KEY -R $GITHUB_REPOSITORY < feed.key'. See docs/ci-publishing.md."
-            exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.key.outputs.skip != 'true'
         with:
           persist-credentials: false
       - name: Resolve refs and compare with the published feed
         id: compare
-        if: steps.key.outputs.skip != 'true'
         env:
           REFS: ${{ inputs.refs || '' }}
           FORCE: ${{ inputs.force || false }}
@@ -109,7 +91,7 @@ jobs:
   images:
     name: Build images
     needs: check
-    if: needs.check.outputs.skip != 'true' && needs.check.outputs.changed == 'true'
+    if: needs.check.outputs.changed == 'true'
     permissions:
       contents: read
       packages: write

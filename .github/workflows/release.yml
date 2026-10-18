@@ -1,9 +1,14 @@
 name: Release CARE Clinic
 
-# Fork (praffq/care_clinic): automatic releases are disabled while the v2
-# engine redesign is in progress. Run manually only.
+# Builds the desktop installers for versions.yml desktop.version and drafts
+# the GitHub Release desktop-v<version>. Signing uses the same secrets and
+# variables as ohcnetwork/care_clinic; each platform whose signing is not
+# configured ships unsigned (macOS ad-hoc) with a warning. See docs/releases.md.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [versions.yml]
 
 permissions:
   contents: read
@@ -24,7 +29,7 @@ jobs:
     outputs:
       release: ${{ steps.decide.outputs.release }}
     steps:
-      - name: Compare CARE_CLINIC_VERSION with the previous commit
+      - name: Compare desktop.version with the previous commit
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
@@ -36,9 +41,10 @@ jobs:
             exit 0
           fi
           version_at() {
-            gh api "repos/$GITHUB_REPOSITORY/contents/deployments/.env?ref=$1" \
+            gh api "repos/$GITHUB_REPOSITORY/contents/versions.yml?ref=$1" \
               -H "Accept: application/vnd.github.raw" 2>/dev/null \
-              | sed -n 's/^CARE_CLINIC_VERSION=//p' | tr -d '\r' | xargs
+              | awk '/^desktop:/ { in_desktop = 1; next } /^[^ #]/ { in_desktop = 0 }
+                     in_desktop && /^  version:/ { gsub(/["\r ]/, "", $2); print $2; exit }'
           }
           now=$(version_at "$GITHUB_SHA")
           before=""
@@ -46,10 +52,10 @@ jobs:
             before=$(version_at "$BEFORE")
           fi
           if [ -n "$now" ] && [ "$now" != "$before" ]; then
-            echo "CARE_CLINIC_VERSION changed from ${before:-(none)} to $now; releasing."
+            echo "desktop.version changed from ${before:-(none)} to $now; releasing."
             echo "release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "CARE_CLINIC_VERSION is unchanged ($now); nothing to release."
+            echo "desktop.version is unchanged ($now); nothing to release."
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -61,6 +67,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      engine_tag: ${{ steps.version.outputs.engine_tag }}
       sign_windows: ${{ steps.signpath.outputs.sign_windows }}
       windows_signing: ${{ steps.signpath.outputs.windows_signing }}
     steps:
@@ -71,27 +78,24 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
-      - name: Read release version and immutable sources
+      - name: Read the desktop and engine versions
         id: version
         run: |
           node <<'NODE'
           const fs = require("fs");
-          const env = fs.readFileSync("deployments/.env", "utf8");
-          const value = key => {
-            const matches = [...env.matchAll(new RegExp(`^${key}=([^\\r\\n]*)$`, "gm"))];
-            if (matches.length !== 1) throw new Error(`Expected one ${key} in deployments/.env`);
-            return matches[0][1].trim();
-          };
-          const version = value("CARE_CLINIC_VERSION");
-          if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version)) {
-            throw new Error("Releases require CARE_CLINIC_VERSION=X.Y.Z (no -dev suffix)");
-          }
-          for (const key of ["CARE_BE_REF", "CARE_FE_REF"]) {
-            if (!/^[\w.\-/]+$/.test(value(key))) {
-              throw new Error(`${key} must be a branch name or commit SHA`);
+          const pins = fs.readFileSync("versions.yml", "utf8");
+          const value = section => {
+            const block = pins.match(new RegExp(`^${section}:[^\\S\\r\\n]*\\r?\\n((?:(?:[ \\t]+[^\\r\\n]*|[ \\t]*)\\r?\\n)*)`, "m"));
+            const matches = block ? [...block[1].matchAll(/^  version:[ \t]*"?([^"\s#]*)"?[ \t]*(?:#.*)?$/gm)] : [];
+            if (matches.length !== 1) throw new Error(`Expected one ${section}.version in versions.yml`);
+            if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(matches[0][1])) {
+              throw new Error(`Releases require ${section}.version X.Y.Z (no -dev suffix) in versions.yml`);
             }
-          }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+            return matches[0][1];
+          };
+          const version = value("desktop");
+          const engine = value("engine");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nengine_tag=engine-v${engine}\n`);
           NODE
       - name: Reject an existing release version
         env:
@@ -99,11 +103,27 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"v$VERSION\") | .html_url")
+            --jq ".[] | select(.tag_name == \"desktop-v$VERSION\") | .html_url")
           if [ -n "$existing" ]; then
-            echo "::error::Version $VERSION already has a release: $existing. Bump CARE_CLINIC_VERSION; published assets are never replaced."
+            echo "::error::Desktop $VERSION already has a release: $existing. Bump desktop.version in versions.yml; published assets are never replaced."
             exit 1
           fi
+      - name: Require the engine release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_TAG: ${{ steps.version.outputs.engine_tag }}
+        run: |
+          version=${ENGINE_TAG#engine-v}
+          assets=$(gh release view "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name') || {
+            echo "::error::Engine release $ENGINE_TAG (versions.yml engine.version) does not exist. Release the engine first (engine.yml)."
+            exit 1
+          }
+          for asset in "care-engine-$version-arm64.tar.gz" SHA256SUMS; do
+            if ! grep -qxF "$asset" <<<"$assets"; then
+              echo "::error::Engine release $ENGINE_TAG has no $asset."
+              exit 1
+            fi
+          done
       - name: Read SignPath configuration
         id: signpath
         env:
@@ -139,6 +159,8 @@ jobs:
     name: Check and build selected commit
     needs: [prepare]
     uses: ./.github/workflows/ci.yml
+    with:
+      engine-tag: ${{ needs.prepare.outputs.engine_tag }}
 
   # SignPath signs PE files but cannot open an NSIS installer, so the application
   # and uninstaller are signed first and the installer is rebuilt around the signed
@@ -283,6 +305,7 @@ jobs:
     timeout-minutes: 360
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      ENGINE_TAG: ${{ needs.prepare.outputs.engine_tag }}
       SIGN_MACOS: ${{ secrets.MACOS_CERT_P12 != '' }}
       SIGN_WINDOWS: ${{ needs.prepare.outputs.sign_windows }}
       WINDOWS_SIGNING: ${{ needs.prepare.outputs.windows_signing }}
@@ -339,8 +362,15 @@ jobs:
         run: |
           mkdir -p incoming/app release-assets staging
           ditto -x -k incoming/macos/desktop-macos-unsigned.zip incoming/app
-          app=incoming/app/care-clinic.app
-          test -d "$app"
+          apps=(incoming/app/*.app)
+          test "${#apps[@]}" -eq 1 && test -d "${apps[0]}"
+          app=${apps[0]}
+          service="$app/Contents/MacOS/care-clinic-service"
+          entitlements=app/cmd/care-clinic-service/care-clinic-service.entitlements
+          test -x "$service"
+          engine="care-engine-${ENGINE_TAG#engine-v}-arm64.tar.gz"
+          test -s "$app/Contents/Resources/engine/$engine"
+          (cd "$app/Contents/Resources/engine" && shasum -a 256 -c SHA256SUMS)
           actual=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           test "$actual" = "$VERSION"
           codesign --verify --strict "$app"
@@ -372,9 +402,9 @@ jobs:
               fi
             }
             codesign --force --timestamp --options runtime \
-              --entitlements app/cmd/care-clinic-service/care-clinic-service.entitlements \
+              --entitlements "$entitlements" \
               --keychain "$SIGNING_KEYCHAIN" --sign "$SIGN_IDENTITY" \
-              "$app/Contents/MacOS/care-clinic-service"
+              "$service"
             codesign --force --timestamp --options runtime \
               --keychain "$SIGNING_KEYCHAIN" --sign "$SIGN_IDENTITY" "$app"
             codesign --verify --strict "$app"
@@ -383,8 +413,15 @@ jobs:
             xcrun stapler staple "$app"
             xcrun stapler validate "$app"
           else
-            echo "::warning::MACOS_CERT_P12 is absent; macOS retains its ad-hoc signature only."
+            echo "::warning::MACOS_CERT_P12 is not set; the macOS app is ad-hoc signed and not notarized, so Gatekeeper will block it until it is allowed in System Settings."
+            codesign --force --sign - --entitlements "$entitlements" "$service"
+            codesign --force --sign - "$app"
+            codesign --verify --strict "$app"
           fi
+          codesign -d --entitlements - --xml "$service" 2>/dev/null | grep -q com.apple.security.virtualization || {
+            echo "::error::care-clinic-service lost its virtualization entitlement"
+            exit 1
+          }
           ditto "$app" "staging/CARE Clinic.app"
           ln -s /Applications staging/Applications
           dmg="release-assets/CARE-Clinic-$VERSION-macos.dmg"
@@ -401,7 +438,7 @@ jobs:
           installers=(incoming/windows/*.exe)
           test "${#installers[@]}" -eq 1 && test -s "${installers[0]}"
           cp "${installers[0]}" "release-assets/CARE-Clinic-$VERSION-windows-amd64-setup.exe"
-          cp deployments/.env release-assets/release-config.env
+          cp versions.yml release-assets/versions.yml
       - name: Remove macOS signing credentials
         if: always() && env.SIGN_MACOS == 'true'
         run: |
@@ -418,7 +455,8 @@ jobs:
           const manifest = {
             version: process.env.VERSION,
             source_commit: process.env.GITHUB_SHA,
-            configuration_sha256: hash("release-assets/release-config.env"),
+            engine: process.env.ENGINE_TAG.replace(/^engine-v/, ""),
+            versions_sha256: hash("release-assets/versions.yml"),
             signing: {
               macos: process.env.SIGN_MACOS === "true" ? "developer-id-notarized" : "ad-hoc",
               windows: process.env.WINDOWS_SIGNING,
@@ -448,6 +486,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
+      ENGINE_TAG: ${{ needs.prepare.outputs.engine_tag }}
       WINDOWS_SIGNING: ${{ needs.prepare.outputs.windows_signing }}
     steps:
       - uses: actions/download-artifact@v8.0.1
@@ -459,13 +498,13 @@ jobs:
         run: |
           test -s "CARE-Clinic-$VERSION-macos.dmg"
           test -s "CARE-Clinic-$VERSION-windows-amd64-setup.exe"
-          test -s release-config.env
+          test -s versions.yml
           test -s release-manifest.json
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 5
           sha256sum --check --strict SHA256SUMS
       - name: Create tag and draft without replacing published versions
         run: |
-          tag="v$VERSION"
+          tag="desktop-v$VERSION"
           existing=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
             --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")
           if [ -n "$existing" ]; then
@@ -480,26 +519,41 @@ jobs:
           fi
           case "$WINDOWS_SIGNING" in
             signpath-foundation)
-              windows_note="The Windows installer and application are signed with a certificate issued to SignPath Foundation (free code signing provided by SignPath.io)." ;;
+              windows_note="- Windows: signed with a certificate issued to SignPath Foundation (free code signing provided by SignPath.io)." ;;
             signpath-test)
-              windows_note="**Test build: do not publish.** The Windows installer and application are signed with SignPath's untrusted test certificate." ;;
+              windows_note="- Windows: **Test build: do not publish.** Signed with SignPath's untrusted test certificate." ;;
             unsigned)
-              windows_note="Windows downloads are unsigned and may be blocked by SmartScreen." ;;
+              windows_note="- Windows: **UNSIGNED.** SmartScreen will warn before the installer runs (More info, then Run anyway)." ;;
             *)
               echo "::error::Unknown Windows signing status '$WINDOWS_SIGNING'"
+              exit 1 ;;
+          esac
+          macos=$(jq -r .signing.macos release-assets/release-manifest.json)
+          case "$macos" in
+            developer-id-notarized)
+              macos_note="- macOS: signed with Developer ID and notarized." ;;
+            ad-hoc)
+              macos_note="- macOS: **UNSIGNED** (ad-hoc signature, not notarized). Gatekeeper blocks the first launch; allow it in System Settings, Privacy & Security (Open Anyway)." ;;
+            *)
+              echo "::error::Unknown macOS signing status '$macos'"
               exit 1 ;;
           esac
           cat > release-notes.md <<EOF
           ## CARE Clinic $VERSION
 
-          **Preview release.** $windows_note
-          See release-manifest.json for each platform's actual signing status.
-          macOS uses the existing Developer ID/notarization configuration when enabled;
-          otherwise its ad-hoc signature is not trusted by Gatekeeper.
+          **Preview release.**
+
+          ### Signing
+
+          $macos_note
+          $windows_note
+
+          See release-manifest.json for each platform's signing status.
 
           - Source commit: $GITHUB_SHA
+          - Bundled engine: ${ENGINE_TAG} (macOS)
           - Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          - Exact dependency pins: release-config.env
+          - Release pins: versions.yml
           - Build identity: release-manifest.json
           - File integrity: SHA256SUMS (not a publisher signature)
 
@@ -515,8 +569,8 @@ jobs:
           If they differ, delete the file and download it again.
 
           Before publishing, review the installers, test on a disposable clinic,
-          and add upgrade notes, database migration requirements, and known limitations.
-          Preserve the clinic CA and take a verified backup before upgrading an existing clinic.
+          and add upgrade notes and known limitations.
+          Take a verified backup before upgrading an existing clinic.
           EOF
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --draft --prerelease --title "CARE Clinic $VERSION (preview)" \

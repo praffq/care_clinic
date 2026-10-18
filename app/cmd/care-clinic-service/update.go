@@ -76,7 +76,8 @@ func updateCtl(ctx context.Context, c *control.Client, args []string) (any, erro
 	}
 	u, err := updates.Open(updates.Options{
 		Dir: *stateDir, Feed: updates.HTTPFetcher{URL: *feedURL}, Keys: keys, AllowInsecureURLs: feed.DevBuild,
-		Service: c, Agent: updates.ClientAgent{Control: c, Log: logf},
+		AllowUnsigned: feed.UnsignedFeedAllowed(),
+		Service:       c, Agent: updates.ClientAgent{Control: c, Log: logf},
 		Stack: updates.RuntimeStack{
 			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: logf},
 			Kit:     os.DirFS(*kit), Host: cfg.MDNSName + ".local", Origins: origins,
