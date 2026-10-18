@@ -39,6 +39,8 @@ commands:
   update <command>          check for and apply updates (ctl update for help)
   plugins <command>         list, enable, add or disable CARE backend plugins
                             (ctl plugins for help)
+  frontend <command>        show, set, unset or reset CARE frontend (REACT_*)
+                            settings (ctl frontend for help)
 `
 
 func ctl(args []string) int {
@@ -72,6 +74,10 @@ func ctl(args []string) int {
 		fmt.Fprint(os.Stderr, updateUsage)
 		return 2
 	}
+	if errors.Is(err, errFrontendUsage) {
+		fmt.Fprint(os.Stderr, frontendUsage)
+		return 2
+	}
 	if errors.Is(err, errPluginsUsage) {
 		fmt.Fprint(os.Stderr, pluginsUsage)
 		return 2
@@ -91,7 +97,7 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
-	if cmd == "clinic" || cmd == "backup" || cmd == "update" || cmd == "plugins" {
+	if cmd == "clinic" || cmd == "backup" || cmd == "update" || cmd == "plugins" || cmd == "frontend" {
 		sub := clinicCtl
 		switch cmd {
 		case "backup":
@@ -100,6 +106,8 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 			sub = updateCtl
 		case "plugins":
 			sub = pluginsCtl
+		case "frontend":
+			sub = frontendCtl
 		}
 		v, err := sub(ctx, c, args)
 		if err != nil || v == nil {

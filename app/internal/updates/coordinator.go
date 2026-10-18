@@ -123,9 +123,14 @@ type Options struct {
 	BootTimeout  time.Duration
 	PollInterval time.Duration
 
-	// DevBuilder is the CARE backend builder image used for custom plugins
-	// when the feed has none for the installed CARE (dev images).
-	DevBuilder *stack.Image
+	// DevBuilders are the CARE builder images (stack.DevBuilders) used for
+	// custom plugins and frontend settings when the feed has none for the
+	// installed CARE (dev images).
+	DevBuilders []stack.Image
+	// FrontendEnv is the deployment kit's frontend.env template, the
+	// frontend settings of a CARE release whose feed entry has no build_env
+	// (dev images, or a clinic not installed from the feed).
+	FrontendEnv map[string]string
 
 	Now func() time.Time
 	Log func(string)
@@ -631,7 +636,27 @@ func (c *Coordinator) hook(point string) error {
 	return c.o.TestHook(point)
 }
 
-// stepError is a step that failed MaxAttempts times.
+// Permanent reports whether err is deterministic, so a step that returned it
+// is not retried: an image build the agent classified as failing the same
+// way every time (a missing package or repository, a resolver conflict, a
+// compile error) or an op the agent rejected as invalid.
+func Permanent(err error) bool {
+	if errors.Is(err, ErrNoBuilder) || errors.Is(err, ErrNoFrontendBuilder) || errors.Is(err, ErrFrontendEnvUnknown) {
+		return true
+	}
+	var se *SettingError
+	if errors.As(err, &se) {
+		return true
+	}
+	var oe *protocol.OpError
+	if errors.As(err, &oe) && oe.Code == protocol.CodeBuildFailed {
+		return true
+	}
+	var ve *protocol.ValidationError
+	return errors.As(err, &ve)
+}
+
+// stepError is a step that failed MaxAttempts times, or once permanently.
 type stepError struct {
 	step string
 	err  error
@@ -642,7 +667,7 @@ func (e *stepError) Error() string { return e.step + ": " + e.err.Error() }
 type stepFunc func(ctx context.Context, j *Journal) error
 
 // runSteps runs the steps not yet done, each at most MaxAttempts times
-// counting attempts made before a crash. It returns a *stepError when a step
+// counting attempts made before a crash, or once when it fails Permanent. It returns a *stepError when a step
 // gives up; any other error (cancellation, test crash) aborts as is.
 func (c *Coordinator) runSteps(ctx context.Context, j *Journal, steps []StepRecord, fns map[string]stepFunc) error {
 	for i := range steps {
@@ -692,6 +717,14 @@ func (c *Coordinator) runSteps(ctx context.Context, j *Journal, steps []StepReco
 			if ctx.Err() != nil {
 				_ = c.saveJournal(j)
 				return ctx.Err()
+			}
+			if Permanent(err) {
+				// Retrying the same inputs fails the same way: give up now.
+				s.Status = StepFailed
+				if err := c.saveJournal(j); err != nil {
+					return err
+				}
+				return &stepError{step: s.Name, err: err}
 			}
 			if s.Attempts < MaxAttempts {
 				s.Status = StepPending
@@ -803,8 +836,11 @@ func (c *Coordinator) commit(j *Journal) error {
 	case feed.ComponentCare:
 		in.Care = &InstalledCare{Version: j.Care.Version, ReleasedAt: j.Care.ReleasedAt, Images: j.Care.Images}
 		in.Plugins = installedPlugins(j)
+		in.Frontend = installedFrontend(j)
 	case ComponentPlugins:
 		in.Plugins = installedPlugins(j)
+	case ComponentFrontend:
+		in.Frontend = installedFrontend(j)
 	case feed.ComponentEngine:
 		in.Engine = &InstalledEngine{Version: j.Engine.Version, DataSchema: j.Engine.DataSchema, SHA256: j.Engine.SHA256}
 	}
@@ -848,6 +884,14 @@ func (c *Coordinator) newJournal(ctx context.Context, m *feed.Manifest, rev uint
 			return nil, err
 		}
 		j.Plugins = &PluginsTarget{Set: cur.Set, Base: backendOf(j.Care.Images), Builder: builderOf(s.Care)}
+		// So are its frontend settings, with the new release's build_env.
+		if len(cur.Overrides) > 0 {
+			j.Frontend = &FrontendTarget{
+				Overrides: cur.Overrides, BaseEnv: c.releaseEnv(s.Care),
+				Base:    imageOf(j.Care.Images, protocol.ImageRoleFrontend),
+				Builder: releaseBuilder(s.Care, protocol.ImageRoleFrontendBuilder),
+			}
+		}
 		if in.Care != nil {
 			j.Rollback.PreviousImages = cur.Images
 			j.Rollback.PreviousPlugs = cur.Plugs

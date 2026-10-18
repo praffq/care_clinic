@@ -41,6 +41,8 @@ type current struct {
 	Images []Image
 	Set    []plugins.Plugin
 	Plugs  string
+	// Overrides are the clinic's frontend settings (nil: the release's).
+	Overrides map[string]string
 }
 
 // current reads the plugin set and images from installed.json, or from the
@@ -59,14 +61,20 @@ func (c *Coordinator) current(ctx context.Context, in Installed) (current, error
 			cur.Base = append(cur.Base, Image{Role: i.Role, Repo: i.Repo, Digest: i.Digest})
 		}
 	}
+	var fe *Image
+	if f := in.Frontend; f != nil {
+		cur.Overrides = f.Overrides
+		cur.Base = withImage(cur.Base, protocol.ImageRoleFrontend, &f.Base)
+		fe = f.Image
+	}
 	if in.Plugins != nil {
 		cur.Set = in.Plugins.Set
 		cur.Base = withBackend(cur.Base, &in.Plugins.Base)
-		cur.Images = withBackend(cur.Base, in.Plugins.Image)
+		cur.Images = withImage(withBackend(cur.Base, in.Plugins.Image), protocol.ImageRoleFrontend, fe)
 		cur.Plugs, err = plugins.AdditionalPlugs(cur.Set)
 		return cur, err
 	}
-	cur.Images = cur.Base
+	cur.Images = withImage(cur.Base, protocol.ImageRoleFrontend, fe)
 	cur.Plugs = plugs
 	if plugs == "" {
 		cur.Set = plugins.Defaults()
@@ -78,22 +86,29 @@ func (c *Coordinator) current(ctx context.Context, in Installed) (current, error
 
 // withBackend returns imgs with the backend image replaced by b (none: imgs).
 func withBackend(imgs []Image, b *Image) []Image {
+	return withImage(imgs, protocol.ImageRoleBackend, b)
+}
+
+// withImage returns imgs with role's image replaced by b (none: imgs).
+func withImage(imgs []Image, role protocol.ImageRole, b *Image) []Image {
 	out := slices.Clone(imgs)
 	if b == nil || len(out) == 0 {
 		return out
 	}
 	for i := range out {
-		if out[i].Role == protocol.ImageRoleBackend {
+		if out[i].Role == role {
 			out[i] = *b
-			out[i].Role = protocol.ImageRoleBackend
+			out[i].Role = role
 		}
 	}
 	return out
 }
 
-func backendOf(imgs []Image) Image {
+func backendOf(imgs []Image) Image { return imageOf(imgs, protocol.ImageRoleBackend) }
+
+func imageOf(imgs []Image, role protocol.ImageRole) Image {
 	for _, i := range imgs {
-		if i.Role == protocol.ImageRoleBackend {
+		if i.Role == role {
 			return Image{Role: i.Role, Repo: i.Repo, Digest: i.Digest}
 		}
 	}
@@ -102,23 +117,32 @@ func backendOf(imgs []Image) Image {
 
 // builderOf is r's backend builder image, if it publishes one.
 func builderOf(r *feed.CareRelease) *Image {
+	return releaseBuilder(r, protocol.ImageRoleBackendBuilder)
+}
+
+// releaseBuilder is r's builder image of role, if it publishes one.
+func releaseBuilder(r *feed.CareRelease, role protocol.ImageRole) *Image {
 	if r == nil {
 		return nil
 	}
-	ref, ok := r.Builders[protocol.ImageRoleBackendBuilder]
+	ref, ok := r.Builders[role]
 	if !ok {
 		return nil
 	}
 	repo, _, _ := strings.Cut(ref.Ref, "@")
-	return &Image{Role: protocol.ImageRoleBackendBuilder, Repo: repo, Digest: ref.Digest, URL: ref.Tar}
+	return &Image{Role: role, Repo: repo, Digest: ref.Digest, URL: ref.Tar}
 }
 
 // targetImages is what the stack env pins once j applies.
 func targetImages(j *Journal) []Image {
-	if j.Plugins == nil {
-		return j.Care.Images
+	imgs := j.Care.Images
+	if j.Plugins != nil {
+		imgs = withBackend(imgs, j.Plugins.Image)
 	}
-	return withBackend(j.Care.Images, j.Plugins.Image)
+	if j.Frontend != nil {
+		imgs = withImage(imgs, protocol.ImageRoleFrontend, j.Frontend.Image)
+	}
+	return imgs
 }
 
 func targetPlugs(j *Journal) (string, error) {
@@ -131,7 +155,7 @@ func targetPlugs(j *Journal) (string, error) {
 // build is StepBuild.
 func (c *Coordinator) build(ctx context.Context, j *Journal) error {
 	p := j.Plugins
-	if p == nil {
+	if p == nil || p.Carried {
 		return nil
 	}
 	specs := plugins.BuildSpecs(p.Set)
@@ -234,7 +258,7 @@ func (c *Coordinator) SetPlugins(ctx context.Context, set []plugins.Plugin) erro
 	var builder *Image
 	var rev uint64
 	if len(plugins.BuildSpecs(set)) > 0 {
-		builder, rev, err = c.installedBuilder(in)
+		builder, rev, err = c.installedBuilder(in, protocol.ImageRoleBackendBuilder)
 		if err != nil {
 			return err
 		}
@@ -246,6 +270,7 @@ func (c *Coordinator) SetPlugins(ctx context.Context, set []plugins.Plugin) erro
 		StartedAt: now,
 		Care:      &CareTarget{Images: cur.Base},
 		Plugins:   &PluginsTarget{Set: set, Base: backendOf(cur.Base), Builder: builder},
+		Frontend:  carriedFrontend(in),
 		Rollback:  Rollback{PreviousImages: cur.Images, PreviousPlugs: cur.Plugs},
 	}
 	if in.Care != nil {
@@ -299,30 +324,64 @@ func (c *Coordinator) DisablePlugin(ctx context.Context, id string) error {
 	return c.SetPlugins(ctx, next)
 }
 
-// installedBuilder finds the backend builder for the installed CARE: the
-// verified feed's release, else Options.DevBuilder.
-func (c *Coordinator) installedBuilder(in Installed) (*Image, uint64, error) {
-	if in.Care != nil {
-		m, ver, err := c.manifest()
-		if err != nil && !errors.Is(err, ErrNotVerified) {
-			return nil, 0, err
-		}
-		if m != nil {
-			for i := range m.Care {
-				r := &m.Care[i]
-				if r.Version.String() == in.Care.Version && r.ReleasedAt.Equal(in.Care.ReleasedAt) {
-					if b := builderOf(r); b != nil {
-						return b, ver.HighestRevision, nil
-					}
-				}
-			}
+// installedRelease is the verified feed's release of the installed CARE
+// (nil when there is none) and the feed revision.
+func (c *Coordinator) installedRelease(in Installed) (*feed.CareRelease, uint64, error) {
+	if in.Care == nil {
+		return nil, 0, nil
+	}
+	m, ver, err := c.manifest()
+	if err != nil && !errors.Is(err, ErrNotVerified) {
+		return nil, 0, err
+	}
+	if m == nil {
+		return nil, 0, nil
+	}
+	for i := range m.Care {
+		r := &m.Care[i]
+		if r.Version.String() == in.Care.Version && r.ReleasedAt.Equal(in.Care.ReleasedAt) {
+			return r, ver.HighestRevision, nil
 		}
 	}
-	if b := c.o.DevBuilder; b != nil {
-		img := Image{Role: protocol.ImageRoleBackendBuilder, Repo: b.Repo, Digest: b.Digest, Tarball: b.Tarball}
-		return &img, 0, nil
+	return nil, 0, nil
+}
+
+// installedBuilder finds the builder of role for the installed CARE: the
+// verified feed's release, else Options.DevBuilders.
+func (c *Coordinator) installedBuilder(in Installed, role protocol.ImageRole) (*Image, uint64, error) {
+	r, rev, err := c.installedRelease(in)
+	if err != nil {
+		return nil, 0, err
+	}
+	if b := releaseBuilder(r, role); b != nil {
+		return b, rev, nil
+	}
+	if b := c.devBuilder(role); b != nil {
+		return b, 0, nil
+	}
+	if role == protocol.ImageRoleFrontendBuilder {
+		return nil, 0, ErrNoFrontendBuilder
 	}
 	return nil, 0, ErrNoBuilder
+}
+
+func (c *Coordinator) devBuilder(role protocol.ImageRole) *Image {
+	for _, b := range c.o.DevBuilders {
+		if b.Role == role {
+			return &Image{Role: role, Repo: b.Repo, Digest: b.Digest, Tarball: b.Tarball}
+		}
+	}
+	return nil
+}
+
+// carriedFrontend keeps the installed frontend as it is in an operation
+// that does not change it.
+func carriedFrontend(in Installed) *FrontendTarget {
+	f := in.Frontend
+	if f == nil {
+		return nil
+	}
+	return &FrontendTarget{Overrides: f.Overrides, Base: f.Base, Image: f.Image, Carried: true}
 }
 
 // redact masks plugin secrets in a copy of s.
@@ -347,17 +406,6 @@ func (s Status) redact() Status {
 	return s
 }
 
-// DevBuilder picks the backend builder from stack.DevBuilders, for
-// Options.DevBuilder; nil when there is none.
-func DevBuilder(imgs []stack.Image) *stack.Image {
-	for i := range imgs {
-		if imgs[i].Role == protocol.ImageRoleBackendBuilder {
-			return &imgs[i]
-		}
-	}
-	return nil
-}
-
 // InstallPlugs is the ADDITIONAL_PLUGS a clinic install from CARE release
 // images starts with: the recorded set's bundled plugins, which those
 // images already have. "" (nothing recorded) means the catalog defaults.
@@ -371,52 +419,73 @@ func (c *Coordinator) InstallPlugs() (string, error) {
 }
 
 // Reinstalled reconciles installed.json with a clinic (re)install (ctl
-// clinic install, onboarding) and re-applies the recorded plugin set. An
-// install from other images than the recorded CARE release forgets that
-// release; the recorded custom plugins are then rebuilt on the installed
-// backend with SetPlugins (journaled, rolled back on failure).
+// clinic install, onboarding) and re-applies the recorded plugin set and
+// frontend settings. An install from other images than the recorded CARE
+// release forgets that release; the recorded custom plugins are then rebuilt
+// on the installed backend with SetPlugins, and the recorded frontend
+// settings on the installed frontend with SetFrontendSettings (each
+// journaled, rolled back on failure).
 func (c *Coordinator) Reinstalled(ctx context.Context) error {
-	recorded, err := c.syncInstall(ctx)
-	if err != nil || recorded == nil {
+	set, overrides, err := c.syncInstall(ctx)
+	if err != nil {
 		return err
 	}
-	c.logf("Re-applying the clinic's plugins: %s", plugins.Summary(recorded))
-	return c.SetPlugins(ctx, recorded)
+	if set != nil {
+		c.logf("Re-applying the clinic's plugins: %s", plugins.Summary(set))
+		if err := c.SetPlugins(ctx, set); err != nil {
+			return err
+		}
+	}
+	if overrides != nil {
+		c.logf("Re-applying the clinic's frontend settings: %s", frontendSummary(overrides))
+		_, err := c.SetFrontendSettings(ctx, overrides)
+		return err
+	}
+	return nil
 }
 
-// syncInstall records the installed images and plugins; it returns the
-// recorded set when it still needs applying.
-func (c *Coordinator) syncInstall(ctx context.Context) ([]plugins.Plugin, error) {
+// syncInstall records the installed images, plugins and frontend; it
+// returns the recorded plugin set and frontend overrides that still need
+// applying (nil: nothing).
+func (c *Coordinator) syncInstall(ctx context.Context) ([]plugins.Plugin, map[string]string, error) {
 	unlock, err := c.acquire()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer unlock()
 	if j, err := c.st.journal(); err != nil {
-		return nil, err
+		return nil, nil, err
 	} else if j != nil {
-		return nil, fmt.Errorf("%w (%s update to %s is %s)", ErrInFlight, j.Component, j.To, j.State)
+		return nil, nil, fmt.Errorf("%w (%s update to %s is %s)", ErrInFlight, j.Component, j.To, j.State)
 	}
 	in, err := c.installed()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	imgs, plugs, err := c.o.Stack.Configured(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read the clinic configuration: %w", err)
+		return nil, nil, fmt.Errorf("read the clinic configuration: %w", err)
 	}
 	if len(imgs) == 0 {
-		return nil, ErrNotInstalled
+		return nil, nil, ErrNotInstalled
 	}
-	running := backendOf(toImages(imgs))
+	installed := toImages(imgs)
+	running := backendOf(installed)
+	runningFE := imageOf(installed, protocol.ImageRoleFrontend)
+	fe := in.Frontend
+	feKept := fe == nil || fe.Image == nil && runningFE.Digest == fe.Base.Digest || fe.Image != nil && runningFE.Digest == fe.Image.Digest
+	if fe != nil && fe.Image != nil && feKept {
+		// The derived frontend still runs: compare its base with the release.
+		installed = withImage(installed, protocol.ImageRoleFrontend, &fe.Base)
+	}
 	rec := in.Plugins
-	if rec != nil && (running.Digest == rec.Base.Digest || rec.Image != nil && running.Digest == rec.Image.Digest) {
+	if rec != nil && feKept && (running.Digest == rec.Base.Digest || rec.Image != nil && running.Digest == rec.Image.Digest) {
 		if want, err := plugins.AdditionalPlugs(rec.Set); err == nil && want == plugs {
-			return nil, nil // reconfigured in place: nothing changed
+			return nil, nil, nil // reconfigured in place: nothing changed
 		}
 	}
 	changed := false
-	if in.Care != nil && !sameDigests(in.Care.Images, toImages(imgs), protocol.ImageRoleBackend, protocol.ImageRoleFrontend) {
+	if in.Care != nil && !sameDigests(in.Care.Images, installed, protocol.ImageRoleBackend, protocol.ImageRoleFrontend) {
 		c.logf("The clinic was installed from other images than CARE %s; it is no longer recorded", in.Care.Version)
 		in.Care, changed = nil, true
 	}
@@ -424,21 +493,27 @@ func (c *Coordinator) syncInstall(ctx context.Context) ([]plugins.Plugin, error)
 		applied := plugins.Defaults()
 		if plugs != "" {
 			if applied, err = plugins.ParseAdditionalPlugs(plugs); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		in.Plugins, changed = &InstalledPlugins{Set: applied, Base: running}, true
 	}
+	var overrides map[string]string
+	if !feKept {
+		// The install runs the published frontend; the settings are rebuilt.
+		overrides, in.Frontend, changed = fe.Overrides, nil, true
+	}
 	if changed {
 		in.UpdatedAt = c.now()
 		if err := c.st.save(InstalledFile, in); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	if rec == nil || plugins.Equal(rec.Set, in.Plugins.Set) {
-		return nil, nil
+	var set []plugins.Plugin
+	if rec != nil && !plugins.Equal(rec.Set, in.Plugins.Set) {
+		set = rec.Set
 	}
-	return rec.Set, nil
+	return set, overrides, nil
 }
 
 func toImages(imgs []stack.Image) []Image {

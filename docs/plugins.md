@@ -151,8 +151,82 @@ URL must be absolute because care_fe validates it as a URL. A frontend plugin
 that also has a backend part (such as Filly) needs its backend plugin enabled
 here as well.
 
+## Frontend settings (`REACT_*`)
+
+CARE's frontend has its `REACT_*` settings built in when `care-frontend` is
+built (`deployments/frontend.Dockerfile` copies `deployments/frontend.env` to
+`.env.local`). The feed's CARE release publishes those values as `build_env`
+(CI reads `deployments/frontend.env`; a development feed without it falls
+back to the kit's or the app's embedded `frontend.env`).
+
+When a clinic's settings differ from the release's `build_env`, CARE Clinic
+rebuilds the frontend inside the VM with the agent's `image.build` op
+(`kind: frontend-rebuild`), never from git:
+
+1. `FROM <care-frontend-builder>` (the release's `builders["frontend-builder"]`:
+   care_fe source at `/app` with `node_modules`): every effective setting
+   (release ∪ overrides) is an `ARG`, passed as `--build-arg KEY` with the
+   value in the build's environment (exec form, never in a shell or argv),
+   then `npm run build`.
+2. The curated remotes the published image serves (`/plugins/`, such as
+   `care_onboarding_fe`) are copied from the published `care-frontend` image,
+   so frontend plugins keep working.
+3. The result replaces `/usr/share/nginx/html` on the published image.
+
+The derived image `care-clinic/frontend-rebuild` is pinned in `stack.env` by
+its local image ID and labelled with a hash of the base, builder and
+settings, so the same settings reuse it. With no overrides the published
+image is used.
+
+Only an allowlist of settings can be overridden
+(`protocol.FrontendBuildKeys`, minus the keys CARE Clinic manages:
+`REACT_CARE_API_URL`, `REACT_MFE_REGISTERED_COMPONENTS`, `REACT_ENABLED_APPS`,
+`REACT_DISABLE_PATIENT_LOGIN`, `REACT_RECAPTCHA_SITE_KEY`). Values are
+checked per key (booleans, numbers, locale and visit-type lists, UUIDs, and
+plain one-line text without shell or HTML characters); anything else is
+rejected before a build.
+
+`Coordinator.SetFrontendSettings` runs a `frontend` journal: `preflight`,
+`build-frontend`, `write-env`, `start-stack`, `health`. A failure rolls back
+to the previous frontend image. The clinic's overrides are recorded in
+`installed.json` (`frontend`) and survive plugin changes and reinstalls; a
+CARE update runs `build-frontend` after `build` and rebuilds them on the new
+release's base and builder.
+
+**Panel**: Advanced → Clinic settings (and the support editor). Saving a
+change to `frontend.env` runs **ApplySettings**, which rebuilds and restarts
+CARE (a backend-only change just restarts). The saved file is the clinic's
+setting: the panel replaces the overrides with its contents.
+
+**Command line**:
+
+```sh
+care-clinic-service ctl frontend show
+care-clinic-service ctl frontend keys
+care-clinic-service ctl frontend set --images dist/images REACT_APP_TITLE='Sunrise Clinic' REACT_AUTO_REFRESH_INTERVAL=60
+care-clinic-service ctl frontend unset REACT_AUTO_REFRESH_INTERVAL
+care-clinic-service ctl frontend reset
+```
+
+In development `--images dist/images` uses
+`dist/images/care-frontend-builder.tar` (`scripts/dev-images.sh --builders`).
+
+## Build failures
+
+The agent classifies a failed `image.build` from the tail of its output.
+Network errors and timeouts (DNS, connection reset or refused, TLS
+handshake, registry 5xx, `ETIMEDOUT`, …) stay retryable: the coordinator
+retries the step 3 times, as it does for output it doesn't recognise.
+Deterministic errors, such as pip's `No matching distribution found`, a git
+repository or ref that doesn't exist, a package that fails to build, or an
+npm/vite build error, are permanent (`build_failed`, `image build failed:
+<line>`); a network marker anywhere in the output wins. The change rolls back
+at once and the panel shows the reason ("The build
+failed and won't succeed by retrying: …"). Invalid plugin specs and
+settings are rejected before anything runs.
+
 ## Known gaps
 
-- Building other frontend remotes in the VM (`image.build` kind
-  `frontend-rebuild`) is not implemented.
+- Building other frontend remotes in the VM is not supported; only the
+  curated remotes baked into `care-frontend` are served.
 - `image.build` is bounded by the agent's 30 minute op limit.

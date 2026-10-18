@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -113,13 +115,18 @@ func (a *App) pluginCoordinator(ctx context.Context) (*updates.Coordinator, erro
 			return nil, err
 		}
 	}
-	var devBuilder *stack.Image
+	var devBuilders []stack.Image
 	if images := os.Getenv("CARE_CLINIC_DEV_IMAGES"); images != "" {
-		b, err := stack.DevBuilders(images)
-		if err != nil {
+		if devBuilders, err = stack.DevBuilders(images); err != nil {
 			return nil, err
 		}
-		devBuilder = updates.DevBuilder(b)
+	}
+	// The shipped frontend.env (the installed one holds the clinic's edits).
+	var feEnv map[string]string
+	if data, err := fs.ReadFile(a.installFS, "install/frontend.env"); err == nil {
+		if feEnv, err = updates.ParseFrontendEnv(data); err != nil {
+			return nil, fmt.Errorf("frontend.env: %w", err)
+		}
 	}
 	return updates.Open(updates.Options{
 		Dir: filepath.Join(dir, "care-clinic", "updates"), Keys: keys, AllowInsecureURLs: feed.DevBuild,
@@ -130,7 +137,7 @@ func (a *App) pluginCoordinator(ctx context.Context) (*updates.Coordinator, erro
 			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: a.logln},
 			Kit:     os.DirFS(a.installDir()), Host: a.engine().Host(),
 		},
-		DesktopVersion: a.desktopVersion(), DevBuilder: devBuilder, Log: a.logln,
+		DesktopVersion: a.desktopVersion(), DevBuilders: devBuilders, FrontendEnv: feEnv, Log: a.logln,
 	})
 }
 

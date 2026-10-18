@@ -176,6 +176,7 @@ type lineWriter struct {
 	service protocol.Service
 	stream  string
 	keep    bool
+	tail    int // keep only the last tail lines
 
 	buf   []byte
 	last  string
@@ -202,7 +203,12 @@ func (l *lineWriter) line() {
 		return
 	}
 	l.last = s
-	if l.keep && len(l.lines) < 1000 {
+	if l.tail > 0 {
+		if len(l.lines) == l.tail {
+			l.lines = l.lines[1:]
+		}
+		l.lines = append(l.lines, s)
+	} else if l.keep && len(l.lines) < 1000 {
 		l.lines = append(l.lines, s)
 	}
 	if l.em != nil {

@@ -8,7 +8,14 @@ const TITLES: Record<string, string> = {
   restart: "CARE couldn't restart",
   uninstall: "Removal didn't finish",
   plugins: "The plugin change didn't finish",
+  settings: "The settings change didn't finish",
 };
+
+/** The reason an image build failed for good (the engine's build_failed). */
+export function buildFailure(detail: string): string | null {
+  const match = /image build failed: (.*?)(?: \(rolled back\))?$/.exec(detail);
+  return match ? match[1].trim() : null;
+}
 
 export function operationError(action: string, cause: unknown): OperationError {
   const detail = errorText(cause);
@@ -19,7 +26,14 @@ export function operationError(action: string, cause: unknown): OperationError {
       : /service isn't running|couldn't reach the CARE Clinic service/i.test(detail)
         ? "The CARE Clinic service isn't responding. Check its status on Overview, or open the log file for support."
         : action === "plugins"
-          ? "CARE Clinic put the previous plugins back. Check the plugin's package and settings, or open the log file for support."
-          : "The operation didn't finish. Try again, or open the log file for support.";
+          ? withBuildFailure(detail, "CARE Clinic put the previous plugins back. Check the plugin's package and settings, or open the log file for support.")
+          : action === "settings"
+            ? withBuildFailure(detail, "CARE Clinic put the previous settings back. Your changes are still saved: check them, then retry applying them, or open the log file for support.")
+            : "The operation didn't finish. Try again, or open the log file for support.";
   return { action, title: TITLES[action] ?? "CARE couldn't finish that", message };
+}
+
+function withBuildFailure(detail: string, message: string): string {
+  const reason = buildFailure(detail);
+  return reason ? `The build failed and won't succeed by retrying: ${reason}. ${message}` : message;
 }

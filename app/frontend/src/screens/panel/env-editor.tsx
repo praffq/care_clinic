@@ -64,7 +64,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   onPendingFilesChange?: (files: Section[]) => void;
   onApplicationAccepted?: () => void;
 }) {
-  const { busy, runAction, operationError, service } = useCare();
+  const { busy, runAction, runJob, operationError, service } = useCare();
   const lock = useAdvancedLock();
   const [localGroup, setLocalGroup] = useState<string | null>(null);
   const selected = groupId === undefined ? localGroup : groupId;
@@ -148,7 +148,8 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
     setApplying(false);
     if (operationError) {
       setSaveProblem({ title: "Settings were saved, but applying them didn't finish",
-        message: "Your changes are still saved. Check the log, then retry applying them." });
+        message: operationError.action === "settings" ? operationError.message
+          : "Your changes are still saved. Check the log, then retry applying them." });
     } else {
       savedFiles.current.clear();
       setNeedsApply([]);
@@ -259,7 +260,12 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
         return;
       }
       requireUnlocked();
-      const accepted: unknown = await runAction(service?.summary.running ? "restart" : "start");
+      // Frontend settings are built into CARE's screens: rebuild them (which
+      // restarts CARE with the server settings too).
+      const files = [...savedFiles.current];
+      const accepted: unknown = files.includes("frontend")
+        ? await runJob("settings", "Applying settings", () => bridge.ApplySettings(files, adminPassword))
+        : await runAction(service?.summary.running ? "restart" : "start");
       if (accepted !== true) {
         setSaveProblem({ title: "Settings were saved, but applying them didn't start",
           message: "Your changes are still saved. Wait for any other task to finish, then retry applying them." });

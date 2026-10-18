@@ -83,6 +83,14 @@ type World struct {
 	Plugs     string
 	// BadPlugins are plugin names that fail health while in Plugs.
 	BadPlugins map[string]bool
+	// Unbuildable are plugin names (or, for frontend rebuilds, REACT_*
+	// keys) whose image.build fails deterministically (build_failed).
+	Unbuildable map[string]bool
+	// BadSettings are frontend settings (KEY=value) whose rebuilt frontend
+	// fails health while running.
+	BadSettings map[string]bool
+	// Built maps each frontend-rebuild image to its build env.
+	Built map[protocol.Digest]map[string]string
 	// Builds counts image.build runs that built (not cached) an image.
 	Builds int
 	// DBSchema is the backend digest the database was last migrated by;
@@ -112,6 +120,9 @@ func New() *World {
 		Backups:     map[string]protocol.Digest{},
 		BadBackends: map[protocol.Digest]bool{},
 		BadPlugins:  map[string]bool{},
+		Unbuildable: map[string]bool{},
+		BadSettings: map[string]bool{},
+		Built:       map[protocol.Digest]map[string]string{},
 	}
 }
 
@@ -372,16 +383,32 @@ func (w *World) Op(ctx context.Context, op protocol.Op, result any) error {
 		if !w.Images[base] || !w.Images[builder] {
 			return fmt.Errorf("image.build: base %s or builder %s not in the engine", short(base), short(builder))
 		}
+		for _, p := range o.Plugins {
+			if w.Unbuildable[p.Name] {
+				return &protocol.OpError{Code: protocol.CodeBuildFailed, Message: "image build failed: ERROR: No matching distribution found for " + p.Package}
+			}
+		}
+		for k := range o.BuildEnv {
+			if w.Unbuildable[k] {
+				return &protocol.OpError{Code: protocol.CodeBuildFailed, Message: "image build failed: error during build: " + k}
+			}
+		}
 		h := sha256.New()
-		_, _ = fmt.Fprintf(h, "%s|%s", base, builder)
+		_, _ = fmt.Fprintf(h, "%s|%s|%s", o.Kind, base, builder)
 		for _, p := range o.Plugins {
 			_, _ = fmt.Fprintf(h, "|%s %s %s", p.Name, p.Package, p.Version)
+		}
+		for _, k := range slices.Sorted(maps.Keys(o.BuildEnv)) {
+			_, _ = fmt.Fprintf(h, "|%s=%s", k, o.BuildEnv[k])
 		}
 		dg := protocol.Digest("sha256:" + hex.EncodeToString(h.Sum(nil)))
 		if !w.Images[dg] {
 			w.Builds++
 		}
 		w.Images[dg] = true
+		if o.Kind == protocol.BuildFrontendRebuild {
+			w.Built[dg] = maps.Clone(o.BuildEnv)
+		}
 		if r, ok := result.(*protocol.ImageBuildResult); ok {
 			*r = protocol.ImageBuildResult{Ref: o.Kind.Repo(), Digest: dg}
 		}
@@ -478,6 +505,11 @@ func (w *World) healthLocked() error {
 	for name := range w.BadPlugins {
 		if strings.Contains(w.Plugs, `"name":"`+name+`"`) {
 			return fmt.Errorf("backend crashing on plugin %s", name)
+		}
+	}
+	for k, v := range w.Built[w.Env[protocol.ImageRoleFrontend]] {
+		if w.BadSettings[k+"="+v] {
+			return fmt.Errorf("frontend failing with %s", k)
 		}
 	}
 	if w.DBSchema != be {

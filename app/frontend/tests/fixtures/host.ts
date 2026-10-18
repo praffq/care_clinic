@@ -252,7 +252,7 @@ export function installTestHost() {
       if (action !== "setup") emit("care-error", "CARE couldn't finish that", error);
       if (action === "setup") emit("setup-failed", { can_retry: true });
     } else {
-      if (["start", "restart"].includes(action)) { fixtures.running = true; fixtures.clinicStatus = "backend\nfrontend\ndb"; }
+      if (["start", "restart", "settings"].includes(action)) { fixtures.running = true; fixtures.clinicStatus = "backend\nfrontend\ndb"; }
       if (action === "stop") { fixtures.running = false; fixtures.clinicStatus = ""; }
       if (action === "uninstall") {
         state.role = "";
@@ -391,6 +391,12 @@ export function installTestHost() {
       requireServer();
       if (!fixtures.reachable) throw new Error("the CARE Clinic service isn't running");
       acceptJob(action);
+    },
+    ApplySettings: async (files: string[], password: string) => {
+      requireAdmin(password);
+      if (!fixtures.reachable) throw new Error("the CARE Clinic service isn't running");
+      if (files.some((file) => file !== "backend" && file !== "frontend")) throw new Error("unknown env file");
+      acceptJob("settings");
     },
     VerifyAdminPassword: async (password: string) => password === fixtures.adminPassword,
     ReadEnv: async (section: string, password: string) => {

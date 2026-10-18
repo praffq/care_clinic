@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack/stacktest"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -159,4 +161,58 @@ func fakeService(t *testing.T) *stacktest.Service {
 		return protocol.StackStatusResult{Services: []protocol.ServiceState{{Name: protocol.ServiceBackend, State: backend}}}, nil
 	}
 	return svc
+}
+
+func TestFrontendSettingKeysMatch(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("frontend", "src", "screens", "panel", "env-schema.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	start := strings.Index(s, "FRONTEND_SETTING_KEYS = new Set([")
+	end := strings.Index(s[start:], "]")
+	if start < 0 || end < 0 {
+		t.Fatal("no FRONTEND_SETTING_KEYS in env-schema.ts")
+	}
+	var ts []string
+	for _, f := range strings.Split(s[start:start+end], "\"")[1:] {
+		if strings.HasPrefix(f, "REACT_") {
+			ts = append(ts, f)
+		}
+	}
+	if want := updates.FrontendKeys(); !slices.Equal(ts, want) {
+		t.Fatalf("env-schema.ts FRONTEND_SETTING_KEYS = %q\nupdates.FrontendKeys = %q", ts, want)
+	}
+}
+
+func TestApplySettingsChecksFrontendEnvFirst(t *testing.T) {
+	a := settingsApp(t)
+	if err := a.ApplySettings([]string{"frontend"}, "wrong"); err == nil {
+		t.Fatal("applied with a wrong password")
+	}
+	if err := a.ApplySettings([]string{"secrets"}, settingsPassword); err == nil {
+		t.Fatal("applied an unknown file")
+	}
+	p := filepath.Join(a.installDir(), "frontend.env")
+	for content, want := range map[string]string{
+		"REACT_SENTRY_DSN=https://x\n":      "REACT_SENTRY_DSN: is not a supported",
+		"REACT_APP_TITLE='<b>Clinic</b>'\n": "REACT_APP_TITLE: invalid value",
+	} {
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.ApplySettings([]string{"frontend"}, settingsPassword); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %s", content, err, want)
+		}
+	}
+	// Managed wiring and blank optional settings are accepted.
+	got, err := func() (map[string]string, error) {
+		if err := os.WriteFile(p, []byte("REACT_CARE_API_URL=https://other\nREACT_ENABLED_APPS=x\nREACT_DEFAULT_ENCOUNTER_TYPE=\nREACT_PATIENT_REGISTRATION_DEFAULT_GEO_ORG=\nREACT_APP_TITLE=Sunrise\nOTHER=1\n"), 0o600); err != nil {
+			return nil, err
+		}
+		return a.frontendSettings()
+	}()
+	if err != nil || len(got) != 3 || got["REACT_APP_TITLE"] != "Sunrise" {
+		t.Fatalf("frontendSettings = %v, %v", got, err)
+	}
 }
