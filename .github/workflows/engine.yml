@@ -161,7 +161,7 @@ jobs:
             fi
             gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber out/*
           else
-            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
               --title "CARE engine $VERSION" \
               --notes "CARE engine VM bundle $VERSION built from $GITHUB_SHA by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID." \
               out/*
