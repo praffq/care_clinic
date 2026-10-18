@@ -158,3 +158,18 @@ func TestParseAdditionalPlugsRoundTrip(t *testing.T) {
 		t.Fatal("parsed junk")
 	}
 }
+
+func TestRequiredFrontendOnboarding(t *testing.T) {
+	req := RequiredFrontend()
+	if len(req) != 1 || req[0].Slug != "care_onboarding_fe" {
+		t.Fatalf("required frontend = %+v", req)
+	}
+	meta, err := req[0].Meta("north.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"config":{"redirect_after_login":true},"url":"https://north.local/plugins/care_onboarding_fe/assets/remoteEntry.js"}`
+	if string(meta) != want {
+		t.Fatalf("meta = %s", meta)
+	}
+}

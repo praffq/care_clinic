@@ -19,6 +19,10 @@ const pluginsJob = "plugins"
 // PluginCatalog lists the plugin presets.
 func (a *App) PluginCatalog() []plugins.Preset { return plugins.Catalog() }
 
+// FrontendPlugins lists the catalog frontend plugins; required ones are
+// registered in CARE at every clinic install.
+func (a *App) FrontendPlugins() []plugins.FrontendPlugin { return plugins.FrontendCatalog() }
+
 // ListPlugins returns the clinic's backend plugins, secrets redacted.
 func (a *App) ListPlugins() (list []plugins.Plugin, err error) {
 	defer a.logError(&err)

@@ -264,12 +264,18 @@ func TestInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	testCert() // small keys
-	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp"
+	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp Manage"
 	if got := strings.Join(svc.Methods(), " "); got != want {
 		t.Errorf("calls = %s\nwant    %s", got, want)
 	}
-	if up := svc.Fake.Calls()[len(svc.Fake.Calls())-1].Op.(*protocol.StackUp); !up.Wait {
+	calls := svc.Fake.Calls()
+	if up := calls[len(calls)-2].Op.(*protocol.StackUp); !up.Wait {
 		t.Errorf("StackUp = %+v, want Wait", up)
+	}
+	plug := calls[len(calls)-1].Op.(*protocol.ManageCmd)
+	wantMeta := `{"config":{"redirect_after_login":true},"url":"https://care.local/plugins/care_onboarding_fe/assets/remoteEntry.js"}`
+	if plug.Command != protocol.ManagePlugConfig || plug.Slug != "care_onboarding_fe" || string(plug.Meta) != wantMeta {
+		t.Errorf("PlugConfig op = %+v (meta %s)", plug, plug.Meta)
 	}
 	if u := svc.Updates(); len(u) != 1 || u[0].ProxyProtocol == nil || !*u[0].ProxyProtocol {
 		t.Errorf("config updates = %+v, want proxy_protocol on", u)

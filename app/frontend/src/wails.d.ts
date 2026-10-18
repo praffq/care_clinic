@@ -9,6 +9,7 @@ import type {
   ClientReachability,
   ClinicInfo,
   ConfirmationRequest,
+  FrontendPlugin,
   HomeAccess,
   HostReport,
   NameStatus,
@@ -56,6 +57,7 @@ declare global {
           ReadEnv(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
           PluginCatalog(): Promise<PluginPreset[]>;
+          FrontendPlugins(): Promise<FrontendPlugin[]>;
           ListPlugins(): Promise<Plugin[]>;
           EnablePlugin(plugin: Plugin, adminPassword: string): Promise<void>;
           DisablePlugin(id: string, adminPassword: string): Promise<void>;

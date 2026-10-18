@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { bridge } from "@/lib/bridge";
 import { useCare } from "@/state/care-store";
-import type { Plugin, PluginPreset } from "@/types";
+import type { FrontendPlugin, Plugin, PluginPreset } from "@/types";
 import { AdvancedError, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem } from "./advanced-ui";
 import { draftFor, isPresetSource, isSecret, pluginFrom, presetFor, type PluginDraft } from "./plugin-model";
 
@@ -22,6 +22,7 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
   const { busy, runJob } = useCare();
   const lock = useAdvancedLock();
   const [catalog, setCatalog] = useState<PluginPreset[]>([]);
+  const [screens, setScreens] = useState<FrontendPlugin[]>([]);
   const [enabled, setEnabled] = useState<Plugin[] | null>(null);
   const [problem, setProblem] = useState<AdvancedProblem | null>(null);
   const [draft, setDraft] = useState<PluginDraft | null>(null);
@@ -32,9 +33,10 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
 
   const reload = useCallback(async () => {
     try {
-      const [presets, list] = await Promise.all([bridge.PluginCatalog(), bridge.ListPlugins()]);
+      const [presets, list, frontend] = await Promise.all([bridge.PluginCatalog(), bridge.ListPlugins(), bridge.FrontendPlugins()]);
       if (!live.current) return;
       setCatalog(presets ?? []);
+      setScreens((frontend ?? []).filter((plugin) => plugin.required));
       setEnabled(list ?? []);
       setProblem(null);
     } catch (cause) {
@@ -106,6 +108,14 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
             onClick={() => setRemoving(plugin)}><Trash2 aria-hidden="true" className="size-4" />Remove</Button>
         </li>;
       })}
+    </ul> : null}
+    {enabled !== null && screens.length > 0 ? <ul className="plugin-list" aria-label="Built-in screens">
+      {screens.map((plugin) => <li key={plugin.slug} className="plugin-row">
+        <div className="advanced-grow">
+          <div className="advanced-setting-label">{plugin.label}<span className="plugin-tag">Always on</span></div>
+          <p className="advanced-setting-help">{plugin.description}</p>
+        </div>
+      </li>)}
     </ul> : null}
     {enabled !== null && available.length > 0 ? <>
       <h3 className="plugin-heading">Available</h3>

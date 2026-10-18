@@ -4,8 +4,9 @@
 
 CARE Clinic manages CARE **backend** plugins: Django apps that CARE loads from
 `ADDITIONAL_PLUGS`. A clinic can enable catalog presets or add any plugin from
-PyPI or a git repository. Frontend plugins are turned on by a CARE
-administrator in CARE's own admin dashboard (see [Frontend plugins](#frontend-plugins)).
+PyPI or a git repository. CARE Onboarding, a frontend plugin, is always on;
+other frontend plugins are turned on by a CARE administrator in CARE's own
+admin dashboard (see [Frontend plugins](#frontend-plugins)).
 
 ## How CARE loads a backend plugin
 
@@ -125,10 +126,25 @@ care-clinic-service ctl plugins disable care_filly
 
 ## Frontend plugins
 
-CARE Clinic does not manage frontend plugins. The `care-frontend` image is
-built with `REACT_MFE_REGISTERED_COMPONENTS` and serves the curated remotes
+The `care-frontend` image is built with `REACT_MFE_REGISTERED_COMPONENTS=*`
+(`deployments/frontend.env`) and serves the curated remotes
 (`care_onboarding_fe`, see `versions.yml`) same-origin at
-`/plugins/<slug>/assets/remoteEntry.js`. A CARE administrator enables one in
+`/plugins/<slug>/assets/remoteEntry.js`.
+
+The `frontend` section of `app/internal/plugins/catalog.yml` lists them.
+`required` ones are registered at every clinic install (`ctl clinic install`
+and onboarding): the agent's `manage` command `plug_config` upserts the
+`PlugConfig` row `<slug>` with meta
+`{"url": "https://<clinic host>/plugins/<slug>/assets/remoteEntry.js",
+"config": {...}}` and clears CARE's `care_plug_viewset_list` cache. Keys an
+admin changed in the row are kept; only `url` follows the clinic host, and
+missing `config` keys are added. CARE Onboarding is required with
+`{"redirect_after_login": true}`: after the first superuser login, a clinic
+with no facility opens `/admin/onboarding` (this needs `UserDashboard` in
+`REACT_MFE_REGISTERED_COMPONENTS`, which `*` covers). The Plugins card lists
+it as "Always on".
+
+Other frontend plugins are not managed by CARE Clinic. A CARE administrator enables one in
 CARE's admin dashboard (Apps / `PlugConfig`) with slug `<slug>` and meta
 `{"url": "https://<clinic>.local/plugins/<slug>/assets/remoteEntry.js"}`; the
 URL must be absolute because care_fe validates it as a URL. A frontend plugin

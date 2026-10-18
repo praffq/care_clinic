@@ -189,6 +189,15 @@ export type Plugin = {
   bundled?: boolean;
 };
 
+/** A catalog frontend plugin (internal/plugins.FrontendPlugin), served at /plugins/<slug>/. */
+export type FrontendPlugin = {
+  slug: string;
+  label: string;
+  description: string;
+  required?: boolean;
+  config?: Record<string, unknown>;
+};
+
 /** A catalog preset (internal/plugins.Preset). */
 export type PluginPreset = Plugin & {
   label: string;

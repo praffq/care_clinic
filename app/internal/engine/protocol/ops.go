@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -47,6 +49,7 @@ var (
 	backupIDRE      = regexp.MustCompile(`^[A-Za-z0-9T:_-]{1,64}$`)
 	usernameRE      = regexp.MustCompile(`^[A-Za-z0-9@.+_-]{1,150}$`)
 	fileNameRE      = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
+	plugSlugRE      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 // StackUp starts services (all when Services is empty).
@@ -305,6 +308,12 @@ type ManageCmd struct {
 	Command      ManageCommand `json:"command"`
 	Username     string        `json:"username,omitempty"`
 	PasswordFile string        `json:"password_file,omitempty"`
+	// Slug and Meta are the PlugConfig row of ManagePlugConfig. Meta is a
+	// JSON object whose "url" is an absolute https URL (care_fe checks it
+	// with z.url()). Existing keys of the row are kept, except "url"; keys
+	// of Meta["config"] are only added when missing.
+	Slug string          `json:"slug,omitempty"`
+	Meta json.RawMessage `json:"meta,omitempty"`
 }
 
 func (ManageCmd) OpName() string { return OpManage }
@@ -322,7 +331,35 @@ func (o ManageCmd) Validate() error {
 		v.check(o.Username == "", "username", "not accepted for %s", o.Command)
 		v.check(o.PasswordFile == "", "password_file", "not accepted for %s", o.Command)
 	}
+	if o.Command == ManagePlugConfig {
+		v.check(plugSlugRE.MatchString(o.Slug), "slug", "must match ^[a-z][a-z0-9_]{0,63}$")
+		v.check(validPlugMeta(o.Meta), "meta", "must be a JSON object of at most 8 KiB with an https \"url\"")
+	} else {
+		v.check(o.Slug == "", "slug", "not accepted for %s", o.Command)
+		v.check(len(o.Meta) == 0, "meta", "not accepted for %s", o.Command)
+	}
 	return v.err()
+}
+
+func validPlugMeta(raw json.RawMessage) bool {
+	if len(raw) == 0 || len(raw) > 8<<10 {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return false
+	}
+	s, _ := m["url"].(string)
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return false
+	}
+	if c, ok := m["config"]; ok {
+		if _, ok := c.(map[string]any); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // BackupRun takes a backup set now and returns its id (BackupRunResult).

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
@@ -222,7 +223,28 @@ func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins [
 	if err := r.Migrate(ctx); err != nil {
 		return err
 	}
-	return r.Up(ctx)
+	if err := r.Up(ctx); err != nil {
+		return err
+	}
+	return r.RegisterFrontendPlugins(ctx, host)
+}
+
+// RegisterFrontendPlugins writes the PlugConfig row of every required
+// catalog frontend plugin (plugins.RequiredFrontend) for host. Settings an
+// admin changed in CARE are kept; the URL follows host.
+func (r *Runtime) RegisterFrontendPlugins(ctx context.Context, host string) error {
+	for _, f := range plugins.RequiredFrontend() {
+		meta, err := f.Meta(host)
+		if err != nil {
+			return err
+		}
+		r.logf("Registering the %s frontend plugin", f.Label)
+		op := protocol.ManageCmd{Command: protocol.ManagePlugConfig, Slug: f.Slug, Meta: meta}
+		if err := r.Service.Agent().Op(ctx, op, nil, r.frames); err != nil {
+			return fmt.Errorf("register the %s frontend plugin: %w", f.Label, err)
+		}
+	}
+	return nil
 }
 
 // Migrate runs the one-shot migrate service.

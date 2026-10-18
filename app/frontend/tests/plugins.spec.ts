@@ -20,6 +20,13 @@ test.beforeEach(async ({ page }) => {
   await expect(card(page).getByRole("list", { name: "Enabled plugins" })).toContainText("Files on every address");
 });
 
+test("CARE Onboarding is listed as always on, with no remove button", async ({ page }) => {
+  const screens = card(page).getByRole("list", { name: "Built-in screens" });
+  await expect(screens).toContainText("CARE Onboarding");
+  await expect(screens).toContainText("Always on");
+  await expect(screens.getByRole("button")).toHaveCount(0);
+});
+
 test("adds a preset, prompting for its required settings", async ({ page }) => {
   await card(page).getByRole("button", { name: "Add Filly" }).click();
   await dialog(page).getByRole("button", { name: "Add and restart CARE" }).click();

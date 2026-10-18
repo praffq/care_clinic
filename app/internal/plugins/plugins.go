@@ -41,8 +41,69 @@ type Preset struct {
 	RequiredConfigs []string `json:"required_configs,omitempty" yaml:"required_configs"`
 }
 
+// FrontendPlugin is a catalog frontend plugin: a remote served by the
+// care-frontend image at /plugins/<Slug>/ and registered as a PlugConfig row.
+type FrontendPlugin struct {
+	Slug        string         `json:"slug" yaml:"slug"`
+	Label       string         `json:"label" yaml:"label"`
+	Description string         `json:"description" yaml:"description"`
+	Required    bool           `json:"required,omitempty" yaml:"required"`
+	Config      map[string]any `json:"config,omitempty" yaml:"config"`
+}
+
+// URL is the remote's entry on the clinic origin. care_fe needs it absolute.
+func (f FrontendPlugin) URL(host string) string {
+	return "https://" + host + "/plugins/" + f.Slug + "/assets/remoteEntry.js"
+}
+
+// Meta is the PlugConfig meta for host: {"url": URL, "config": Config}.
+func (f FrontendPlugin) Meta(host string) (json.RawMessage, error) {
+	m := map[string]any{"url": f.URL(host)}
+	if f.Config != nil {
+		m["config"] = f.Config
+	}
+	return json.Marshal(m)
+}
+
+type catalogFile struct {
+	Backend  []Preset         `yaml:"backend"`
+	Frontend []FrontendPlugin `yaml:"frontend"`
+}
+
 //go:embed catalog.yml
 var catalogYAML []byte
+
+func loadCatalog() catalogFile {
+	var c catalogFile
+	if err := yaml.Unmarshal(catalogYAML, &c); err != nil {
+		panic("plugins: invalid catalog.yml: " + err.Error())
+	}
+	for _, p := range c.Backend {
+		if err := p.Validate(); err != nil {
+			panic("plugins: invalid catalog.yml: " + err.Error())
+		}
+	}
+	for _, f := range c.Frontend {
+		if !idRE.MatchString(f.Slug) {
+			panic("plugins: invalid catalog.yml: frontend slug " + f.Slug)
+		}
+	}
+	return c
+}
+
+// FrontendCatalog returns the catalog's frontend plugins.
+func FrontendCatalog() []FrontendPlugin { return loadCatalog().Frontend }
+
+// RequiredFrontend returns the frontend plugins every clinic registers.
+func RequiredFrontend() []FrontendPlugin {
+	var out []FrontendPlugin
+	for _, f := range FrontendCatalog() {
+		if f.Required {
+			out = append(out, f)
+		}
+	}
+	return out
+}
 
 var (
 	idRE        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -50,19 +111,8 @@ var (
 	secretRE    = regexp.MustCompile(`(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)`)
 )
 
-// Catalog returns the bundled presets.
-func Catalog() []Preset {
-	var out []Preset
-	if err := yaml.Unmarshal(catalogYAML, &out); err != nil {
-		panic("plugins: invalid catalog.yml: " + err.Error())
-	}
-	for _, p := range out {
-		if err := p.Validate(); err != nil {
-			panic("plugins: invalid catalog.yml: " + err.Error())
-		}
-	}
-	return out
-}
+// Catalog returns the backend presets.
+func Catalog() []Preset { return loadCatalog().Backend }
 
 // FindPreset returns the catalog entry id.
 func FindPreset(id string) (Preset, bool) {

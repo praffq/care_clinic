@@ -360,6 +360,10 @@ export function installTestHost() {
       fixtures.updateChecks = { app };
     },
     PluginCatalog: async () => fixtures.catalog.map((preset) => ({ ...preset })),
+    FrontendPlugins: async () => [{
+      slug: "care_onboarding_fe", label: "CARE Onboarding", required: true, config: { redirect_after_login: true },
+      description: "Guided first-time clinic setup; opens after the first admin login while CARE has no facility.",
+    }],
     ListPlugins: async () => {
       requireServer();
       return fixtures.plugins.map((plugin) => ({
