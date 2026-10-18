@@ -20,5 +20,5 @@ build/windows/installer/wails_tools.nsh
 build/windows/installer/tmp/
 # wails dev
 .wails/
-# dev update-feed signing key (only devkeys/dev.pub is committed)
+# locally generated feed signing keys (the shared dev key lives at ../demo/dev.key)
 dev.key

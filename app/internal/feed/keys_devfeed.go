@@ -4,6 +4,9 @@ package feed
 
 import _ "embed"
 
+// devPublicKey's private key is committed at demo/dev.key on purpose so anyone
+// can sign demo feeds; it is only ever trusted by devfeed builds.
+//
 //go:embed devkeys/dev.pub
 var devPublicKey string
 
