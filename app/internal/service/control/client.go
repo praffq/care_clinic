@@ -155,11 +155,11 @@ func (c *Client) Config(ctx context.Context) (api.ServiceConfig, error) {
 	return cfg, err
 }
 
-// SetConfig replaces the service configuration and returns it normalized.
-// Invalid values match api.ErrInvalidConfig.
-func (c *Client) SetConfig(ctx context.Context, cfg api.ServiceConfig) (api.ServiceConfig, error) {
+// UpdateConfig changes the fields set in u and returns the resulting
+// configuration. Invalid values match api.ErrInvalidConfig.
+func (c *Client) UpdateConfig(ctx context.Context, u api.ServiceConfigUpdate) (api.ServiceConfig, error) {
 	var out api.ServiceConfig
-	err := c.do(ctx, http.MethodPost, "/v1/service/config", cfg, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/service/config", u, &out)
 	return out, err
 }
 

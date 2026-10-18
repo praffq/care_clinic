@@ -86,10 +86,20 @@ type MDNSConflict struct {
 	Address string `json:"address"`
 }
 
-// ServiceConfig is the persisted service configuration: GET and POST
-// /v1/service/config.
+// ServiceConfig is the persisted service configuration: GET
+// /v1/service/config, and the result of POST.
 type ServiceConfig struct {
 	MDNSName string `json:"mdns_name"`
+	// ProxyProtocol prefixes every forwarded connection with a PROXY v2
+	// header; the guest's Caddy must expect it.
+	ProxyProtocol bool `json:"proxy_protocol"`
+}
+
+// ServiceConfigUpdate is the body of POST /v1/service/config; omitted
+// fields keep their current value.
+type ServiceConfigUpdate struct {
+	MDNSName      *string `json:"mdns_name,omitempty"`
+	ProxyProtocol *bool   `json:"proxy_protocol,omitempty"`
 }
 
 // SlotList is GET /v1/engine/slots.

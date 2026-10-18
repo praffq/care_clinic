@@ -19,7 +19,7 @@ func TestDefaultsAndPersist(t *testing.T) {
 	if got := s.Get().MDNSName; got != DefaultMDNSName {
 		t.Fatalf("default name = %q", got)
 	}
-	got, err := s.Set(api.ServiceConfig{MDNSName: " Clinic-2.local. "})
+	got, err := s.Update(api.ServiceConfigUpdate{MDNSName: ptr(" Clinic-2.local. ")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,11 +32,17 @@ func TestDefaultsAndPersist(t *testing.T) {
 	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".config-*")); len(left) != 0 {
 		t.Fatalf("temp files left: %v", left)
 	}
+	got, err = s.Update(api.ServiceConfigUpdate{ProxyProtocol: ptr(true)})
+	if err != nil || got != (api.ServiceConfig{MDNSName: "clinic-2", ProxyProtocol: true}) {
+		t.Fatalf("partial update = %+v, %v", got, err)
+	}
 	s2, err := Open(path, nil)
-	if err != nil || s2.Get().MDNSName != "clinic-2" {
-		t.Fatalf("reopen: %+v %v", s2, err)
+	if err != nil || s2.Get() != got {
+		t.Fatalf("reopen: %+v %v", s2.Get(), err)
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
 
 func TestSetRejectsInvalidName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -45,8 +51,8 @@ func TestSetRejectsInvalidName(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"", "bad_name", "-care"} {
-		if _, err := s.Set(api.ServiceConfig{MDNSName: name}); !errors.Is(err, api.ErrInvalidConfig) {
-			t.Errorf("Set(%q) = %v", name, err)
+		if _, err := s.Update(api.ServiceConfigUpdate{MDNSName: ptr(name)}); !errors.Is(err, api.ErrInvalidConfig) {
+			t.Errorf("Update(%q) = %v", name, err)
 		}
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {

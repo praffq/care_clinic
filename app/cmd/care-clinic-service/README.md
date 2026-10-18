@@ -14,8 +14,9 @@ an unresponsive agent), forwards the host's ports into the VM, advertises
 
 If a port is taken, the service keeps running, logs the owning process and
 reports it under `forward` in `ctl status`, and retries every 10 s.
-`--proxy-protocol` prefixes every forwarded connection with a PROXY v2 header
-(off until Caddy is configured for it).
+`proxy_protocol` in `config.json` prefixes every forwarded connection with a
+PROXY v2 header (off until Caddy is configured for it). Changing it through
+the control API applies to new connections at once; open ones are unaffected.
 
 ## Developer install (LaunchDaemon)
 
@@ -39,10 +40,15 @@ Logs: `/Library/Logs/care-clinic/service.log` (rotated at 10 MiB, 5 kept;
 Go crash output goes there too). `launchd.log` next to it only catches
 output from before the log file is open.
 
-Change the advertised name (saved in `config.json` in the service root):
+Show or change the configuration (`config.json` in the service root; set
+fields through the control API rather than editing the file, which is read
+only at startup):
 
 ```sh
-'/Library/Application Support/care-clinic/bin/care-clinic-service' ctl set-name clinic-east
+B='/Library/Application Support/care-clinic/bin/care-clinic-service'
+"$B" ctl config
+"$B" ctl config mdns_name=clinic-east       # advertise clinic-east.local
+"$B" ctl config proxy_protocol=true
 ```
 
 ### Without root

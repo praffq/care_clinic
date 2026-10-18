@@ -140,6 +140,13 @@ func TestProxyProtocol(t *testing.T) {
 	if !strings.HasPrefix(got, "\r\n\r\n\x00\r\nQUIT\n\x21\x11") || !strings.HasSuffix(got, "body") {
 		t.Fatalf("upstream got %q", got)
 	}
+	f.SetProxyProtocol(false)
+	if f.Status().ProxyProtocol {
+		t.Fatal("status still reports PROXY protocol")
+	}
+	if got := roundTrip(t, listening(t, f, "https").Listen, "plain"); got != "plain" {
+		t.Fatalf("after turning it off, upstream got %q", got)
+	}
 }
 
 func TestBindConflictIsReportedAndRetried(t *testing.T) {

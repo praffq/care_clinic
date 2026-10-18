@@ -560,14 +560,16 @@ func TestServiceConfig(t *testing.T) {
 	if err != nil || cfg.MDNSName != settings.DefaultMDNSName {
 		t.Fatalf("config = %+v, %v", cfg, err)
 	}
-	cfg, err = e.cl.SetConfig(t.Context(), api.ServiceConfig{MDNSName: "Clinic-East.local"})
-	if err != nil || cfg.MDNSName != "clinic-east" {
+	name, on := "Clinic-East.local", true
+	cfg, err = e.cl.UpdateConfig(t.Context(), api.ServiceConfigUpdate{MDNSName: &name, ProxyProtocol: &on})
+	if err != nil || cfg != (api.ServiceConfig{MDNSName: "clinic-east", ProxyProtocol: true}) {
 		t.Fatalf("set = %+v, %v", cfg, err)
 	}
 	if b, err := os.ReadFile(e.cfgPath); err != nil || !strings.Contains(string(b), `"clinic-east"`) {
 		t.Fatalf("config.json = %s, %v", b, err)
 	}
-	if _, err := e.cl.SetConfig(t.Context(), api.ServiceConfig{MDNSName: "not valid"}); !errors.Is(err, api.ErrInvalidConfig) {
+	bad := "not valid"
+	if _, err := e.cl.UpdateConfig(t.Context(), api.ServiceConfigUpdate{MDNSName: &bad}); !errors.Is(err, api.ErrInvalidConfig) {
 		t.Fatalf("invalid name = %v", err)
 	}
 	resp, err := rawPost(t, e.sock, "/v1/service/config", `{"mdns_name":"care","extra":1}`)

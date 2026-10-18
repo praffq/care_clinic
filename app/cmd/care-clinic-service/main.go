@@ -89,7 +89,6 @@ func serve(args []string) error {
 	mem := fs.Uint64("mem", 0, "VM memory in MiB (default engine default)")
 	cpus := fs.Uint("cpus", 0, "VM CPUs (default engine default)")
 	logFile := fs.String("log-file", "", "log to this size-rotated file, which also becomes stderr (default stderr)")
-	proxyProto := fs.Bool("proxy-protocol", false, "send a PROXY protocol v2 header to the guest on every forwarded connection")
 	advertiseMDNS := fs.Bool("mdns", true, "advertise <mdns_name>.local on the LAN")
 	fwd := map[string]*string{}
 	for _, name := range []string{"http", "https", "home"} {
@@ -154,15 +153,20 @@ func serve(args []string) error {
 		},
 		Log: log,
 	})
-	fw := hostfwd.New(hostfwd.Config{Rules: rules, Dial: sup.DialGuest, ProxyProtocol: *proxyProto, Log: log})
-
-	var adv *advertise.Service
-	cfg, err := settings.Open(filepath.Join(rootDir, "config.json"), func(c api.ServiceConfig) { adv.SetName(c.MDNSName) })
+	var (
+		fw  *hostfwd.Forwarder
+		adv *advertise.Service
+	)
+	cfg, err := settings.Open(filepath.Join(rootDir, "config.json"), func(c api.ServiceConfig) {
+		fw.SetProxyProtocol(c.ProxyProtocol)
+		adv.SetName(c.MDNSName)
+	})
 	if err != nil {
 		// A broken config must not keep CARE down after a reboot; Open
 		// returned the defaults, and saving a new config replaces the file.
 		log.Error("config.json unreadable, using defaults", "err", err)
 	}
+	fw = hostfwd.New(hostfwd.Config{Rules: rules, Dial: sup.DialGuest, ProxyProtocol: cfg.Get().ProxyProtocol, Log: log})
 	adv = advertise.New(advertise.Config{Name: cfg.Get().MDNSName, Disabled: !*advertiseMDNS, Log: log})
 
 	ln, err := control.Listen(control.ListenConfig{Path: sock, Group: *group, Log: log})

@@ -6,7 +6,7 @@
 //
 //	GET  /v1/service/status[?watch=1]   api.ServiceStatus (NDJSON stream with watch)
 //	GET  /v1/service/config             api.ServiceConfig
-//	POST /v1/service/config             api.ServiceConfig -> api.ServiceConfig (persisted, applied)
+//	POST /v1/service/config             api.ServiceConfigUpdate -> api.ServiceConfig (persisted, applied)
 //	POST /v1/vm/{start,stop,restart}    api.EngineStatus
 //	GET  /v1/engine/slots               api.SlotList
 //	POST /v1/engine/install?sha256=hex  body: engine tarball -> slots.Slot
@@ -58,9 +58,9 @@ type Slots interface {
 // Settings is the persisted service configuration.
 type Settings interface {
 	Get() api.ServiceConfig
-	// Set validates (api.ErrInvalidConfig), persists and applies cfg and
-	// returns it normalized.
-	Set(cfg api.ServiceConfig) (api.ServiceConfig, error)
+	// Update applies the set fields, validates (api.ErrInvalidConfig),
+	// persists and applies the result and returns it normalized.
+	Update(u api.ServiceConfigUpdate) (api.ServiceConfig, error)
 }
 
 const maxRequestBody = 64 << 10
@@ -200,16 +200,16 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
-	var req api.ServiceConfig
+	var req api.ServiceConfigUpdate
 	if !decode(w, r, &req) {
 		return
 	}
-	cfg, err := s.settings.Set(req)
+	cfg, err := s.settings.Update(req)
 	if err != nil {
 		s.commandError(w, err)
 		return
 	}
-	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName)
+	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName, "proxy_protocol", cfg.ProxyProtocol)
 	writeJSON(w, http.StatusOK, cfg)
 }
 

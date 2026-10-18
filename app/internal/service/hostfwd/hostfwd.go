@@ -12,11 +12,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -65,7 +67,7 @@ func StandardRules(overrides map[string]string) ([]Rule, error) {
 type Config struct {
 	Rules []Rule
 	Dial  forward.VsockDialer
-	// ProxyProtocol prefixes each upstream connection with a PROXY v2 header.
+	// ProxyProtocol is the initial SetProxyProtocol value.
 	ProxyProtocol bool
 	// RetryInterval is the delay between bind attempts (10s).
 	RetryInterval time.Duration
@@ -74,7 +76,8 @@ type Config struct {
 
 // Forwarder owns the host listeners.
 type Forwarder struct {
-	cfg Config
+	cfg   Config
+	proxy atomic.Bool
 
 	mu    sync.Mutex
 	state []listenerState
@@ -96,6 +99,7 @@ func New(cfg Config) *Forwarder {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
 	f := &Forwarder{cfg: cfg, state: make([]listenerState, len(cfg.Rules)), lns: make([]net.Listener, len(cfg.Rules))}
+	f.proxy.Store(cfg.ProxyProtocol)
 	for i := range cfg.Rules {
 		f.lns[i] = f.bind(i)
 	}
@@ -120,7 +124,7 @@ func (f *Forwarder) bind(i int) net.Listener {
 	case err != nil && (prev == nil || prev.Error() != err.Error()):
 		f.cfg.Log.Error("forward listener unavailable; retrying", "name", r.Name, "listen", r.Listen, "err", err, "retry", f.cfg.RetryInterval)
 	case err == nil:
-		f.cfg.Log.Info("forwarding", "name", r.Name, "listen", ln.Addr().String(), "vsock_port", r.VsockPort, "proxy_protocol", f.cfg.ProxyProtocol)
+		f.cfg.Log.Info("forwarding", "name", r.Name, "listen", ln.Addr().String(), "vsock_port", r.VsockPort)
 	}
 	return ln
 }
@@ -142,11 +146,9 @@ func (f *Forwarder) serve(ctx context.Context, i int) {
 	f.lns[i] = nil
 	f.mu.Unlock()
 	opts := forward.Options{
-		Name: r.Name,
-		Logf: func(format string, args ...any) { f.cfg.Log.Warn(fmt.Sprintf(format, args...)) },
-	}
-	if f.cfg.ProxyProtocol {
-		opts.Header = forward.ProxyHeaderV2
+		Name:   r.Name,
+		Logf:   func(format string, args ...any) { f.cfg.Log.Warn(fmt.Sprintf(format, args...)) },
+		Header: f.header,
 	}
 	dial := func(ctx context.Context) (net.Conn, error) { return f.cfg.Dial(ctx, r.VsockPort) }
 	for {
@@ -171,11 +173,26 @@ func (f *Forwarder) serve(ctx context.Context, i int) {
 	}
 }
 
+// SetProxyProtocol turns the PROXY v2 header on or off for connections
+// accepted from now on.
+func (f *Forwarder) SetProxyProtocol(on bool) {
+	if f.proxy.Swap(on) != on {
+		f.cfg.Log.Info("forwarding", "proxy_protocol", on)
+	}
+}
+
+func (f *Forwarder) header(upstream io.Writer, client net.Conn) error {
+	if f.proxy.Load() {
+		return forward.ProxyHeaderV2(upstream, client)
+	}
+	return nil
+}
+
 // Status reports each listener.
 func (f *Forwarder) Status() api.ForwardStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	st := api.ForwardStatus{ProxyProtocol: f.cfg.ProxyProtocol, Listeners: []api.ForwardListener{}}
+	st := api.ForwardStatus{ProxyProtocol: f.proxy.Load(), Listeners: []api.ForwardListener{}}
 	for i, r := range f.cfg.Rules {
 		l := api.ForwardListener{Name: r.Name, Listen: f.state[i].addr, VsockPort: r.VsockPort, Listening: f.state[i].err == nil}
 		if err := f.state[i].err; err != nil {

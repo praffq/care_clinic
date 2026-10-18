@@ -84,7 +84,7 @@ EOF
 	fi
 	cat <<EOF
   $ctl watch                 # until the engine is ready
-  $ctl set-name <name>       # advertise <name>.local instead of care.local
+  $ctl config mdns_name=<name>  # advertise <name>.local instead of care.local
 
 If ctl is refused, open a new terminal (or log out and in) so your shell
 picks up the $group group. Logs: $logdir/service.log

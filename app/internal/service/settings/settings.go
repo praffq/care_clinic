@@ -27,9 +27,9 @@ type Store struct {
 }
 
 // Open loads path, using defaults for a missing file or missing fields.
-// onChange, if set, is called after every successful Set. When the file
+// onChange, if set, is called after every successful Update. When the file
 // cannot be read or is invalid, Open returns the error together with a Store
-// holding the defaults, so the service can still come up; the next Set
+// holding the defaults, so the service can still come up; the next Update
 // replaces the file.
 func Open(path string, onChange func(api.ServiceConfig)) (*Store, error) {
 	s := &Store{path: path, onChange: onChange, cfg: api.ServiceConfig{MDNSName: DefaultMDNSName}}
@@ -61,14 +61,22 @@ func (s *Store) Get() api.ServiceConfig {
 	return s.cfg
 }
 
-// Set validates and normalizes cfg, writes it atomically and applies it.
-// Invalid values are reported as api.ErrInvalidConfig.
-func (s *Store) Set(cfg api.ServiceConfig) (api.ServiceConfig, error) {
-	if err := validate(&cfg); err != nil {
-		return api.ServiceConfig{}, err
-	}
+// Update applies the fields set in u, validates and normalizes the result,
+// writes it atomically and applies it. Invalid values are reported as
+// api.ErrInvalidConfig.
+func (s *Store) Update(u api.ServiceConfigUpdate) (api.ServiceConfig, error) {
 	s.mu.Lock()
-	err := writeAtomic(s.path, cfg)
+	cfg := s.cfg
+	if u.MDNSName != nil {
+		cfg.MDNSName = *u.MDNSName
+	}
+	if u.ProxyProtocol != nil {
+		cfg.ProxyProtocol = *u.ProxyProtocol
+	}
+	err := validate(&cfg)
+	if err == nil {
+		err = writeAtomic(s.path, cfg)
+	}
 	if err == nil {
 		s.cfg = cfg
 	}
