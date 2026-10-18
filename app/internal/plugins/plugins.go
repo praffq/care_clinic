@@ -311,3 +311,21 @@ func ParseAdditionalPlugs(s string) ([]Plugin, error) {
 	}
 	return out, nil
 }
+
+// BundledOnly returns the plugins of set the CARE backend image has.
+func BundledOnly(set []Plugin) []Plugin {
+	var out []Plugin
+	for _, p := range set {
+		if p.Bundled {
+			out = append(out, p.clone())
+		}
+	}
+	return out
+}
+
+// Equal reports whether a and b render the same ADDITIONAL_PLUGS.
+func Equal(a, b []Plugin) bool {
+	x, errA := AdditionalPlugs(a)
+	y, errB := AdditionalPlugs(b)
+	return errA == nil && errB == nil && x == y
+}

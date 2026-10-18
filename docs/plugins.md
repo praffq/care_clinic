@@ -68,6 +68,13 @@ label and description for the panel.
 | `journal.json` | the target set and image while a change is in flight |
 
 A new clinic (`ctl clinic install`, onboarding) writes the catalog defaults.
+Installing again keeps the recorded set (`installed.json`): the install
+writes its bundled plugins with the images, and `Coordinator.Reinstalled`
+then records the installed images (forgetting the CARE release when the
+images are not its own) and re-applies the custom plugins as one journaled
+change, building them on the installed backend. If that change fails it
+rolls back, CARE keeps running with the bundled plugins, and `ctl clinic
+install` (or onboarding) reports the error.
 Configs whose key contains `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD` or
 `CREDENTIAL` are secrets: they are only stored in the 0600 files above, never
 logged or sent to the build, and are shown as `********`. Sending `********`
@@ -130,8 +137,6 @@ here as well.
 
 ## Known gaps
 
-- Reinstalling the clinic (`ctl clinic install`) resets `plugins.env` to the
-  defaults, while `installed.json` may still list the old set.
 - Building other frontend remotes in the VM (`image.build` kind
   `frontend-rebuild`) is not implemented.
 - `image.build` is bounded by the agent's 30 minute op limit.

@@ -41,7 +41,7 @@ type spec struct {
 	published time.Time // zero: published(rev)
 	expires   time.Time // zero: a year later
 	careNeeds string    // care requires.desktop (default ">=1.0.0")
-	builders  bool      // CARE releases publish a backend builder
+	builders  bool      // CARE releases publish builders
 }
 
 type eng struct {
@@ -249,7 +249,10 @@ func (h *harness) build(s spec) []byte {
 			},
 		}
 		if s.builders {
-			r["builders"] = map[string]any{"backend-builder": h.image("care-backend-builder", "builder-"+name, true)}
+			r["builders"] = map[string]any{
+				"backend-builder":  h.image("care-backend-builder", "builder-"+name, true),
+				"frontend-builder": h.image("care-frontend-builder", "fe-builder-"+name, true),
+			}
 		}
 		cares = append(cares, r)
 	}

@@ -240,3 +240,110 @@ func TestPluginsNeedInstalledCare(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// reinstall simulates ctl clinic install / onboarding: the stack env is
+// rewritten with images renamed by suffix (none: the same images) and the
+// plugins InstallPlugs returns, then migrated and started.
+func (h *harness) reinstall(suffix string) string {
+	h.t.Helper()
+	plugs, err := h.c.InstallPlugs()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.w.Lock()
+	imgs := slices.Clone(h.w.EnvImages)
+	h.w.Unlock()
+	var be protocol.Digest
+	for i := range imgs {
+		switch imgs[i].Role {
+		case protocol.ImageRoleBackend:
+			if suffix != "" {
+				imgs[i].Digest = Digest("backend-" + suffix)
+			} else if p := h.status().Installed.Plugins; p != nil {
+				imgs[i].Repo, imgs[i].Digest = p.Base.Repo, p.Base.Digest
+			}
+			be = imgs[i].Digest
+		case protocol.ImageRoleFrontend:
+			if suffix != "" {
+				imgs[i].Digest = Digest("frontend-" + suffix)
+			}
+		}
+	}
+	if err := h.w.WriteEnv(context.Background(), imgs, plugs); err != nil {
+		h.t.Fatal(err)
+	}
+	h.w.Lock()
+	for _, i := range imgs {
+		h.w.Images[i.Digest] = true
+	}
+	h.w.DBSchema = be
+	h.w.Unlock()
+	return plugs
+}
+
+func TestReinstallRebuildsCustomPlugins(t *testing.T) {
+	h := newHarness(t)
+	h.installWithBuilders()
+	if err := h.c.SetPlugins(context.Background(), h.enable(custom)); err != nil {
+		t.Fatal(err)
+	}
+	if plugs := h.reinstall(""); strings.Contains(plugs, "care_abdm") || !strings.Contains(plugs, "care_multihost_files_be") {
+		t.Fatalf("install plugs = %s", plugs)
+	}
+	if err := h.c.Reinstalled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	be, plugs := h.env()
+	if be == Digest("backend-A") || !strings.Contains(plugs, "care_abdm") {
+		t.Fatalf("backend %s, plugs %s", be, plugs)
+	}
+	if err := h.w.Healthy(); err != nil {
+		t.Fatal(err)
+	}
+	st := h.status()
+	if p := st.Installed.Plugins; p.Image == nil || p.Image.Digest != be || p.Base.Digest != Digest("backend-A") || st.Installed.Care == nil {
+		t.Fatalf("installed = %+v", st.Installed)
+	}
+}
+
+func TestReinstallFromOtherImagesKeepsBundledPlugins(t *testing.T) {
+	h := newHarness(t)
+	h.installCare("A")
+	if err := h.c.SetPlugins(context.Background(), h.enable(filly)); err != nil {
+		t.Fatal(err)
+	}
+	history := h.lastHistory().ID
+	if plugs := h.reinstall("dev"); !strings.Contains(plugs, "sk-secret") {
+		t.Fatalf("install plugs = %s", plugs)
+	}
+	if err := h.c.Reinstalled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st := h.status()
+	if st.Installed.Care != nil || st.Installed.Plugins.Base.Digest != Digest("backend-dev") || st.Installed.Plugins.Image != nil {
+		t.Fatalf("installed = %+v", st.Installed)
+	}
+	if plugins.Summary(st.Installed.Plugins.Set) != "care_filly,care_multihost_files_be" || h.lastHistory().ID != history {
+		t.Fatalf("plugins %s, history %s", plugins.Summary(st.Installed.Plugins.Set), h.lastHistory().ID)
+	}
+	// Later changes run on the reinstalled images.
+	set, _ := plugins.Disable(h.enable(), "care_filly")
+	if err := h.c.SetPlugins(context.Background(), set); err != nil {
+		t.Fatal(err)
+	}
+	if be, _ := h.env(); be != Digest("backend-dev") {
+		t.Fatalf("backend %s", be)
+	}
+}
+
+func TestReinstalledInPlaceIsNoop(t *testing.T) {
+	h := newHarness(t)
+	h.installCare("A")
+	before := h.status().Installed
+	if err := h.c.Reinstalled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if after := h.status().Installed; !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("installed.json rewritten: %+v", after)
+	}
+}

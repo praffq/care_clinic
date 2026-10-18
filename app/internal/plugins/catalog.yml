@@ -16,5 +16,5 @@
   description: "AI scribe: Medispeak dictation that fills CARE forms. Needs a Medispeak API key and internet access; enable its frontend in CARE's plugin settings."
   bundled: true
   package: git+https://github.com/ohcnetwork/care_filly.git
-  version: "@main"
+  version: "@develop"
   required_configs: [MEDISPEAK_API_KEY, MEDISPEAK_BASE_URL]

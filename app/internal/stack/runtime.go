@@ -210,13 +210,13 @@ func imageTitle(img Image) string {
 
 // Install loads the images, configures the clinic for host and brings the
 // stack up migrated. It is safe to run again: secrets are kept and only
-// changed containers are recreated. The images are the CARE release's, so
-// the backend plugins are reset to the catalog defaults.
-func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins []string, images []Image) error {
+// changed containers are recreated. plugs is the ADDITIONAL_PLUGS for the
+// images (see updates.Coordinator.InstallPlugs); "" means the catalog defaults.
+func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins []string, images []Image, plugs string) error {
 	if err := r.Images(ctx, images); err != nil {
 		return err
 	}
-	if err := r.Configure(ctx, kit, host, origins, images, ""); err != nil {
+	if err := r.Configure(ctx, kit, host, origins, images, plugs); err != nil {
 		return err
 	}
 	if err := r.Migrate(ctx); err != nil {

@@ -44,9 +44,9 @@ func (e *Clinic) Configure() error {
 	if err != nil {
 		return err
 	}
-	// Supplied images are a CARE release's (catalog default plugins); the
-	// engine's own images keep the plugins they were configured with.
-	plugs := ""
+	// Supplied images are a CARE release's (StackPlugs); the engine's own
+	// images keep the plugins they were configured with.
+	plugs := e.StackPlugs
 	if len(e.StackImages) == 0 {
 		if plugs, err = r.InstalledPlugs(e.context()); err != nil {
 			return err

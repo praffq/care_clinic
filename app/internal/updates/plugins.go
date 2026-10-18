@@ -357,3 +357,114 @@ func DevBuilder(imgs []stack.Image) *stack.Image {
 	}
 	return nil
 }
+
+// InstallPlugs is the ADDITIONAL_PLUGS a clinic install from CARE release
+// images starts with: the recorded set's bundled plugins, which those
+// images already have. "" (nothing recorded) means the catalog defaults.
+// Reinstalled then builds the recorded custom plugins.
+func (c *Coordinator) InstallPlugs() (string, error) {
+	in, err := c.installed()
+	if err != nil || in.Plugins == nil {
+		return "", err
+	}
+	return plugins.AdditionalPlugs(plugins.BundledOnly(in.Plugins.Set))
+}
+
+// Reinstalled reconciles installed.json with a clinic (re)install (ctl
+// clinic install, onboarding) and re-applies the recorded plugin set. An
+// install from other images than the recorded CARE release forgets that
+// release; the recorded custom plugins are then rebuilt on the installed
+// backend with SetPlugins (journaled, rolled back on failure).
+func (c *Coordinator) Reinstalled(ctx context.Context) error {
+	recorded, err := c.syncInstall(ctx)
+	if err != nil || recorded == nil {
+		return err
+	}
+	c.logf("Re-applying the clinic's plugins: %s", plugins.Summary(recorded))
+	return c.SetPlugins(ctx, recorded)
+}
+
+// syncInstall records the installed images and plugins; it returns the
+// recorded set when it still needs applying.
+func (c *Coordinator) syncInstall(ctx context.Context) ([]plugins.Plugin, error) {
+	unlock, err := c.acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if j, err := c.st.journal(); err != nil {
+		return nil, err
+	} else if j != nil {
+		return nil, fmt.Errorf("%w (%s update to %s is %s)", ErrInFlight, j.Component, j.To, j.State)
+	}
+	in, err := c.installed()
+	if err != nil {
+		return nil, err
+	}
+	imgs, plugs, err := c.o.Stack.Configured(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the clinic configuration: %w", err)
+	}
+	if len(imgs) == 0 {
+		return nil, ErrNotInstalled
+	}
+	running := backendOf(toImages(imgs))
+	rec := in.Plugins
+	if rec != nil && (running.Digest == rec.Base.Digest || rec.Image != nil && running.Digest == rec.Image.Digest) {
+		if want, err := plugins.AdditionalPlugs(rec.Set); err == nil && want == plugs {
+			return nil, nil // reconfigured in place: nothing changed
+		}
+	}
+	changed := false
+	if in.Care != nil && !sameDigests(in.Care.Images, toImages(imgs), protocol.ImageRoleBackend, protocol.ImageRoleFrontend) {
+		c.logf("The clinic was installed from other images than CARE %s; it is no longer recorded", in.Care.Version)
+		in.Care, changed = nil, true
+	}
+	if rec != nil {
+		applied := plugins.Defaults()
+		if plugs != "" {
+			if applied, err = plugins.ParseAdditionalPlugs(plugs); err != nil {
+				return nil, err
+			}
+		}
+		in.Plugins, changed = &InstalledPlugins{Set: applied, Base: running}, true
+	}
+	if changed {
+		in.UpdatedAt = c.now()
+		if err := c.st.save(InstalledFile, in); err != nil {
+			return nil, err
+		}
+	}
+	if rec == nil || plugins.Equal(rec.Set, in.Plugins.Set) {
+		return nil, nil
+	}
+	return rec.Set, nil
+}
+
+func toImages(imgs []stack.Image) []Image {
+	out := make([]Image, 0, len(imgs))
+	for _, i := range imgs {
+		out = append(out, Image{Role: i.Role, Repo: i.Repo, Digest: i.Digest})
+	}
+	return out
+}
+
+func sameDigests(a, b []Image, roles ...protocol.ImageRole) bool {
+	for _, r := range roles {
+		var da, db protocol.Digest
+		for _, i := range a {
+			if i.Role == r {
+				da = i.Digest
+			}
+		}
+		for _, i := range b {
+			if i.Role == r {
+				db = i.Digest
+			}
+		}
+		if da != db {
+			return false
+		}
+	}
+	return true
+}

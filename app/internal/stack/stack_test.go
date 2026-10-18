@@ -260,7 +260,7 @@ func TestInstall(t *testing.T) {
 	if err := os.WriteFile(imgs[0].Tarball, []byte("tar"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Install(ctxT(t), kit, "care.local", nil, imgs); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, imgs, ""); err != nil {
 		t.Fatal(err)
 	}
 	testCert() // small keys
@@ -302,7 +302,7 @@ func TestInstall(t *testing.T) {
 	}
 
 	// Reinstalling keeps the secrets.
-	if err := r.Install(ctxT(t), kit, "clinic.local", nil, testImages()); err != nil {
+	if err := r.Install(ctxT(t), kit, "clinic.local", nil, testImages(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if vm2, _ := os.ReadFile(filepath.Join(svc.Files, "config", SecretsEnv)); !bytes.Equal(vm, vm2) {
@@ -407,7 +407,7 @@ func TestDown(t *testing.T) {
 	svc := stacktest.New(t)
 	state := t.TempDir()
 	r := &Runtime{Service: svc, StateDir: state}
-	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages()); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Down(ctxT(t), false); err != nil {
@@ -438,7 +438,7 @@ func TestInstalledImages(t *testing.T) {
 		t.Fatalf("no clinic: err = %v", err)
 	}
 	want := testImages()
-	if err := r.Install(ctxT(t), kit, "care.local", nil, want); err != nil {
+	if err := r.Install(ctxT(t), kit, "care.local", nil, want, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := r.InstalledImages(ctxT(t))
