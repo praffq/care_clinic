@@ -32,6 +32,7 @@ application's own user or API documentation.
 | [Dev image tarballs](dev-images.md) | Building the engine's images locally into `dist/images/*.tar` with digests for the dev update path. |
 | [CI publishing](ci-publishing.md) | `images.yml`, `engine.yml` and `publish.yml`: multi-arch images on GHCR, engine releases, the signed feed on GitHub Pages, and the one-time key/Pages/package setup. |
 | [Update feed](updates-feed.md) | The signed `updates.json` feed clients read, its signature and trust model, and how it is verified. |
+| [Update coordinator](updates.md) | How updates are checked, applied, journaled, resumed and rolled back: CARE, engine slot swaps and desktop downloads. |
 | [Releasing CARE Clinic](releases.md) | Preparing a version, starting the release, the macOS app bundle layout, reviewing and publishing the draft, signing limitations, and retrying safely. |
 | [Home access](home-access.md) | Letting doctors open CARE from home through Tailscale, without exposing the clinic to the internet. |
 

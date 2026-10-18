@@ -57,7 +57,8 @@ which the tests sign and verify.
   `digest`. CARE releases need exactly the `backend`, `frontend`, `caddy` and
   `backup` roles; `support_images` exactly `postgres`, `redis` and `silo`.
   An optional `tar` URL points at an image tarball for development feeds that
-  side-load locally built images.
+  side-load locally built images; it must be saved under the `ref`'s
+  repository (its `index.json` image name), which the coordinator checks.
 - `build_env` keys follow the engine rule (`REACT_*` or `CARE_*`).
 - `blocked` entries are `<desktop|engine|care>:<version>`; the update resolver treats them as withdrawn and never
   selects them (see [Update plans](#update-plans)).
@@ -116,8 +117,8 @@ feed is rejected.
 `feed.ResolvePlan(installed, manifest)` turns a verified manifest and the
 installed versions into a `Plan`: an ordered list of `Step`s (component, from,
 to, and the feed entry), at most one per component. It only decides; applying
-a plan, one healthy step at a time, belongs to the update coordinator. Updates
-are never automatic.
+a plan, one healthy step at a time, belongs to the update coordinator
+([updates.md](updates.md)). Updates are never automatic.
 
 Rules:
 

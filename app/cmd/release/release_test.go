@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -160,11 +161,16 @@ func TestDemo(t *testing.T) {
 	}
 
 	m7 := verify(7, 4)
-	p := plan(7, installed(m7, "0.1.0", careB), m7, "engine 0.1.0->0.1.1, care "+careB+"->"+careC)
+	if !slices.Contains(m7.Blocked, "care:"+careC) {
+		t.Fatalf("rev-7 blocked = %q, want care:%s", m7.Blocked, careC)
+	}
+	p := plan(7, installed(m7, "0.1.0", careB), m7, "engine 0.1.0->0.1.1")
 	if len(p.Held) != 1 || !strings.Contains(p.Held[0], "engine 0.2.0") || !strings.Contains(p.Held[0], "desktop >=0.3.0") {
 		t.Fatalf("rev-7 held = %q", p.Held)
 	}
-	_, err = feed.ResolvePlan(installed(m7, "0.1.1", careC), m7)
+	// After rev-4 rolled back: on be.B with engine 0.1.1, nothing is
+	// available and the reason names the missing desktop.
+	_, err = feed.ResolvePlan(installed(m7, "0.1.1", careB), m7)
 	var np *feed.NoPathError
 	if !errors.As(err, &np) || !strings.Contains(err.Error(), "desktop >=0.3.0") {
 		t.Fatalf("rev-7 up to date: err = %v, want NoPathError mentioning desktop >=0.3.0", err)
@@ -205,7 +211,7 @@ func TestDemoRealArtifacts(t *testing.T) {
 	}
 
 	idxDigest := "sha256:" + strings.Repeat("cd", 32)
-	writeTar(t, filepath.Join(images, "redis.tar"), "index.json", `{"schemaVersion":2,"manifests":[{"digest":"`+idxDigest+`"}]}`)
+	writeTar(t, filepath.Join(images, "redis.tar"), "index.json", `{"schemaVersion":2,"manifests":[{"digest":"`+idxDigest+`","annotations":{"io.containerd.image.name":"example.org/mirror/redis:7"}}]}`)
 
 	out := t.TempDir()
 	if _, err := runDemo(demoOptions{Key: devKey(t), Out: out, EngineDist: dist, ImagesDist: images, BaseURL: "http://localhost:8787/"}); err != nil {
@@ -228,7 +234,7 @@ func TestDemoRealArtifacts(t *testing.T) {
 	if string(img.Digest) != dg || img.Ref != demoRegistry+"care-backend@"+dg || img.Tar != "http://localhost:8787/files/images/care-backend-A.tar" {
 		t.Fatalf("backend image = %+v", img)
 	}
-	if r := m.SupportImages[protocol.ImageRoleRedis]; string(r.Digest) != idxDigest || r.Ref != "docker.io/library/redis@"+idxDigest {
+	if r := m.SupportImages[protocol.ImageRoleRedis]; string(r.Digest) != idxDigest || r.Ref != "example.org/mirror/redis@"+idxDigest {
 		t.Fatalf("redis image = %+v", r)
 	}
 	if m.Care[0].Images[protocol.ImageRoleFrontend].Tar != "" {

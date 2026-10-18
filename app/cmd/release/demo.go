@@ -20,6 +20,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 )
 
 // The demo feed walks a client through every update scenario; see the table
@@ -189,7 +190,9 @@ func runDemo(o demoOptions) (*demo, error) {
 		return nil, fmt.Errorf("rev-5: %w", err)
 	}
 
-	// rev-7: + engine 0.2.0 requiring a desktop 0.3.0 that is not published.
+	// rev-7: + engine 0.2.0 requiring a desktop 0.3.0 that is not published,
+	// and be.C blocked (a client rolled back from it stays on be.B, and is
+	// told why nothing is available).
 	p7 := pins
 	p7.EngineVersion = "0.2.0"
 	p7.EngineRequiresDesktop = ">=0.3.0"
@@ -197,7 +200,15 @@ func runDemo(o demoOptions) (*demo, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, data7, err := build(m4, 7, 7, p7, Artifacts{Engine: &EngineArtifacts{DataSchema: 2, Assets: engine020}})
+	m7, err := Build(BuildOptions{
+		Pins: p7, Artifacts: Artifacts{Engine: &EngineArtifacts{DataSchema: 2, Assets: engine020}},
+		Previous: m4, Revision: 7, PublishedAt: demoPublished(7), Expires: demoExpires,
+		Block: []string{"care:" + demoCareCore + "+be.C.fe." + demoFrontend},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rev-7: %w", err)
+	}
+	data7, err := marshalValidated(m7, d.insecure)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +311,9 @@ func (d *demo) engineAssets(version string) (map[string]feed.Asset, error) {
 
 // image pins the image tarball <name>.tar from ImagesDist when present.
 // Its digest comes from <name>.tar.digest, else the tarball's OCI index.json
-// (docker save); a tarball with neither is an error.
+// (docker save); a tarball with neither is an error. A real tarball keeps the
+// repository it was saved under (docker resolves repo@digest by
+// repository); repo names placeholders.
 func (d *demo) image(repo, name string) (feed.ImageRef, error) {
 	if img, ok := d.images[name]; ok {
 		return img, nil
@@ -320,6 +333,9 @@ func (d *demo) loadImage(repo, name string) (feed.ImageRef, error) {
 			dg, err := imageDigest(src)
 			if err != nil {
 				return feed.ImageRef{}, err
+			}
+			if saved, err := stack.TarballRepo(src); err == nil {
+				repo = saved
 			}
 			if err := d.publish(src, "images", file); err != nil {
 				return feed.ImageRef{}, err
