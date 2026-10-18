@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
@@ -27,6 +28,9 @@ commands:
   activate <version>        switch to an installed engine and boot it
   start | stop | restart    control the engine VM
   prune                     delete slots other than current and previous
+  config [key=value ...]    show or change the service configuration (config.json):
+                              mdns_name=<name>         advertise <name>.local
+                              proxy_protocol=true|false PROXY v2 to the guest
   agent-status              agent status through the relay
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
 `
@@ -66,7 +70,7 @@ var errUsage = errors.New("usage")
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
 	nargs := map[string][]int{
-		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2},
+		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 2},
 	}[cmd]
 	if nargs == nil {
 		nargs = []int{0, 0}
@@ -95,6 +99,15 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 		v, err = c.Restart(ctx)
 	case "prune":
 		v, err = c.Prune(ctx)
+	case "config":
+		if len(args) == 0 {
+			v, err = c.Config(ctx)
+			break
+		}
+		var u api.ServiceConfigUpdate
+		if u, err = configUpdate(args); err == nil {
+			v, err = c.UpdateConfig(ctx, u)
+		}
 	case "agent-status":
 		v, err = c.Agent().Status(ctx)
 	case "agent-op":
@@ -106,6 +119,26 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 		return err
 	}
 	return printJSON(v)
+}
+
+func configUpdate(args []string) (api.ServiceConfigUpdate, error) {
+	var u api.ServiceConfigUpdate
+	for _, a := range args {
+		key, val, _ := strings.Cut(a, "=")
+		switch key {
+		case "mdns_name":
+			u.MDNSName = &val
+		case "proxy_protocol":
+			on, err := strconv.ParseBool(val)
+			if err != nil {
+				return u, fmt.Errorf("proxy_protocol: %w", err)
+			}
+			u.ProxyProtocol = &on
+		default:
+			return u, fmt.Errorf("unknown config key %q", key)
+		}
+	}
+	return u, nil
 }
 
 func agentOp(ctx context.Context, c *control.Client, args []string) (any, error) {

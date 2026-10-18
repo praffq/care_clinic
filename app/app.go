@@ -171,6 +171,10 @@ func (a *App) reportError(label, detail string) {
 }
 
 // Failures are logged and conflicts are shown here; background callers retry.
+//
+// care-clinic-service (internal/service/advertise) has its own copy of this
+// loop. Only one of them may advertise on a Mac: run the service with
+// --mdns=false while this app advertises.
 func (a *App) startAdvertise() error {
 	a.advMu.Lock()
 	defer a.advMu.Unlock()

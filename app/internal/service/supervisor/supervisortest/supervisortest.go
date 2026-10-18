@@ -101,6 +101,7 @@ type Machine struct {
 	srv    *http.Server
 	done   chan struct{}
 	forced bool
+	stuck  error
 }
 
 var _ vm.Machine = (*Machine)(nil)
@@ -151,6 +152,16 @@ func (m *Machine) halt(err error, forced bool) {
 // Crash stops the VM as if the hypervisor failed (err) or the guest powered
 // off on its own (nil).
 func (m *Machine) Crash(err error) { m.halt(err, false) }
+
+// Hang makes the agent unreachable while the VM keeps running, like a
+// wedged guest.
+func (m *Machine) Hang() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == vm.StateRunning {
+		_ = m.srv.Close()
+	}
+}
 
 // Forced reports whether the VM was force-stopped.
 func (m *Machine) Forced() bool {
@@ -206,7 +217,21 @@ func (m *Machine) Stop(ctx context.Context, timeout time.Duration) error {
 }
 
 func (m *Machine) ForceStop(context.Context) error {
+	m.mu.Lock()
+	stuck := m.stuck
+	m.mu.Unlock()
+	if stuck != nil {
+		return stuck
+	}
 	m.halt(nil, true)
 	<-m.done
 	return nil
+}
+
+// Stick makes Stop and ForceStop fail with err and leave the VM running,
+// until it crashes.
+func (m *Machine) Stick(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stuck = err
 }

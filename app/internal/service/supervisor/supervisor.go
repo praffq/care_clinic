@@ -3,6 +3,11 @@
 // exponential backoff after any stop it did not cause, and carries out the
 // start/stop/restart/slot-switch commands it is given. At most one Machine
 // exists at a time.
+//
+// A watchdog treats a hung guest like a crash: when the agent is not ready
+// within ReadyTimeout of boot, or stops answering for UnreachableProbes
+// health polls in a row, the VM is forced off and restarted with backoff.
+// An agent that answers while docker is down only reports not_ready.
 package supervisor
 
 import (
@@ -62,13 +67,19 @@ type Config struct {
 	NewMachine func(vm.Config) (vm.Machine, error) // vm.New when nil
 	Log        *slog.Logger
 
-	ReadyTimeout   time.Duration // boot to docker_ready before reporting not_ready (5m)
+	ReadyTimeout   time.Duration // boot to docker_ready before the watchdog restarts the VM (5m)
 	PollInterval   time.Duration // agent status poll while starting (1s)
 	HealthInterval time.Duration // agent status poll once ready (15s)
 	StopTimeout    time.Duration // guest power-off after the shutdown request (30s)
-	BackoffMin     time.Duration // first restart delay (1s), doubled per failure
-	BackoffMax     time.Duration // restart delay cap (2m)
-	StableAfter    time.Duration // uptime that resets the backoff (10m)
+	// ForceStopTimeout bounds a force stop. A VM still running after it is
+	// kept as lingering: no new VM boots on its disk until it stops (30s).
+	ForceStopTimeout time.Duration
+	BackoffMin       time.Duration // first restart delay (1s), doubled per failure
+	BackoffMax       time.Duration // restart delay cap (2m)
+	StableAfter      time.Duration // uptime that resets the backoff (10m)
+	// UnreachableProbes is how many health polls in a row may fail to reach
+	// the agent before the watchdog restarts the VM (4, i.e. 1m at 15s).
+	UnreachableProbes int
 }
 
 func (c *Config) setDefaults() {
@@ -81,9 +92,13 @@ func (c *Config) setDefaults() {
 	def(&c.PollInterval, time.Second)
 	def(&c.HealthInterval, 15*time.Second)
 	def(&c.StopTimeout, 30*time.Second)
+	def(&c.ForceStopTimeout, 30*time.Second)
 	def(&c.BackoffMin, time.Second)
 	def(&c.BackoffMax, 2*time.Minute)
 	def(&c.StableAfter, 10*time.Minute)
+	if c.UnreachableProbes <= 0 {
+		c.UnreachableProbes = 4
+	}
 	if c.NewMachine == nil {
 		c.NewMachine = vm.New
 	}
@@ -107,6 +122,12 @@ type command struct {
 	reply   chan error
 }
 
+// hang is the watchdog's report that b's agent is unresponsive.
+type hang struct {
+	b   *boot
+	err error
+}
+
 // boot is one Machine; ctx scopes its monitor goroutine.
 type boot struct {
 	m         vm.Machine
@@ -120,6 +141,7 @@ type boot struct {
 type Supervisor struct {
 	cfg  Config
 	cmds chan command
+	hung chan hang
 	done chan struct{}
 
 	// Owned by the Run goroutine.
@@ -127,11 +149,15 @@ type Supervisor struct {
 	want     bool
 	failures int
 	retry    *time.Timer
+	// lingering is a VM that did not stop when told to; it may still be
+	// using the data disk.
+	lingering vm.Machine
 
-	mu   sync.Mutex
-	st   Status
-	dial vm.Machine // machine the agent is reachable on, or nil
-	subs map[chan Status]struct{}
+	mu      sync.Mutex
+	st      Status
+	running vm.Machine // the started machine, or nil
+	dial    vm.Machine // machine the agent is reachable on, or nil
+	subs    map[chan Status]struct{}
 }
 
 // New returns a stopped Supervisor.
@@ -140,6 +166,7 @@ func New(cfg Config) *Supervisor {
 	return &Supervisor{
 		cfg:  cfg,
 		cmds: make(chan command),
+		hung: make(chan hang),
 		done: make(chan struct{}),
 		st:   Status{State: StateStopped, ConsoleLog: cfg.VM.ConsoleLog},
 		subs: map[chan Status]struct{}{},
@@ -172,6 +199,10 @@ func (s *Supervisor) Run(ctx context.Context) {
 			c.reply <- s.handle(ctx, c)
 		case <-vmDone:
 			s.crashed()
+		case h := <-s.hung:
+			if h.b == s.cur {
+				s.hungUp(ctx, h.err)
+			}
 		case <-retry:
 			s.retry = nil
 			s.update(func(st *Status) { st.Restarts++ })
@@ -219,6 +250,14 @@ func (s *Supervisor) handle(ctx context.Context, c command) error {
 
 // boot starts the current slot; failures schedule a retry.
 func (s *Supervisor) boot(ctx context.Context) error {
+	if m := s.lingering; m != nil {
+		select {
+		case <-m.Done():
+			s.lingering = nil
+		default:
+			return s.failed(errors.New("the previous engine VM has not stopped; not starting another on its disk"))
+		}
+	}
 	sl, err := s.cfg.Slots.Current()
 	if errors.Is(err, slots.ErrNoCurrent) {
 		s.update(func(st *Status) { st.State = StateNoEngine; st.EngineVersion = "" })
@@ -243,6 +282,9 @@ func (s *Supervisor) boot(ctx context.Context) error {
 	bctx, cancel := context.WithCancel(ctx)
 	b := &boot{m: m, version: sl.Version, startedAt: time.Now(), ctx: bctx, cancel: cancel}
 	s.cur = b
+	s.mu.Lock()
+	s.running = m
+	s.mu.Unlock()
 	s.cfg.Log.Info("engine VM started", "version", sl.Version)
 	s.update(func(st *Status) { st.StartedAt = b.startedAt })
 	go s.monitor(b)
@@ -281,9 +323,7 @@ func (s *Supervisor) backoff(n int) time.Duration {
 func (s *Supervisor) crashed() {
 	b := s.cur
 	s.detach()
-	if time.Since(b.startedAt) >= s.cfg.StableAfter {
-		s.failures = 0
-	}
+	s.resetIfStable(b)
 	err := errors.New("engine VM stopped unexpectedly")
 	if e := b.m.Err(); e != nil {
 		err = fmt.Errorf("%w: %w", err, e)
@@ -294,13 +334,53 @@ func (s *Supervisor) crashed() {
 	_ = s.failed(err)
 }
 
+// hungUp forces off the current VM, whose agent the watchdog found
+// unresponsive, and handles it as a crash.
+func (s *Supervisor) hungUp(ctx context.Context, cause error) {
+	b := s.cur
+	s.detach()
+	s.resetIfStable(b)
+	s.cfg.Log.Error("engine watchdog: forcing the VM off", "err", cause)
+	s.update(func(st *Status) { st.State = StateStopping })
+	fctx, cancel := context.WithTimeout(ctx, s.cfg.ForceStopTimeout)
+	defer cancel()
+	if err := b.m.ForceStop(fctx); err != nil {
+		s.cfg.Log.Error("force-stopping engine VM", "err", err)
+	}
+	if err := s.awaitStop(fctx, b.m); err != nil {
+		cause = fmt.Errorf("%w; %w", cause, err)
+	}
+	_ = s.failed(fmt.Errorf("engine watchdog restarted the VM: %w", cause))
+}
+
+// awaitStop waits until m stops or ctx ends. A VM that has not stopped by
+// then is kept as lingering so the Run loop stays responsive without
+// booting a second VM on the same disk.
+func (s *Supervisor) awaitStop(ctx context.Context, m vm.Machine) error {
+	select {
+	case <-m.Done():
+		return nil
+	case <-ctx.Done():
+	}
+	s.lingering = m
+	err := errors.New("engine VM did not stop")
+	s.cfg.Log.Error("engine VM is not stopping; no new VM will boot until it does", "err", err)
+	return err
+}
+
+func (s *Supervisor) resetIfStable(b *boot) {
+	if time.Since(b.startedAt) >= s.cfg.StableAfter {
+		s.failures = 0
+	}
+}
+
 // detach forgets the current boot and stops its monitor.
 func (s *Supervisor) detach() {
 	b := s.cur
 	s.cur = nil
 	s.mu.Lock()
 	b.cancel()
-	s.dial = nil
+	s.dial, s.running = nil, nil
 	s.mu.Unlock()
 }
 
@@ -324,16 +404,25 @@ func (s *Supervisor) shutdown(ctx context.Context) {
 	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err := c.Shutdown(sctx)
 	cancel()
+	// Bounds the power-off wait and the force stop after it.
+	sctx, cancel = context.WithTimeout(ctx, s.cfg.StopTimeout+s.cfg.ForceStopTimeout)
+	defer cancel()
 	if err != nil {
 		s.cfg.Log.Warn("agent shutdown failed; forcing the VM off", "err", err)
-		err = b.m.ForceStop(ctx)
+		err = b.m.ForceStop(sctx)
 	} else {
-		err = b.m.Stop(ctx, s.cfg.StopTimeout)
+		err = b.m.Stop(sctx, s.cfg.StopTimeout)
 	}
 	if err != nil {
 		s.cfg.Log.Error("stopping engine VM", "err", err)
 	}
-	<-b.m.Done()
+	if err := s.awaitStop(sctx, b.m); err != nil {
+		s.update(func(st *Status) {
+			st.State, st.Agent, st.StartedAt, st.NextRetryAt = StateCrashed, nil, time.Time{}, time.Time{}
+			st.LastError, st.LastErrorAt = err.Error(), time.Now()
+		})
+		return
+	}
 	s.cfg.Log.Info("engine VM stopped", "took", time.Since(start).Round(time.Millisecond))
 	s.update(func(st *Status) {
 		st.State, st.Agent, st.StartedAt, st.NextRetryAt = StateStopped, nil, time.Time{}, time.Time{}
@@ -348,7 +437,8 @@ func (s *Supervisor) cancelRetry() {
 }
 
 // monitor waits for the agent, syncs the clock and then polls its health
-// until b is stopped. It only reports state; restarts are decided by Run.
+// until b is stopped. It reports state and, as the watchdog, hangs; Run
+// decides what to do about them.
 func (s *Supervisor) monitor(b *boot) {
 	c := agentClient(b.m)
 	defer c.Close()
@@ -358,15 +448,19 @@ func (s *Supervisor) monitor(b *boot) {
 	if b.ctx.Err() != nil {
 		return
 	}
-	if err == nil {
-		if err := c.SetTime(b.ctx, time.Now()); err != nil {
-			s.cfg.Log.Warn("set engine clock", "err", err)
-		}
-		s.cfg.Log.Info("engine ready", "version", b.version, "after", time.Since(b.startedAt).Round(time.Millisecond))
+	if err != nil {
+		s.health(b, st, err)
+		s.reportHang(b, fmt.Errorf("not ready %s after boot: %w", s.cfg.ReadyTimeout, err))
+		return
 	}
-	s.health(b, st, err)
+	if err := c.SetTime(b.ctx, time.Now()); err != nil {
+		s.cfg.Log.Warn("set engine clock", "err", err)
+	}
+	s.cfg.Log.Info("engine ready", "version", b.version, "after", time.Since(b.startedAt).Round(time.Millisecond))
+	s.health(b, st, nil)
 	t := time.NewTicker(s.cfg.HealthInterval)
 	defer t.Stop()
+	misses := 0
 	for {
 		select {
 		case <-b.ctx.Done():
@@ -376,10 +470,30 @@ func (s *Supervisor) monitor(b *boot) {
 		rctx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
 		st, err := c.Status(rctx)
 		cancel()
+		if b.ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			misses++
+		} else {
+			misses = 0
+		}
 		if err == nil && !st.DockerReady {
 			err = errors.New("docker is not ready")
 		}
 		s.health(b, st, err)
+		if misses >= s.cfg.UnreachableProbes {
+			s.reportHang(b, fmt.Errorf("agent unreachable for %d health checks: %w", misses, err))
+			return
+		}
+	}
+}
+
+// reportHang hands a hang of b to Run unless b is stopped first.
+func (s *Supervisor) reportHang(b *boot, err error) {
+	select {
+	case s.hung <- hang{b: b, err: err}:
+	case <-b.ctx.Done():
 	}
 }
 
@@ -464,6 +578,18 @@ func (s *Supervisor) Subscribe() (<-chan Status, func()) {
 		delete(s.subs, ch)
 		s.mu.Unlock()
 	}
+}
+
+// DialGuest connects to a vsock port of the started VM, whether or not its
+// agent is ready, and fails with ErrUnavailable when no VM is running.
+func (s *Supervisor) DialGuest(ctx context.Context, port uint32) (net.Conn, error) {
+	s.mu.Lock()
+	m := s.running
+	s.mu.Unlock()
+	if m == nil {
+		return nil, ErrUnavailable
+	}
+	return m.DialVsock(ctx, port)
 }
 
 // DialAgent connects to the agent of the running VM. It fails with
