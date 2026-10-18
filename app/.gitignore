@@ -4,6 +4,7 @@ build/bin/
 # only the placeholder is tracked, so //go:embed compiles on a clean checkout.
 install/*
 !install/.gitkeep
+!install/kit.go
 # frontend
 frontend/node_modules/
 frontend/test-results/

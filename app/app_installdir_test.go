@@ -18,6 +18,7 @@ func TestEnsureInstallDirKeepsSettings(t *testing.T) {
 		pins:       &release.Pins{},
 		installFS: fstest.MapFS{
 			"install/.gitkeep":          {Data: []byte("")},
+			"install/kit.go":            {Data: []byte("package install\n")},
 			"install/backend.env":       {Data: []byte("NEW=1\n")},
 			"install/scripts/backup.sh": {Data: []byte("#!/bin/sh\n")},
 		},
@@ -49,7 +50,9 @@ func TestEnsureInstallDirKeepsSettings(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(dest, "scripts", "backup.sh")); err != nil || info.Mode()&0o111 == 0 {
 		t.Fatalf("shell script lost its execute bit: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dest, ".gitkeep")); !os.IsNotExist(err) {
-		t.Fatal("placeholder was installed")
+	for _, name := range []string{".gitkeep", "kit.go"} {
+		if _, err := os.Stat(filepath.Join(dest, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was installed", name)
+		}
 	}
 }

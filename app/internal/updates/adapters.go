@@ -129,6 +129,10 @@ func (s RuntimeStack) WriteEnv(ctx context.Context, images []stack.Image, plugs 
 	return s.Runtime.Configure(ctx, s.Kit, s.Host, s.Origins, images, plugs)
 }
 
+func (s RuntimeStack) CheckKit(ctx context.Context) error {
+	return s.Runtime.CheckKit(ctx, s.Kit)
+}
+
 func (s RuntimeStack) Configured(ctx context.Context) ([]stack.Image, string, error) {
 	images, err := s.Runtime.InstalledImages(ctx)
 	if errors.Is(err, client.ErrNotFound) {

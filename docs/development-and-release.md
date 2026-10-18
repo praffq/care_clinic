@@ -236,7 +236,7 @@ Always edit `deployments/` for a kit change. Editing `app/install/` would be ove
 
 ### Placeholders and `go build`
 
-`app/install/.gitkeep` and `app/frontend/dist/.gitkeep` keep the Go embed patterns valid in a clean checkout. Their presence allows compilation; it does not create a usable deployment kit or desktop UI.
+`app/install/.gitkeep` and `app/frontend/dist/.gitkeep` keep the Go embed patterns valid in a clean checkout. `app/install/kit.go` is the Go package that embeds the staged kit into `care-clinic-service` for ctl; staging keeps it and the app does not copy it to the install folder. A service built without staging has no kit: ctl then asks for `--deployments` (`app/cmd/care-clinic-service/build.sh` stages first). Their presence allows compilation; it does not create a usable deployment kit or desktop UI.
 
 `NewApp` explicitly rejects a build whose embedded kit lacks `.env`. A plain Go compilation of placeholders is therefore a useful compile check, not a substitute for the complete Wails/frontend build.
 

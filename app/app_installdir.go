@@ -27,6 +27,10 @@ var installUserFiles = map[string]bool{"backend.env": true, "frontend.env": true
 
 const gitkeepPlaceholder = ".gitkeep"
 
+// kitPackage is the Go file that embeds the kit for care-clinic-service; it
+// is not part of the kit.
+const kitPackage = "kit.go"
+
 func (a *App) ensureInstallDir() (string, error) {
 	dest := a.installDir()
 	err := fs.WalkDir(a.installFS, "install", func(p string, d fs.DirEntry, err error) error {
@@ -35,7 +39,7 @@ func (a *App) ensureInstallDir() (string, error) {
 		}
 		rel := strings.TrimPrefix(p, "install")
 		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || rel == gitkeepPlaceholder {
+		if rel == "" || rel == gitkeepPlaceholder || rel == kitPackage {
 			return nil
 		}
 		target := filepath.Join(dest, rel)

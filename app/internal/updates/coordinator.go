@@ -65,6 +65,9 @@ type Stack interface {
 	// WriteEnv renders the stack env for images and the ADDITIONAL_PLUGS
 	// JSON plugs.
 	WriteEnv(ctx context.Context, images []stack.Image, plugs string) error
+	// CheckKit fails (with a *stack.DroppedServicesError) when the kit
+	// WriteEnv renders lacks a service the stack has; preflight checks it.
+	CheckKit(ctx context.Context) error
 	// Configured returns the images and ADDITIONAL_PLUGS the engine's stack env
 	// pins; no images when no clinic is configured.
 	Configured(ctx context.Context) ([]stack.Image, string, error)
@@ -697,7 +700,7 @@ func (c *Coordinator) hook(point string) error {
 }
 
 // Permanent reports whether err is deterministic, so a step that returned it
-// is not retried: an image build the agent classified as failing the same
+// is not retried: a deployment kit missing a service the stack has, an image build the agent classified as failing the same
 // way every time (a missing package or repository, a resolver conflict, a
 // compile error), an op the agent rejected as invalid, or an error marked
 // with MarkPermanent.
@@ -710,6 +713,10 @@ func Permanent(err error) bool {
 	}
 	var se *SettingError
 	if errors.As(err, &se) {
+		return true
+	}
+	var dse *stack.DroppedServicesError
+	if errors.As(err, &dse) {
 		return true
 	}
 	var oe *protocol.OpError

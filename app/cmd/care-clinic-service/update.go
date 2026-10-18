@@ -34,7 +34,11 @@ flags:
   --feed url               updates.json URL (default $CARE_UPDATES_URL)
   --state dir              state directory (default <config>/care-clinic/updates)
   --desktop-version v      the installed desktop app's version (required)
-  --deployments dir        deployment kit (default deployments)
+  --deployments dir        deployment kit (default: the kit built into
+                           care-clinic-service, with the clinic's backend.env
+                           and frontend.env from the desktop app's install dir)
+  --force                  apply a kit that lacks a service the clinic runs
+                           (compose removes it; refused by default)
   --origin https://host    extra origin the clinic is served on (repeatable)
   --images dir             scripts/dev-images.sh output with care-backend-builder,
                            used to build custom plugins when the feed has no
@@ -48,7 +52,12 @@ type coordFlags struct {
 	fs                         *flag.FlagSet
 	feedURL, stateDir, desktop *string
 	kit, images                *string
+	force                      *bool
 	origins                    listFlag
+
+	kitResolved bool
+	kitDir      fs.FS
+	kitErr      error
 }
 
 func newCoordFlags(name string) *coordFlags {
@@ -56,7 +65,8 @@ func newCoordFlags(name string) *coordFlags {
 	f.feedURL = f.fs.String("feed", os.Getenv("CARE_UPDATES_URL"), "")
 	f.stateDir = f.fs.String("state", "", "")
 	f.desktop = f.fs.String("desktop-version", "", "")
-	f.kit = f.fs.String("deployments", "deployments", "")
+	f.kit = f.fs.String("deployments", "", "")
+	f.force = f.fs.Bool("force", false, "")
 	f.images = f.fs.String("images", os.Getenv("CARE_CLINIC_DEV_IMAGES"), "")
 	f.fs.Var(&f.origins, "origin", "")
 	return f
@@ -85,7 +95,12 @@ func (f *coordFlags) open(ctx context.Context, c *control.Client) (*updates.Coor
 			return nil, err
 		}
 	}
-	feEnv, err := kitFrontendEnv(os.DirFS(*f.kit))
+	// Read-only commands work without a kit; writes check needKit first.
+	kit, err := f.kitFS()
+	if err != nil {
+		kit = noKit{}
+	}
+	feEnv, err := kitFrontendEnv(kit)
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +114,8 @@ func (f *coordFlags) open(ctx context.Context, c *control.Client) (*updates.Coor
 		AllowUnsigned: feed.UnsignedFeedAllowed(),
 		Service:       c, Agent: updates.ClientAgent{Control: c, Log: logf},
 		Stack: updates.RuntimeStack{
-			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: logf},
-			Kit:     os.DirFS(*f.kit), Host: cfg.MDNSName + ".local", Origins: f.origins,
+			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: logf, AllowDroppedServices: *f.force},
+			Kit:     kit, Host: cfg.MDNSName + ".local", Origins: f.origins,
 		},
 		DesktopVersion: *f.desktop, DevBuilders: devBuilders, FrontendEnv: feEnv, Log: logf,
 	})
@@ -124,10 +139,8 @@ func kitFrontendEnv(kit fs.FS) (map[string]string, error) {
 // needKit fails unless the deployment kit is there (commands that write
 // the stack env need it).
 func (f *coordFlags) needKit() error {
-	if _, err := os.Stat(filepath.Join(*f.kit, "docker-compose.yml")); err != nil {
-		return fmt.Errorf("deployment kit: %w (pass --deployments)", err)
-	}
-	return nil
+	_, err := f.kitFS()
+	return err
 }
 
 func updateCtl(ctx context.Context, c *control.Client, args []string) (any, error) {

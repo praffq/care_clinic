@@ -32,8 +32,7 @@ It never migrates or updates. Before shutting the VM down it runs
 `not_installed`, `starting`, `running`, `failed` (with `error`), `stopping`
 or `stopped`; per-container state is `ctl clinic status`.
 
-Install a clinic without the app from dev images (`scripts/dev-images.sh`),
-run from the repo root so `deployments/` is found:
+Install a clinic without the app from dev images (`scripts/dev-images.sh`):
 
 ```sh
 B='/Library/Application Support/care-clinic/bin/care-clinic-service'
@@ -43,7 +42,11 @@ B='/Library/Application Support/care-clinic/bin/care-clinic-service'
 "$B" ctl restart                       # the stack comes back on its own
 ```
 
-`install` renders `deployments/` for `<mdns_name>.local`, loads the images
+`install` renders the deployment kit built into the binary (`build.sh`
+stages `deployments/`; `--deployments dir` names another) with the clinic's
+`backend.env` and `frontend.env` from the app's install folder. A kit that
+lacks a service the stack has is refused unless `--force`. It renders for
+`<mdns_name>.local`, loads the images
 (digest-verified by the agent), uploads the config, runs migrations and
 starts the stack. Secrets are generated once and kept in
 `~/Library/Application Support/care-clinic/clinic/secrets.env`; see

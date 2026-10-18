@@ -122,6 +122,9 @@ func (c *Coordinator) carePreflight(ctx context.Context, j *Journal) error {
 	if err != nil {
 		return fmt.Errorf("engine status: %w", err)
 	}
+	if err := c.o.Stack.CheckKit(ctx); err != nil {
+		return err
+	}
 	db, err := c.o.Stack.DBSize(ctx)
 	if err != nil {
 		return fmt.Errorf("database size: %w", err)

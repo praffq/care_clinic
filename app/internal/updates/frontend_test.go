@@ -10,6 +10,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
 
@@ -295,5 +296,38 @@ func TestPluginBuildFailsFast(t *testing.T) {
 	h.wantOn("0.1.0", "A")
 	if e := h.lastHistory(); !strings.Contains(e.Error, "No matching distribution") {
 		t.Fatalf("history = %+v", e)
+	}
+}
+
+func TestStaleKitRefusedAtPreflight(t *testing.T) {
+	h := newHarness(t, withKitEnv)
+	h.installWithBuilders()
+	h.w.KitErr = &stack.DroppedServicesError{Services: []protocol.Service{protocol.ServiceBackup}}
+	before := len(h.w.Calls)
+	_, err := h.c.SetFrontendSettings(context.Background(), settings("REACT_APP_TITLE", "Clinic"))
+	oe, ok := errors.AsType[*updates.OpError](err)
+	if !ok || oe.Result != updates.ResultRolledBack || oe.Step != updates.StepPreflight || !strings.Contains(err.Error(), "no backup service") {
+		t.Fatalf("err = %v", err)
+	}
+	if !updates.Permanent(oe.Err) {
+		t.Fatalf("not permanent: %v", oe.Err)
+	}
+	for _, c := range h.w.Calls[before:] {
+		if strings.HasPrefix(c, "op ") || c == "WriteEnv" || c == "Backup" {
+			t.Errorf("stale kit: %s was run", c)
+		}
+	}
+	err = h.c.SetPlugins(context.Background(), h.enable(plugins.Plugin{ID: "care_x", Package: "care-x", Version: "==1.0"}))
+	if oe, ok := errors.AsType[*updates.OpError](err); !ok || oe.Step != updates.StepPreflight {
+		t.Fatalf("plugins err = %v", err)
+	}
+	if n := h.w.Count("Backup"); n != 0 {
+		t.Fatalf("%d backups with a stale kit", n)
+	}
+	h.wantOn("0.1.0", "A")
+
+	h.w.KitErr = nil
+	if _, err := h.c.SetFrontendSettings(context.Background(), settings("REACT_APP_TITLE", "Clinic")); err != nil {
+		t.Fatal(err)
 	}
 }

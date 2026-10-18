@@ -21,6 +21,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
+	"go.yaml.in/yaml/v3"
 )
 
 // Service is the part of the host service's control client the runtime uses.
@@ -41,6 +42,9 @@ type Runtime struct {
 	Log func(string)
 	// Progress receives byte counts for the "images" step.
 	Progress progress.Func
+	// AllowDroppedServices lets Configure render a kit whose compose file
+	// lacks a service the running stack has (see CheckKit).
+	AllowDroppedServices bool
 }
 
 // StepImages is the progress step Images reports.
@@ -129,6 +133,9 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 	if err != nil {
 		return err
 	}
+	if err := r.checkServices(ctx, files["compose.yml"]); err != nil {
+		return err
+	}
 	r.logf("Uploading the clinic configuration for %s", host)
 	ag := r.Service.Agent()
 	for _, name := range slices.Sorted(maps.Keys(files)) {
@@ -142,6 +149,71 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 		return fmt.Errorf("enable PROXY protocol: %w", err)
 	}
 	return nil
+}
+
+// DroppedServicesError is the refusal to render a deployment kit whose
+// compose file lacks services the clinic's stack has: compose would remove
+// them (a kit without backup made every later update fail at its backup).
+type DroppedServicesError struct {
+	Services []protocol.Service
+}
+
+func (e *DroppedServicesError) Error() string {
+	names := make([]string, len(e.Services))
+	for i, s := range e.Services {
+		names[i] = string(s)
+	}
+	return fmt.Sprintf("the deployment kit has no %s service, which the clinic is running: "+
+		"the kit is out of date, so its configuration was not applied", strings.Join(names, ", "))
+}
+
+// CheckKit returns a *DroppedServicesError when kit's docker-compose.yml
+// lacks a service the stack has (running or stopped), unless
+// AllowDroppedServices. Configure checks the same before uploading.
+func (r *Runtime) CheckKit(ctx context.Context, kit fs.FS) error {
+	compose, err := fs.ReadFile(kit, "docker-compose.yml")
+	if err != nil {
+		return fmt.Errorf("deployment kit: %w", err)
+	}
+	return r.checkServices(ctx, compose)
+}
+
+func (r *Runtime) checkServices(ctx context.Context, compose []byte) error {
+	if r.AllowDroppedServices {
+		return nil
+	}
+	have, err := ComposeServices(compose)
+	if err != nil {
+		return err
+	}
+	st, err := r.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("check the clinic's services before changing its configuration: %w", err)
+	}
+	var dropped []protocol.Service
+	for _, s := range st.Services {
+		if !slices.Contains(have, string(s.Name)) && !slices.Contains(dropped, s.Name) {
+			dropped = append(dropped, s.Name)
+		}
+	}
+	if len(dropped) > 0 {
+		return &DroppedServicesError{Services: dropped}
+	}
+	return nil
+}
+
+// ComposeServices lists the services a compose file defines, sorted.
+func ComposeServices(compose []byte) ([]string, error) {
+	var c struct {
+		Services map[string]yaml.Node `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &c); err != nil {
+		return nil, fmt.Errorf("deployment kit: docker-compose.yml: %w", err)
+	}
+	if len(c.Services) == 0 {
+		return nil, errors.New("deployment kit: docker-compose.yml defines no services")
+	}
+	return slices.Sorted(maps.Keys(c.Services)), nil
 }
 
 // Images loads (tarball) or pulls each image; the agent verifies digests.

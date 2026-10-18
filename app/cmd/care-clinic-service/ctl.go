@@ -16,6 +16,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 )
 
 const ctlUsage = `usage: care-clinic-service ctl [--dev] [--root dir] [--socket path] <command>
@@ -88,6 +89,9 @@ func ctl(args []string) int {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ctl:", err)
+		if _, ok := errors.AsType[*stack.DroppedServicesError](err); ok {
+			fmt.Fprintln(os.Stderr, "ctl: use the kit this care-clinic-service was built with (omit --deployments), or pass --force to remove those services")
+		}
 		return 1
 	}
 	return 0
