@@ -290,6 +290,9 @@ func (v *validator) images(path string, imgs map[protocol.ImageRole]ImageRef, ro
 			v.add(p+"."+fe.Field, "%s", fe.Msg)
 		}
 		v.url(p+".tar", img.Tar, false)
+		if img.Size < 0 {
+			v.add(p+".size", "must be >= 0")
+		}
 	}
 }
 

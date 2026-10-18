@@ -51,6 +51,7 @@ type Image struct {
 	Digest  protocol.Digest    `json:"digest"`
 	URL     string             `json:"url,omitempty"`
 	Tarball string             `json:"tarball,omitempty"`
+	Size    int64              `json:"size,omitempty"`
 }
 
 // StackImages converts images for the stack package.

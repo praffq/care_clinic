@@ -33,7 +33,7 @@ func TestResolve(t *testing.T) {
 	fallback := filepath.Join(root, "logs")
 
 	d, notes, err := Resolve(root, fallback)
-	if err != nil || d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], "no user is recorded") {
+	if err != nil || d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], UserFile) {
 		t.Fatalf("no log-user: %v %v %q", d, err, notes)
 	}
 
@@ -137,16 +137,14 @@ func newCollector(t *testing.T, ag Agent, root string) (*Collector, *logdir.Dir)
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return New(Config{
-		Dir:           d,
-		Agent:         ag,
-		EngineVersion: func() string { return "0.1.7" },
-		StatePath:     filepath.Join(root, StateFile),
-		Notes:         []string{"startup note"},
-		BackoffMin:    10 * time.Millisecond,
-		BackoffMax:    20 * time.Millisecond,
-		ReadyPoll:     10 * time.Millisecond,
-		SaveEvery:     10 * time.Millisecond,
-		UpdateRetry:   time.Hour,
+		Dir:        d,
+		Agent:      ag,
+		StatePath:  filepath.Join(root, StateFile),
+		Notes:      []string{"startup note"},
+		BackoffMin: 10 * time.Millisecond,
+		BackoffMax: 20 * time.Millisecond,
+		ReadyPoll:  10 * time.Millisecond,
+		SaveEvery:  10 * time.Millisecond,
 	}), d
 }
 
@@ -267,49 +265,6 @@ func TestCollectorResumesAfterInterruption(t *testing.T) {
 	<-done2
 	if s := fe2.nth(protocol.OpLogsSystem, 1).(*protocol.LogsSystem); s.Cursors[protocol.LogSourceMessages].Offset != 33 {
 		t.Fatalf("after a service restart the system stream resumed from %+v", s.Cursors)
-	}
-}
-
-func TestCollectorOldEngineWithoutLogOps(t *testing.T) {
-	fe := &fakeEngine{calls: map[string]int{}}
-	old := func(h http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/v1/ops/logs.") {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				_ = json.NewEncoder(w).Encode(&protocol.UnknownOpError{Op: strings.TrimPrefix(r.URL.Path, "/v1/ops/")})
-				return
-			}
-			h.ServeHTTP(w, r)
-		})
-	}
-	root := t.TempDir()
-	c, d := newCollector(t, newAgent(t, fe, old), root)
-	console := c.ConsoleWriter()
-	if _, err := console.Write([]byte("care-init: switching root\n")); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { c.Run(ctx); close(done) }()
-	waitUntil(t, "update notes", func() bool {
-		return strings.Count(fileText(d, CollectorLog), "engine update required for guest logs") == 2
-	})
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-	if err := console.Close(); err != nil {
-		t.Fatal(err)
-	}
-	notes := fileText(d, CollectorLog)
-	if strings.Count(notes, "engine update required for guest logs") != 2 || !strings.Contains(notes, "CARE engine 0.1.7 does not support logs.system") {
-		t.Fatalf("collector.log:\n%s", notes)
-	}
-	if strings.Contains(notes, "interrupted") {
-		t.Fatalf("an old engine was reported as an interruption:\n%s", notes)
-	}
-	if got := fileText(d, ConsoleLog); got != "care-init: switching root\n" {
-		t.Fatalf("console log = %q", got)
 	}
 }
 

@@ -74,12 +74,16 @@ connections, which the Caddyfile requires.
 ## 3. Images
 
 Images are digest-pinned. `Runtime.Images` loads each image from a tarball,
-or pulls it by digest, and the agent verifies the digest. In this slice the
-desktop app takes images from `CARE_CLINIC_DEV_IMAGES` (a `scripts/dev-images.sh`
-output folder) or reuses the images already pinned in the engine's
-`stack.env`. Release images come in a later slice. There is no image building
-on the clinic computer and no CARE software update path; see
-[dev images](dev-images.md).
+or pulls it by digest, and the agent verifies the digest. A failure names the
+image (`stack.ImageError`) and tells an image missing from the registry, where
+trying again can't help, from a network failure. The desktop app takes images
+from `CARE_CLINIC_DEV_IMAGES` (a `scripts/dev-images.sh` output folder),
+reuses the images already pinned in the engine's `stack.env`, or else
+installs the newest compatible release from the update feed
+([onboarding](onboarding.md#where-the-images-come-from)).
+`ctl clinic install --images dir` loads dev images; without `--images` it
+installs from the feed the same way (`--feed`, `--desktop-version`) and
+records the release in `installed.json`. See [dev images](dev-images.md).
 
 ## 4. Setup and Start
 

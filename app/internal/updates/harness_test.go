@@ -194,7 +194,7 @@ func careVersion(name string) string { return "3.1.0+be." + name }
 func careReleased(name string) time.Time { return base.Add(time.Duration(name[0]-'A') * time.Minute) }
 
 func (h *harness) image(repo, name string, withTar bool) map[string]any {
-	img := map[string]any{"ref": "example.org/" + repo + "@" + string(Digest(name)), "digest": string(Digest(name))}
+	img := map[string]any{"ref": "example.org/" + repo + "@" + string(Digest(name)), "digest": string(Digest(name)), "size": imageSize}
 	if withTar {
 		img["tar"] = h.serve("/images/"+name+".tar", updatestest.ImageTar("example.org/"+repo))
 	}

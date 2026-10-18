@@ -22,8 +22,9 @@ const hostSteps: Step[] = [
   { step: "engine", state: "done", detail: "Version 0.1.2" },
   { step: "engine-ready", state: "active" }, { step: "engine-ready", state: "done" },
   { step: "address", state: "active", detail: "care-hospital.local" }, { step: "address", state: "done", detail: "care-hospital.local" },
-  { step: "images", state: "active" },
-  { step: "images", state: "active", detail: "Downloading CARE server", done: 250e6, total: 1000e6 },
+  { step: "images", state: "active", detail: "Finding the newest CARE release" },
+  { step: "images", state: "active", detail: "Downloading CARE server (1 of 9)" },
+  { step: "images", state: "active", detail: "Downloading CARE server (1 of 9)", done: 250e6, total: 1000e6 },
   { step: "images", state: "done" },
   { step: "configure", state: "active" }, { step: "configure", state: "done" },
   { step: "database", state: "active" }, { step: "database", state: "done" },
@@ -31,7 +32,7 @@ const hostSteps: Step[] = [
   { step: "admin", state: "active" }, { step: "admin", state: "done" },
   { step: "computer", state: "active" },
 ];
-const downloading: Step = { step: "images", state: "active", detail: "Downloading CARE server", done: 250e6, total: 1000e6 };
+const downloading: Step = { step: "images", state: "active", detail: "Downloading CARE web app (2 of 9)", done: 250e6, total: 1000e6 };
 const send = (page: Page, ...steps: Step[]) => page.evaluate((list) => {
   for (const ev of list) window.careTest.emit("setup-progress", ev);
 }, steps);
@@ -204,6 +205,33 @@ for (const [platform, count] of [["windows", 7], ["darwin", 7]] as const) {
       await fits(page);
       await expect(retry(page)).toBeInViewport();
       await capture(page, `install-failed-${platform}-${size.width}x${size.height}`);
+    }
+  });
+}
+
+for (const [name, message] of [
+  ["an unreachable update server", "Couldn't reach the update server. Check the internet connection and try again."],
+  ["a missing image", "The CARE web app image (ghcr.io/ohcnetwork/care_fe@sha256:0123) isn't available from the image registry. Trying again won't help; update the app or ask your support contact."],
+  ["an incompatible release", "CARE 3.1.0 needs app ≥ 0.3.0 (this app is 0.1.5); update the app first."],
+] as const) {
+  test(`the failed screen explains ${name} and still fits`, async ({ page }) => {
+    await begin(page);
+    await send(page, ...hostSteps.slice(0, 11), downloading);
+    await expect(page.getByText("Downloading CARE web app (2 of 9)", { exact: true })).toBeVisible();
+    await page.evaluate((text) => {
+      window.careTest.fixtures.setupStarted = true;
+      window.careTest.emit("care-log", "error: setup: private diagnostics");
+      window.careTest.emit("setup-failed", { can_retry: true, message: text });
+      window.careTest.emit("care-done", 1, "setup");
+    }, message);
+    await expect(failedHeading(page)).toBeVisible();
+    await expect(page.getByText("It stopped at “Downloading CARE”.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: message })).toHaveText(message);
+    await expect(page.locator(".install-screen")).not.toContainText("private diagnostics");
+    for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) {
+      await page.setViewportSize(size);
+      await fits(page);
+      await expect(retry(page)).toBeInViewport();
     }
   });
 }

@@ -169,7 +169,7 @@ sequenceDiagram
 For setup, `markSetup=true` means the runner persists `SetupDone=true` only
 after the job succeeds, then emits `setup-done`. The frontend waits for both
 `setup-done` and the matching successful `care-done` before entering the
-panel. A failure emits `setup-failed {can_retry}` first. `RetrySetup` reuses
+panel. A failure emits `setup-failed {can_retry, message}` first. `RetrySetup` reuses
 the in-memory `setupAttempt` (and its password) under the same lock; it is
 lost when the app restarts. See [server onboarding](onboarding.md#6-install).
 
@@ -313,7 +313,7 @@ original text.
 | `care-done` | `0` or `1`, then the job label | An App job succeeded or failed. |
 | `care-error` | Title and detail | A job failed; the detail is already in the log. |
 | `setup-done` | `true` | Setup succeeded and `SetupDone` was saved. |
-| `setup-failed` | `SetupFailure {can_retry}` | Sent before the failed `care-done`. |
+| `setup-failed` | `SetupFailure {can_retry, message}` | Sent before the failed `care-done`; `message` is the plain-words cause when known (see [onboarding](onboarding.md#setup-errors)). |
 | `service-status` | `ServiceState` | Service, engine, stack, forward and mDNS state changed. |
 | `uninstalled` | `true` | Uninstall finished and the configuration was reset. |
 | `app-update-progress` | `{phase, done, total}` | `downloading`, `verifying`, `ready`, `installing`, `restarting` or `installer`. |
@@ -327,7 +327,7 @@ original text.
 | `AppState` | `role`, `client_url`, `version`, `platform`, `setup_done`, `setup_started`, `mdns_name`. `setup_done` is false while removal is in progress. |
 | `hostcheck.Report` | `checks` (`id`, `title`, `level` ok/warn/fail, `detail`, optional `action`), `ready`. |
 | `ServiceState` | `installed`, `reachable`, `error`, `status` (the service API status), `summary` (`level`, `title`, `detail`, `running`, `notes`). Notes report mDNS conflicts and port listeners that failed. |
-| `SetupFailure` | `can_retry`. |
+| `SetupFailure` | `can_retry`, `message`. |
 | `AppUpdate` | `current`, `version`, `available`, `notes_url`, `asset`, `size`. |
 | `ConfirmationRequest`, `QuitRequest` | `id`, `title`, `message`. |
 | `NameStatus` | `ok`, `message`. |

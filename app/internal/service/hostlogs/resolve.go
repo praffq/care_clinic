@@ -1,9 +1,7 @@
 package hostlogs
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +45,6 @@ func Resolve(root, fallback string) (*logdir.Dir, []string, error) {
 	var notes []string
 	user, err := ReadUser(root)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		notes = append(notes, fmt.Sprintf("no user is recorded in %s, so logs are written to %s instead of a user's log folder; reinstall the service from the app to fix this", filepath.Join(root, UserFile), fallback))
 	case err != nil:
 		notes = append(notes, fmt.Sprintf("%v; logs are written to %s instead of the user's log folder", err, fallback))
 	default:

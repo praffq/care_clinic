@@ -33,10 +33,13 @@ It never migrates or updates. Before shutting the VM down it runs
 `not_installed`, `starting`, `running`, `failed` (with `error`), `stopping`
 or `stopped`; per-container state is `ctl clinic status`.
 
-Install a clinic without the app from dev images (`scripts/dev-images.sh`):
+Install a clinic without the app from the update feed (the newest CARE
+release this app version and the running engine support), or from dev images
+(`scripts/dev-images.sh`) with `--images`:
 
 ```sh
 B='/Library/Application Support/care-clinic/bin/care-clinic-service'
+"$B" ctl clinic install --feed "$CARE_UPDATES_URL" --desktop-version 0.2.0 --admin admin --admin-password '...'
 "$B" ctl clinic install --images dist/images --admin admin --admin-password '...'
 "$B" ctl clinic status
 "$B" ctl clinic logs caddy 50

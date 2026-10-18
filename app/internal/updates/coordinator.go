@@ -400,30 +400,9 @@ func (c *Coordinator) check(ctx context.Context, prefetch bool) (*CheckResult, e
 	}
 	defer unlock()
 
-	data, sig, err := c.o.Feed.Fetch(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("fetch update feed: %w", err)
-	}
-	ver, err := c.st.verified()
+	m, err := c.fetchFeed(ctx)
 	if err != nil {
 		return nil, err
-	}
-	now := c.now()
-	m, err := feed.Verify(data, sig, c.verifyOptions(now, ver.HighestRevision))
-	if err != nil {
-		c.logf("Rejected the update feed: %v", err)
-		return nil, fmt.Errorf("update feed rejected: %w", err)
-	}
-	fs := feed.State{HighestRevision: ver.HighestRevision}
-	fs.Record(data, m, now)
-	ver = Verified{HighestRevision: fs.HighestRevision, LastVerifiedAt: fs.LastVerifiedAt, ManifestSHA256: fs.ManifestSHA256, Manifest: data, Signature: sig, Unsigned: m.Unsigned}
-	if err := c.st.save(VerifiedFile, ver); err != nil {
-		return nil, err
-	}
-	if m.Unsigned {
-		c.logf("%s (revision %d)", UnsignedFeedWarning, m.Revision)
-	} else {
-		c.logf("Verified update feed revision %d", m.Revision)
 	}
 
 	in, err := c.installed()
@@ -470,6 +449,35 @@ func (c *Coordinator) check(ctx context.Context, prefetch bool) (*CheckResult, e
 		res.Prefetched = true
 	}
 	return res, nil
+}
+
+func (c *Coordinator) fetchFeed(ctx context.Context) (*feed.Manifest, error) {
+	data, sig, err := c.o.Feed.Fetch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: fetch update feed: %w", ErrFeedUnreachable, err)
+	}
+	ver, err := c.st.verified()
+	if err != nil {
+		return nil, err
+	}
+	now := c.now()
+	m, err := feed.Verify(data, sig, c.verifyOptions(now, ver.HighestRevision))
+	if err != nil {
+		c.logf("Rejected the update feed: %v", err)
+		return nil, fmt.Errorf("update feed rejected: %w", err)
+	}
+	fs := feed.State{HighestRevision: ver.HighestRevision}
+	fs.Record(data, m, now)
+	ver = Verified{HighestRevision: fs.HighestRevision, LastVerifiedAt: fs.LastVerifiedAt, ManifestSHA256: fs.ManifestSHA256, Manifest: data, Signature: sig, Unsigned: m.Unsigned}
+	if err := c.st.save(VerifiedFile, ver); err != nil {
+		return nil, err
+	}
+	if m.Unsigned {
+		c.logf("%s (revision %d)", UnsignedFeedWarning, m.Revision)
+	} else {
+		c.logf("Verified update feed revision %d", m.Revision)
+	}
+	return m, nil
 }
 
 // manifest re-verifies verified.json's feed (signature, revision, expiry).
@@ -1058,7 +1066,7 @@ func careImages(r *feed.CareRelease, m *feed.Manifest) []Image {
 	var out []Image
 	add := func(role protocol.ImageRole, ref feed.ImageRef) {
 		repo, _, _ := strings.Cut(ref.Ref, "@")
-		out = append(out, Image{Role: role, Repo: repo, Digest: ref.Digest, URL: ref.Tar})
+		out = append(out, Image{Role: role, Repo: repo, Digest: ref.Digest, URL: ref.Tar, Size: ref.Size})
 	}
 	for _, role := range protocol.ImageRoles {
 		if ref, ok := r.Images[role]; ok {

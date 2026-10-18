@@ -45,6 +45,7 @@ type Runtime struct {
 	// AllowDroppedServices lets Configure render a kit whose compose file
 	// lacks a service the running stack has (see CheckKit).
 	AllowDroppedServices bool
+	Have                 map[protocol.Digest]bool
 }
 
 // StepImages is the progress step Images reports.
@@ -233,34 +234,68 @@ func (r *Runtime) Images(ctx context.Context, images []Image) error {
 	}
 	load := r.Progress.Meter(StepImages, "", total)
 	for i, img := range images {
-		detail := fmt.Sprintf("%s (%d of %d)", imageTitle(img), i+1, len(images))
-		if img.Tarball == "" {
-			r.logf("Pulling %s", img.Ref())
-			frames := func(f protocol.Frame) {
-				if p := f.Progress; p != nil && p.Total > 0 {
-					r.Progress.Bytes(StepImages, "Downloading "+detail, p.Bytes, p.Total)
-				}
-				r.frames(f)
-			}
-			r.Progress.Start(StepImages, "Downloading "+detail)
-			if err := ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, frames); err != nil {
-				return err
-			}
+		if r.Have[img.Digest] {
+			r.logf("Already in the engine: %s", img.Ref())
 			continue
 		}
-		r.logf("Loading %s from %s", img.Ref(), filepath.Base(img.Tarball))
-		f, err := os.Open(img.Tarball)
-		if err != nil {
-			return err
+		detail := fmt.Sprintf("%s (%d of %d)", imageTitle(img), i+1, len(images))
+		if err := r.image(ctx, ag, img, detail, load); err != nil {
+			return &ImageError{Image: img, Err: err}
 		}
-		load.SetDetail("Loading " + detail)
-		err = ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, load.Reader(f), nil)
-		_ = f.Close()
-		if err != nil {
-			return err
+		if r.Have != nil {
+			r.Have[img.Digest] = true
 		}
 	}
 	return nil
+}
+
+func (r *Runtime) image(ctx context.Context, ag *client.Client, img Image, detail string, load *progress.Meter) error {
+	if img.Tarball == "" {
+		r.logf("Pulling %s", img.Ref())
+		frames := func(f protocol.Frame) {
+			if p := f.Progress; p != nil && p.Total > 0 {
+				r.Progress.Bytes(StepImages, "Downloading "+detail, p.Bytes, p.Total)
+			}
+			r.frames(f)
+		}
+		r.Progress.Start(StepImages, "Downloading "+detail)
+		return ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, frames)
+	}
+	r.logf("Loading %s from %s", img.Ref(), filepath.Base(img.Tarball))
+	f, err := os.Open(img.Tarball)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	load.SetDetail("Loading " + detail)
+	return ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, load.Reader(f), nil)
+}
+
+type ImageError struct {
+	Image Image
+	Err   error
+}
+
+func (e *ImageError) Error() string {
+	return fmt.Sprintf("%s image %s: %v", e.Image.Title(), e.Image.Ref(), e.Err)
+}
+
+func (e *ImageError) Unwrap() error { return e.Err }
+
+var missingImageText = []string{"manifest unknown", "not found", "pull access denied", "denied", "unauthorized", protocol.CodeDigestMismatch}
+
+func (e *ImageError) Missing() bool {
+	var oe *protocol.OpError
+	if errors.As(e.Err, &oe) && oe.Code == protocol.CodeDigestMismatch {
+		return true
+	}
+	msg := strings.ToLower(e.Err.Error())
+	for _, s := range missingImageText {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 var imageTitles = map[protocol.ImageRole]string{
@@ -271,6 +306,9 @@ var imageTitles = map[protocol.ImageRole]string{
 	protocol.ImageRolePostgres: "database",
 	protocol.ImageRoleRedis:    "task queue",
 	protocol.ImageRoleSilo:     "file storage",
+
+	protocol.ImageRoleBackendBuilder:  "CARE plugin builder",
+	protocol.ImageRoleFrontendBuilder: "CARE web app builder",
 }
 
 // imageTitle names an image for people.
@@ -280,6 +318,8 @@ func imageTitle(img Image) string {
 	}
 	return img.Repo
 }
+
+func (i Image) Title() string { return imageTitle(i) }
 
 // Install loads the images, configures the clinic for host and brings the
 // stack up migrated. It is safe to run again: secrets are kept and only

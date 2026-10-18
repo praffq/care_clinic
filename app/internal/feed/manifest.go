@@ -135,6 +135,7 @@ type ImageRef struct {
 	Ref    string          `json:"ref"`
 	Digest protocol.Digest `json:"digest"`
 	Tar    string          `json:"tar,omitempty"`
+	Size   int64           `json:"size,omitempty"`
 }
 
 // Version is a semver string. The parsed value is filled in by Verify.

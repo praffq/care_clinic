@@ -231,21 +231,86 @@ and still matches), then runs the `setup` job:
    the host certificate now exists, `Clinic.Setup` uploads it to the engine
    instead of generating or adopting another, so every backup is encrypted to
    the key the operator saved.
-5. Copy the deployment kit to the install folder, then `Clinic.Setup` loads the
-   CARE images into the engine and uploads the rendered configuration.
+5. Copy the deployment kit to the install folder, then `Clinic.Setup` puts
+   the CARE images in the engine (see [Where the images come
+   from](#where-the-images-come-from)) and uploads the rendered configuration.
 6. `Clinic.Start` migrates the database, brings the stack up, creates the
    `admin` login and offers to set up this Mac's browser for
    `https://<name>.local/` (hosts entry and certificate trust; skipping it
    doesn't stop the clinic).
+7. When CARE came from the update feed, record that release as installed
+   (`Coordinator.RecordInstall`), then re-apply the clinic's recorded plugins
+   and frontend settings (`Coordinator.Reinstalled`).
 
-Images come from `CARE_CLINIC_DEV_IMAGES` (a
-[`scripts/dev-images.sh`](dev-images.md) output folder) or, failing that, the
-images the engine's clinic already runs. Release images come in a later
-slice; without either, setup fails and suggests `ctl clinic install --images`.
+### Where the images come from
+
+In this order:
+
+1. `CARE_CLINIC_DEV_IMAGES` (a [`scripts/dev-images.sh`](dev-images.md)
+   output folder). It always wins, so development never touches the feed.
+2. The images the engine's clinic already runs (its `stack.env`), so a clinic
+   can be configured again without downloading anything.
+3. Otherwise the **update feed**: the newest CARE release this app and the
+   running engine can install. This is the normal path on a new computer.
+
+The feed path (`Clinic.Setup` calls `Clinic.FromFeed`, which `RunSetup` wires
+to `feedRelease` in `app_onboarding.go`) reuses the update coordinator
+([updates.md](updates.md)):
+
+1. `Coordinator.LatestCompatible` fetches `updates.json` (`CARE_UPDATES_URL`,
+   else the published feed) and verifies it with the same rules as an update
+   check: signed by a trusted key, or unsigned only in a build that allows
+   unsigned feeds, with the same warning in the log. The verified feed is
+   saved in `verified.json`. From `care[]` it picks the newest release
+   (semver, then `released_at`) that is not in `blocked` and whose `requires`
+   hold for this app's version and the engine version the agent reports
+   (`feed.LatestCompatibleCare`). The images are the release's `images`, the
+   feed's `support_images` and the release's `builders` (not part of the
+   stack, but custom plugins and frontend settings need them later).
+2. `Coordinator.PrepareInstall` checks the engine's free disk space before
+   anything is downloaded: 2 GiB plus twice the `size` the feed gives for
+   every image not yet in the engine (an image without `size` counts 0).
+   Development feeds with `tar` URLs have their tarballs downloaded here.
+3. `Runtime.Images` pulls each image by digest with the agent's `image.pull`
+   op, the same path an update's pre-fetch and images step use, and the agent
+   checks every pulled image carries its digest. Progress goes to the
+   "Downloading CARE" step as "Downloading CARE server (2 of 9)" with the
+   bytes the op reports. Every image that arrives is remembered for the
+   attempt (`Runtime.Have`), so **Try again** skips images already in the
+   engine and continues with the rest.
+4. `Clinic.Configure` renders the kit pinned to the release's images; the
+   rest of setup runs unchanged (migrations, admin login, plugins, health).
+   The release's `build_env` is what its frontend image was built with, so
+   the clinic starts on the release's frontend settings, and
+   `FrontendSettings` reports them as the release's.
+5. After `Clinic.Start`, `Coordinator.RecordInstall` writes `installed.json`
+   as a committed CARE update would (CARE version, `released_at`, every image
+   digest, the active engine) and adds an `applied` history entry with the
+   feed revision. Builders are looked up in the verified feed by that version,
+   so `ctl update check`, plugins and `ctl frontend` work without `--images`.
+
+`ctl clinic install` without `--images` does the same from the command line
+(it needs `--desktop-version` and a feed URL; see
+[clinic lifecycle](clinic-lifecycle.md#3-images)).
+
+### Setup errors
+
+The failure screen shows the error in plain words (`SetupFailure.message`,
+from `setupErrorMessage` in `app_onboarding.go`); the log file keeps the raw
+error.
+
+| Cause | Message | Try again helps |
+| --- | --- | --- |
+| No internet, update server down (`updates.ErrFeedUnreachable`) | "Couldn't reach the update server. Check the internet connection and try again." | Yes |
+| Feed fails verification | "CARE Clinic couldn't verify the update server's list of releases. …" | Later |
+| No compatible release (`feed.NoCompatibleError`) | What is needed, e.g. "CARE 3.1.0 needs app ≥ 0.3.0 (this app is 0.2.0); update the app first." | After updating |
+| Not enough engine disk (`updates.DiskSpaceError`) | "There isn't enough free space to download CARE (… free, … needed). …" | After freeing space |
+| Image download failed (`stack.ImageError`) | "Couldn't download the CARE web app image. Check the internet connection and try again; finished downloads are kept." | Yes |
+| Image missing from the registry, or wrong digest | "The CARE web app image (repo@digest) isn't available from the image registry. Trying again won't help; …" | No |
 
 Progress streams to the UI as `care-log` lines. Success emits `setup-done`
 and `care-done(0, "setup")`, and saves `setup_done`. A failure emits
-`setup-failed {can_retry}`:
+`setup-failed {can_retry, message}`:
 
 - **Try again** (`RetrySetup`) resumes the same attempt while the app is still
   open, skipping preparation that already finished.

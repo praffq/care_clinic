@@ -130,7 +130,7 @@ func releaseBuilder(r *feed.CareRelease, role protocol.ImageRole) *Image {
 		return nil
 	}
 	repo, _, _ := strings.Cut(ref.Ref, "@")
-	return &Image{Role: role, Repo: repo, Digest: ref.Digest, URL: ref.Tar}
+	return &Image{Role: role, Repo: repo, Digest: ref.Digest, URL: ref.Tar, Size: ref.Size}
 }
 
 // targetImages is what the stack env pins once j applies.

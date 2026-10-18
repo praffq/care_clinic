@@ -24,7 +24,7 @@ yourself after reading the privacy note below.
 | `engine-console.log` | care-clinic-service | The VM's serial console: kernel, `care-init` (initramfs) and OpenRC output, with a `=== engine VM boot ... ===` line per boot. |
 | `guest-system.log` | care-clinic-service | The guest's persistent system logs, one line per guest line, prefixed with its source: `messages:` (busybox syslogd, kernel messages through klogd), `docker:` (`/var/log/docker.log`) and `agent:` (`/var/log/care-engine-agent.log`). |
 | `containers/<name>.log` | care-clinic-service | stdout and stderr of each container (`care-backend-1`, `care-db-1`, ...), with Docker's timestamp on every line and `stderr:` before stderr lines. Container names, not service names, so replicas and one-off containers stay apart. |
-| `collector.log` | care-clinic-service | What the collector did: where it writes, engine stopped and started, streams interrupted and reconnected (with how long), gaps the guest reported, retention actions, write failures, and "engine update required for guest logs". |
+| `collector.log` | care-clinic-service | What the collector did: where it writes, engine stopped and started, streams interrupted and reconnected (with how long), gaps the guest reported, retention actions and write failures. |
 | `app-update-helper.log` | the app's update helper | Output of the in-place update helper (macOS shell script, Windows transcript), kept after the update's work folder is deleted. |
 
 Rotated copies sit next to each file as `<name>.1.log` and `<name>.2.log`.
@@ -52,11 +52,11 @@ it. Every component from the home folder down must be a plain folder owned by
 the user or root: symlinks and junctions are refused, and all file access goes
 through an `os.Root` so no file name can escape the folder. On macOS and Linux
 new files and folders are chowned to the user; on Windows they inherit the
-profile's ACL (the user, SYSTEM and Administrators). If the user can't be
-resolved the service writes the same files to its fallback folder,
+profile's ACL (the user, SYSTEM and Administrators). If `log-user` is missing
+or invalid, or the user can't be resolved, the service writes the same files to its fallback folder,
 `--log-dir` (`/Library/Logs/care-clinic`, `%ProgramData%\CARE Clinic\logs`,
 or `<root>/logs` with `--dev`), and the first lines of `collector.log` and
-`service.log` say why. `--log-file` still overrides where `service.log` goes.
+`service.log` say why.
 
 **`service.log`.** The service's `slog` output, via `internal/service/logfile`,
 which also makes the file the process's stderr.
@@ -125,15 +125,13 @@ logs use Docker's `json-file` driver, 5 MiB × 2 per container, in
 as the container exists. Containers created before an engine update keep their
 old log settings until they are recreated.
 
-## Compatibility
+## Engine requirements
 
-The ops are new in the agent protocol (`internal/engine/protocol/logs.go`).
-An engine without them answers `unknown_op`; the collector then writes
-"engine update required for guest logs" to `collector.log` once per engine
-version and op, keeps writing `service.log`, `engine-console.log` and
-`collector.log`, and tries again after the engine version changes (or every
-10 minutes). Guest logs need an engine built from this source: the agent ops,
-klogd, and the smaller Docker and logrotate limits ship in the engine image.
+Guest logs need an engine built from this source: the `logs.*` agent ops
+(`internal/engine/protocol/logs.go`), klogd, and the smaller Docker and
+logrotate limits ship in the engine image. There is no fallback for older
+engines: a failed log stream is reported in `collector.log` and retried like
+any other interruption.
 
 ## Privacy
 

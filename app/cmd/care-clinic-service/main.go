@@ -98,7 +98,6 @@ func serve(ctx context.Context, args []string) error {
 	group := fs.String("group", "care-clinic", "group whose members may use the control socket (ignored with --dev)")
 	mem := fs.Uint64("mem", 0, "VM memory in MiB (default engine default)")
 	cpus := fs.Uint("cpus", 0, "VM CPUs (default engine default)")
-	logFile := fs.String("log-file", "", "write the service log to this size-rotated file, which also becomes stderr (default: service.log in the log folder, or stderr with --dev)")
 	logDir := fs.String("log-dir", "", "log folder used when the installed user's log folder can't be used (default <root>/logs)")
 	advertiseMDNS := fs.Bool("mdns", true, "advertise <mdns_name>.local on the LAN")
 	fwd := map[string]*string{}
@@ -150,17 +149,7 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("log folder: %w", err)
 	}
 	var logOut io.Writer = os.Stderr
-	switch {
-	case *logFile != "":
-		if err := os.MkdirAll(filepath.Dir(*logFile), 0o755); err != nil {
-			return err
-		}
-		f, err := logfile.Open(*logFile, logdir.MaxFileBytes, logdir.KeepRotated)
-		if err != nil {
-			return err
-		}
-		logOut = f
-	case !*dev:
+	if !*dev {
 		f, err := logfile.OpenIn(logs, hostlogs.ServiceLog, logdir.MaxFileBytes, logdir.KeepRotated)
 		if err != nil {
 			return err
@@ -170,13 +159,12 @@ func serve(ctx context.Context, args []string) error {
 	log := slog.New(slog.NewTextHandler(logOut, nil))
 	var sup *supervisor.Supervisor
 	collector := hostlogs.New(hostlogs.Config{
-		Dir:           logs,
-		Agent:         client.New(func(ctx context.Context) (net.Conn, error) { return sup.DialAgent(ctx) }),
-		Ready:         func() bool { return sup.Status().AgentReachable() },
-		EngineVersion: func() string { return sup.Status().EngineVersion },
-		StatePath:     filepath.Join(rootDir, hostlogs.StateFile),
-		Notes:         logNotes,
-		Log:           log,
+		Dir:       logs,
+		Agent:     client.New(func(ctx context.Context) (net.Conn, error) { return sup.DialAgent(ctx) }),
+		Ready:     func() bool { return sup.Status().AgentReachable() },
+		StatePath: filepath.Join(rootDir, hostlogs.StateFile),
+		Notes:     logNotes,
+		Log:       log,
 	})
 	console := collector.ConsoleWriter()
 	defer func() { _ = console.Close() }()

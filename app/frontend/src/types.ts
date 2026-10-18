@@ -46,7 +46,7 @@ export type SetupBackupStatus = {
 
 export type BackupSpace = { dir: string; free: number; total: number; need: number; days_left: number };
 
-export type SetupFailure = { can_retry: boolean };
+export type SetupFailure = { can_retry: boolean; message?: string };
 
 /** One row of HostChecks: what this computer needs before setup. */
 export type HostCheck = {

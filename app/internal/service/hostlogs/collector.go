@@ -2,7 +2,6 @@ package hostlogs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,21 +20,19 @@ type Agent interface {
 }
 
 type Config struct {
-	Dir           *logdir.Dir
-	Agent         Agent
-	Ready         func() bool
-	EngineVersion func() string
-	StatePath     string
-	Notes         []string
-	Log           *slog.Logger
-	Now           func() time.Time
+	Dir       *logdir.Dir
+	Agent     Agent
+	Ready     func() bool
+	StatePath string
+	Notes     []string
+	Log       *slog.Logger
+	Now       func() time.Time
 
 	BackoffMin  time.Duration
 	BackoffMax  time.Duration
 	ReadyPoll   time.Duration
 	SweepEvery  time.Duration
 	SaveEvery   time.Duration
-	UpdateRetry time.Duration
 	IdleClose   time.Duration
 	StableAfter time.Duration
 
@@ -57,7 +54,6 @@ func (c *Config) setDefaults() {
 	def(&c.ReadyPoll, 2*time.Second)
 	def(&c.SweepEvery, time.Minute)
 	def(&c.SaveEvery, 5*time.Second)
-	def(&c.UpdateRetry, 10*time.Minute)
 	def(&c.IdleClose, 10*time.Minute)
 	def(&c.StableAfter, time.Minute)
 	def(&c.MaxAge, logdir.MaxAge)
@@ -78,9 +74,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.Ready == nil {
 		c.Ready = func() bool { return true }
-	}
-	if c.EngineVersion == nil {
-		c.EngineVersion = func() string { return "" }
 	}
 	if c.Log == nil {
 		c.Log = slog.New(slog.DiscardHandler)
@@ -149,8 +142,8 @@ func (c *Collector) Run(ctx context.Context) {
 	c.Note("collecting CARE Clinic logs into %s", c.cfg.Dir.Path())
 	var wg sync.WaitGroup
 	wg.Go(func() { c.watchEngine(ctx) })
-	wg.Go(func() { c.stream(ctx, "guest system logs", protocol.OpLogsSystem, c.runSystem) })
-	wg.Go(func() { c.stream(ctx, "container logs", protocol.OpLogsContainers, c.runContainers) })
+	wg.Go(func() { c.stream(ctx, "guest system logs", c.runSystem) })
+	wg.Go(func() { c.stream(ctx, "container logs", c.runContainers) })
 	wg.Go(func() { c.housekeeping(ctx) })
 	wg.Wait()
 	if err := c.state.save(false); err != nil {
@@ -209,7 +202,7 @@ func (c *Collector) waitReady(ctx context.Context) bool {
 	return true
 }
 
-func (c *Collector) stream(ctx context.Context, what, op string, run func(context.Context, func()) error) {
+func (c *Collector) stream(ctx context.Context, what string, run func(context.Context, func()) error) {
 	backoff := c.cfg.BackoffMin
 	var lastErr string
 	var lostAt time.Time
@@ -229,11 +222,6 @@ func (c *Collector) stream(ctx context.Context, what, op string, run func(contex
 		if ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, client.ErrUnknownOp) {
-			c.unsupportedEngine(op)
-			c.waitEngineChange(ctx)
-			continue
-		}
 		if c.cfg.Now().Sub(start) >= c.cfg.StableAfter {
 			backoff = c.cfg.BackoffMin
 		}
@@ -252,40 +240,6 @@ func (c *Collector) stream(ctx context.Context, what, op string, run func(contex
 			return
 		}
 		backoff = min(backoff*2, c.cfg.BackoffMax)
-	}
-}
-
-func (c *Collector) unsupportedEngine(op string) {
-	v := c.cfg.EngineVersion()
-	key := v + "|" + op
-	c.mu.Lock()
-	seen := c.once[key]
-	c.once[key] = true
-	c.mu.Unlock()
-	if seen {
-		return
-	}
-	name := "this CARE engine"
-	if v != "" {
-		name = "CARE engine " + v
-	}
-	c.Note("engine update required for guest logs: %s does not support %s, so %s are not collected; %s, %s and %s are still written", name, op, describeOp(op), ServiceLog, ConsoleLog, CollectorLog)
-}
-
-func describeOp(op string) string {
-	if op == protocol.OpLogsContainers {
-		return ContainersDir + "/*.log"
-	}
-	return SystemLog
-}
-
-func (c *Collector) waitEngineChange(ctx context.Context) {
-	v := c.cfg.EngineVersion()
-	deadline := c.cfg.Now().Add(c.cfg.UpdateRetry)
-	for c.cfg.EngineVersion() == v && c.cfg.Now().Before(deadline) {
-		if !c.sleep(ctx, c.cfg.ReadyPoll) {
-			return
-		}
 	}
 }
 
