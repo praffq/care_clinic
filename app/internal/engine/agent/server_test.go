@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -134,7 +135,8 @@ func TestStatus(t *testing.T) {
 	if st.EngineVersion != "0.1.0-test" || !st.DockerReady || st.DataSchema != 3 {
 		t.Fatalf("status = %+v", st)
 	}
-	if st.DiskTotalBytes == 0 || st.DiskFreeBytes > st.DiskTotalBytes {
+	// The agent runs in the Linux guest; disk usage is only implemented on unix.
+	if runtime.GOOS != "windows" && (st.DiskTotalBytes == 0 || st.DiskFreeBytes > st.DiskTotalBytes) {
 		t.Fatalf("disk = %d/%d", st.DiskFreeBytes, st.DiskTotalBytes)
 	}
 }
@@ -384,7 +386,8 @@ func TestFilesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", fi.Mode())
 	}
 	entries, _ := os.ReadDir(filepath.Dir(path))
@@ -577,7 +580,7 @@ func TestDiagnosticsRedacted(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &rep); err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Containers) != 2 || rep.DiskTotalBytes == 0 || rep.EngineVersion != "0.1.0-test" {
+	if len(rep.Containers) != 2 || (runtime.GOOS != "windows" && rep.DiskTotalBytes == 0) || rep.EngineVersion != "0.1.0-test" {
 		t.Fatalf("report = %+v", rep)
 	}
 	if !slices.ContainsFunc(rep.AgentLog, func(l string) bool { return strings.Contains(l, "op stack.up: failed") }) {

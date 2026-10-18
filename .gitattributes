@@ -2,3 +2,5 @@
 # them LF so a Windows checkout can't introduce CRLF that the container shell trips on.
 *.sh text eol=lf
 Caddyfile text eol=lf
+# Workflows are parsed by tests (internal/release) with line-anchored regexps.
+.github/workflows/*.yml text eol=lf

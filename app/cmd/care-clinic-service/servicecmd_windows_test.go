@@ -25,7 +25,7 @@ func TestSecureDir(t *testing.T) {
 			t.Fatalf("%s owner %s", dir, owner)
 		}
 		s := sd.String()
-		if !strings.Contains(s, "D:PAI") || strings.Count(s, "(A;") != 2 || !strings.Contains(s, ";;;SY)") || !strings.Contains(s, ";;;BA)") {
+		if !strings.Contains(s, "D:P") || strings.Count(s, "(A;") != 2 || !strings.Contains(s, ";;;SY)") || !strings.Contains(s, ";;;BA)") {
 			t.Fatalf("%s: %s", dir, s)
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,8 @@ func TestExportBackupRecoveryKey(t *testing.T) {
 	if err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("saved key differs: %v", err)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", fi.Mode())
 	}
 	if _, err := a.ExportBackupRecoveryKey(settingsPassword); err == nil {

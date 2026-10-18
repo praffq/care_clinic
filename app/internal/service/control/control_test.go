@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -329,7 +330,8 @@ func TestInstallUploadRejects(t *testing.T) {
 		t.Fatalf("chunked upload: %d", resp.StatusCode)
 	}
 
-	if st, err := os.Stat(e.staging); err != nil || st.Mode().Perm() != 0o700 {
+	// Windows has no POSIX permission bits; files inherit the folder ACL.
+	if st, err := os.Stat(e.staging); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o700) {
 		t.Fatalf("staging dir: %v %v", st.Mode(), err)
 	}
 }

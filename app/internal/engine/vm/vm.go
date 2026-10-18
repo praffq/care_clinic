@@ -181,6 +181,10 @@ func EnsureDataDisk(path string, size int64) (created bool, err error) {
 		return false, nil
 	}
 	if err != nil {
+		// Windows fails an O_CREATE open of a directory with EISDIR, not EEXIST.
+		if st, serr := os.Stat(path); serr == nil && !st.Mode().IsRegular() {
+			return false, fmt.Errorf("data disk %s is not a regular file", path)
+		}
 		return false, fmt.Errorf("create data disk: %w", err)
 	}
 	if err := setSparse(f); err != nil {

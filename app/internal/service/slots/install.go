@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/atomicfile"
 )
 
 // maxFileBytes caps each bundle file; nothing else may be in the tarball.
@@ -260,17 +262,7 @@ func writeSynced(path string, data []byte) error {
 	return err
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
+func syncDir(dir string) error { return atomicfile.SyncDir(dir) }
 
 func hashFile(path string) (string, error) {
 	if st, err := os.Lstat(path); err != nil {

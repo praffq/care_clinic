@@ -1,8 +1,14 @@
 package appremoval
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestBundleOfAcceptsInstalledBundleOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("macOS .app bundle paths; filepath uses backslashes on Windows")
+	}
 	cases := []struct {
 		exe  string
 		want string

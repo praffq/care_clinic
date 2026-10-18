@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -114,6 +115,9 @@ func TestLinuxRemovalRetriesWhenBundleStillTrustsRoot(t *testing.T) {
 func TestLinuxInspectionReportsUnreadableBundle(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can read every file")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("mode 0o000 does not make a file unreadable on Windows")
 	}
 	dir := t.TempDir()
 	bundle := filepath.Join(dir, "ca-bundle.crt")
