@@ -74,6 +74,32 @@ type CareRelease struct {
 	Migrations bool                            `json:"migrations"`
 	Images     map[protocol.ImageRole]ImageRef `json:"images"`
 	BuildEnv   map[string]string               `json:"build_env,omitempty"`
+	// Builders are the toolchain images (protocol.BuilderRoles) matching
+	// Images, from which the engine derives plugin-enabled images.
+	Builders map[protocol.ImageRole]ImageRef `json:"builders,omitempty"`
+	// Sources records the upstream commits the images were built from.
+	Sources *CareSources `json:"sources,omitempty"`
+}
+
+// CareSources are the commits a CARE release was built from: CI compares
+// them with the configured refs' current heads to decide when to rebuild.
+type CareSources struct {
+	Backend  Source                  `json:"backend"`
+	Frontend Source                  `json:"frontend"`
+	Plugins  map[string]PluginSource `json:"plugins,omitempty"`
+}
+
+// Source is a git ref of a GitHub repository resolved to a commit.
+type Source struct {
+	Repo string `json:"repo"` // owner/name on github.com
+	Ref  string `json:"ref"`
+	Rev  string `json:"rev"` // full commit SHA
+}
+
+// PluginSource is a curated plugin built into a release.
+type PluginSource struct {
+	Source
+	Kind string `json:"kind"` // versions.PluginBackend or versions.PluginFrontend
 }
 
 // Newer reports whether c sorts after other: higher semver precedence first,

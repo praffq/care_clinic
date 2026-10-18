@@ -87,6 +87,8 @@ type CareArtifacts struct {
 	Migrations  bool                                 `json:"migrations"`
 	Images      map[protocol.ImageRole]feed.ImageRef `json:"images"`
 	BuildEnv    map[string]string                    `json:"build_env,omitempty"`
+	Builders    map[protocol.ImageRole]feed.ImageRef `json:"builders,omitempty"`
+	Sources     *feed.CareSources                    `json:"sources,omitempty"`
 }
 
 // BuildOptions are the inputs of Build.
@@ -166,7 +168,7 @@ func Build(o BuildOptions) (*feed.Manifest, error) {
 		if c.BackendRev == "" || c.FrontendRev == "" {
 			return nil, errors.New("artifacts care: backend_rev and frontend_rev are required")
 		}
-		v, err := feed.NewVersion(fmt.Sprintf("%s+be.%s.fe.%s", o.Pins.CareVersion, c.BackendRev, c.FrontendRev))
+		v, err := feed.NewVersion(careReleaseVersion(o.Pins.CareVersion, c))
 		if err != nil {
 			return nil, fmt.Errorf("care version: %w", err)
 		}
@@ -178,14 +180,13 @@ func Build(o BuildOptions) (*feed.Manifest, error) {
 		if err != nil {
 			return nil, fmt.Errorf("care requires engine: %w", err)
 		}
-		images := map[protocol.ImageRole]feed.ImageRef{}
-		for role, img := range c.Images {
-			ref, err := pinRef(img.Ref, img.Digest)
-			if err != nil {
-				return nil, fmt.Errorf("artifacts care.images.%s: %w", role, err)
-			}
-			img.Ref = ref
-			images[role] = img
+		images, err := pinImages("care.images", c.Images)
+		if err != nil {
+			return nil, err
+		}
+		builders, err := pinImages("care.builders", c.Builders)
+		if err != nil {
+			return nil, err
 		}
 		r := feed.CareRelease{
 			Version:    v,
@@ -194,6 +195,8 @@ func Build(o BuildOptions) (*feed.Manifest, error) {
 			Migrations: c.Migrations,
 			Images:     images,
 			BuildEnv:   c.BuildEnv,
+			Builders:   builders,
+			Sources:    c.Sources,
 		}
 		m.Care = slices.DeleteFunc(m.Care, func(x feed.CareRelease) bool { return x.Version.String() == v.String() })
 		m.Care = append(m.Care, r)

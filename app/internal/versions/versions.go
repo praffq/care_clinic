@@ -21,12 +21,13 @@ const SchemaVersion = 1
 
 // File is the decoded contents of versions.yml.
 type File struct {
-	Schema  int             `yaml:"schema"`
-	Desktop Component       `yaml:"desktop"`
-	Engine  Component       `yaml:"engine"`
-	Care    Care            `yaml:"care"`
-	Images  Images          `yaml:"images"`
-	Tools   map[string]Tool `yaml:"tools"`
+	Schema  int               `yaml:"schema"`
+	Desktop Component         `yaml:"desktop"`
+	Engine  Component         `yaml:"engine"`
+	Care    Care              `yaml:"care"`
+	Images  Images            `yaml:"images"`
+	Plugins map[string]Plugin `yaml:"plugins"`
+	Tools   map[string]Tool   `yaml:"tools"`
 }
 
 // Component is a versioned artefact with compatibility requirements.
@@ -55,12 +56,33 @@ type Source struct {
 	Ref  string `yaml:"ref"`
 }
 
-// Images pins third-party container images.
+// Images pins third-party container images. Node and Nginx are the bases
+// of the frontend image, its builder and the plugin remote builds.
 type Images struct {
 	Postgres string `yaml:"postgres"`
 	Redis    string `yaml:"redis"`
 	Caddy    string `yaml:"caddy"`
 	Silo     string `yaml:"silo"`
+	Node     string `yaml:"node"`
+	Nginx    string `yaml:"nginx"`
+}
+
+// Plugin kinds.
+const (
+	// PluginBackend is a CARE Django app, pip-installed into the backend
+	// image; the runtime ADDITIONAL_PLUGS decides whether it is loaded.
+	PluginBackend = "backend"
+	// PluginFrontend is a module-federation remote built into the Caddy
+	// image and served under /plugins/<id>/.
+	PluginFrontend = "frontend"
+)
+
+// Plugin is a CARE plugin built into every release. Its map key is the
+// Django app name (backend) or PlugConfig slug (frontend).
+type Plugin struct {
+	Repo string `yaml:"repo"`
+	Ref  string `yaml:"ref"`
+	Kind string `yaml:"kind"`
 }
 
 // Tool is a downloadable host-side binary pinned by checksum.
@@ -142,6 +164,7 @@ var (
 	repoRE     = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$`)
 	sha256RE   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	toolNameRE = regexp.MustCompile(`^[a-z0-9]+(?:_[a-z0-9]+)*$`)
+	pluginRE   = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
 )
 
 func (f *File) validate() error {
@@ -172,13 +195,22 @@ func (f *File) validate() error {
 	e.image("images.redis", f.Images.Redis)
 	e.image("images.caddy", f.Images.Caddy)
 	e.image("images.silo", f.Images.Silo)
+	e.image("images.node", f.Images.Node)
+	e.image("images.nginx", f.Images.Nginx)
 
-	names := make([]string, 0, len(f.Tools))
-	for name := range f.Tools {
-		names = append(names, name)
+	for _, id := range sortedKeys(f.Plugins) {
+		p := "plugins." + id
+		if !pluginRE.MatchString(id) {
+			e.add(p, "id must be a lower_snake_case Python identifier")
+		}
+		pl := f.Plugins[id]
+		e.source(p, Source{Repo: pl.Repo, Ref: pl.Ref})
+		if pl.Kind != PluginBackend && pl.Kind != PluginFrontend {
+			e.add(p+".kind", "must be %q or %q, got %q", PluginBackend, PluginFrontend, pl.Kind)
+		}
 	}
-	sort.Strings(names)
-	for _, name := range names {
+
+	for _, name := range sortedKeys(f.Tools) {
 		p := "tools." + name
 		if !toolNameRE.MatchString(name) {
 			e.add(p, "name must be lower_snake_case")
@@ -194,6 +226,15 @@ func (f *File) validate() error {
 		f.Tools[name] = t
 	}
 	return errors.Join(e...)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (e *errs) version(path string, v *Version) {

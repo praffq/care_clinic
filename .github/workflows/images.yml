@@ -1,18 +1,35 @@
 name: Images
 
-# Builds the images CARE Clinic owns (care-backend, care-frontend, care-caddy,
-# care-backup) for linux/amd64 and linux/arm64 on native runners with the same
-# definitions as local dev (scripts/dev-images.sh --push), pushes them to
-# ghcr.io/<this repo>/<name>, and uploads their digests as the "images"
-# artifact (images.json is the care + support_images part of a `release
-# generate` artifacts file). See docs/ci-publishing.md.
+# Builds the images CARE Clinic owns (care-backend and care-frontend with the
+# versions.yml plugins, their builder images, care-caddy, care-backup) for
+# linux/amd64 and linux/arm64 on native runners with the same definitions as
+# local dev (scripts/dev-images.sh --push), smoke-tests the backend with every
+# plugin enabled, pushes them to ghcr.io/<this repo>/<name>, and uploads their
+# digests as the "images" artifact (images.json is the care + support_images
+# part of a `release generate` artifacts file). The backend, frontend and
+# plugin refs are resolved to commits once, in the plan job, and recorded in
+# images.json. Also called by track.yml. See docs/ci-publishing.md.
 on:
   workflow_dispatch:
     inputs:
+      refs:
+        description: "Ref overrides, space-separated NAME=REF (NAME: backend, frontend or a plugin id)"
+        type: string
+        default: ""
       demo:
         description: Also build the demo-only backend images (care-backend-demo-b, care-backend-demo-c-broken)
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      sources:
+        description: Resolved commits to build (scripts/dev-images.sh --print-sources JSON); default resolves the refs
+        type: string
+        default: ""
+      refs:
+        description: Ref overrides, space-separated NAME=REF
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -21,7 +38,11 @@ on:
       - deployments/.env
       - deployments/caddy.Dockerfile
       - deployments/backup.Dockerfile
+      - deployments/frontend.Dockerfile
+      - deployments/frontend-nginx.conf
+      - deployments/care-build-remote.sh
       - deployments/frontend.env
+      - scripts/smoke-backend.sh
       - demo/images/**
       - .github/workflows/images.yml
 
@@ -45,15 +66,45 @@ jobs:
       prefix: ${{ steps.plan.outputs.prefix }}
       tag: ${{ steps.plan.outputs.tag }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      sources: ${{ steps.sources.outputs.sources }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the backend, frontend and plugin refs
+        id: sources
+        env:
+          SOURCES: ${{ inputs.sources || '' }}
+          REFS: ${{ inputs.refs || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SOURCES" ]; then
+            printf '%s' "$SOURCES" >sources.json
+            args=(--sources sources.json)
+          else
+            args=()
+            for r in $REFS; do args+=(--ref "$r"); done
+          fi
+          scripts/dev-images.sh --print-sources ${args[@]+"${args[@]}"} >resolved.json
+          echo "sources=$(jq -c . resolved.json)" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Sources"
+            echo
+            echo "| Name | Repository | Ref | Commit |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '({backend, frontend} | to_entries[]), (.plugins | to_entries[])
+              | "| \(.key) | \(.value.repo) | \(.value.ref) | `\(.value.rev)` |"' resolved.json
+          } >>"$GITHUB_STEP_SUMMARY"
       - name: Choose registry prefix, tag and build matrix
         id: plan
         env:
           DEMO: ${{ inputs.demo || false }}
         run: |
           prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
-          tag="sha-${GITHUB_SHA::12}"
-          jobs='[{"only":"care-backend-A"},{"only":"care-frontend-A"},{"only":"care-caddy"},{"only":"care-backup"}]'
+          # Unique per run: track.yml rebuilds the same commit of this repo.
+          tag="sha-${GITHUB_SHA::12}-${GITHUB_RUN_ID}"
+          # The builders share their job (and its build cache) with their image.
+          jobs='[{"only":"care-backend-A --only care-backend-builder"},{"only":"care-frontend-A --only care-frontend-builder"},{"only":"care-caddy"},{"only":"care-backup"}]'
           if [ "$DEMO" = true ]; then
             jobs=$(jq -c '. + [{"only":"care-backend-B --only care-backend-C-broken"}]' <<<"$jobs")
           fi
@@ -94,10 +145,13 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
           ARCH: ${{ matrix.arch }}
           ONLY: ${{ matrix.only }}
+          SOURCES: ${{ needs.plan.outputs.sources }}
         run: |
-          # ONLY may hold several "--only" values (the demo job).
+          printf '%s' "$SOURCES" >"$RUNNER_TEMP/sources.json"
+          # ONLY may hold several "--only" values.
           # shellcheck disable=SC2086
-          scripts/dev-images.sh --push "$PREFIX" --tag "$TAG" --arch "$ARCH" --only $ONLY
+          scripts/dev-images.sh --push "$PREFIX" --tag "$TAG" --arch "$ARCH" \
+            --sources "$RUNNER_TEMP/sources.json" --only $ONLY
       - name: Name the digest artifact
         id: name
         env:
@@ -111,9 +165,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  smoke:
+    name: Smoke-test care-backend (plugins enabled)
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: manage.py check and migrate against a throwaway postgres
+        env:
+          IMAGE: ${{ needs.plan.outputs.prefix }}/care-backend:${{ needs.plan.outputs.tag }}-amd64
+        run: |
+          docker pull -q "$IMAGE"
+          scripts/smoke-backend.sh "$IMAGE"
+
   merge:
     name: Publish multi-arch images
-    needs: [plan, build]
+    needs: [plan, build, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -186,27 +264,35 @@ jobs:
             echo "$image -> $digest"
           done
 
+          # Every image was built from the plan job's sources.
+          jq -c 'select(.sources != null) | .sources' push/*.json | sort -u >out/sources.jsonl
+          [ "$(wc -l <out/sources.jsonl)" -eq 1 ] || { echo "::error::images disagree on sources"; cat out/sources.jsonl; exit 1; }
+
           # images.json: the care + support_images sections of a `release
           # generate` artifacts file (docs/updates-feed.md).
-          jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json \
+          jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json --slurpfile src out/sources.jsonl \
             --arg released_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-            ($i[0]) as $i | ($s[0]) as $s |
+            ($i[0]) as $i | ($s[0]) as $s | ($src[0]) as $src |
             def img($r): {ref: $i[$r].ref, digest: $i[$r].digest};
-            ( if ($i | has("care-backend") and has("care-frontend") and has("care-caddy") and has("care-backup")) then
+            ( if ($i | has("care-backend") and has("care-frontend") and has("care-caddy") and has("care-backup")
+                     and has("care-backend-builder") and has("care-frontend-builder")) then
                 {care: {
-                  backend_rev: $i["care-backend"].revision[0:12],
-                  frontend_rev: $i["care-frontend"].revision[0:12],
+                  backend_rev: $src.backend.rev[0:12],
+                  frontend_rev: $src.frontend.rev[0:12],
                   released_at: $released_at,
                   migrations: true,
                   images: {backend: img("care-backend"), frontend: img("care-frontend"),
-                           caddy: img("care-caddy"), backup: img("care-backup")}}}
+                           caddy: img("care-caddy"), backup: img("care-backup")},
+                  builders: {"backend-builder": img("care-backend-builder"),
+                             "frontend-builder": img("care-frontend-builder")},
+                  sources: $src}}
               else {} end )
             + {support_images: $s}' >out/images.json
           # images-meta.json: everything, including demo images and per-arch digests.
           jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json \
             --arg sha "$GITHUB_SHA" --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" \
             '{commit: $sha, tag: $tag, run_id: $run, images: $i[0], support_images: $s[0]}' >out/images-meta.json
-          rm out/indexes.json out/support.json
+          rm out/indexes.json out/support.json out/sources.jsonl
           jq . out/images.json
       - name: Summarize
         run: |

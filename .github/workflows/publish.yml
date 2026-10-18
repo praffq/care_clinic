@@ -3,7 +3,8 @@ name: Publish update feed
 # Builds the signed update feed from the latest images.yml digests and an
 # engine-v<version> release, signs it with the FEED_SIGNING_KEY secret, and
 # deploys updates.json + updates.json.sig to this repository's GitHub Pages
-# (merged with the feed already published there). Manual only.
+# (merged with the feed already published there). Run manually, or called by
+# track.yml after it rebuilt the images for new upstream commits.
 # See docs/ci-publishing.md for the one-time key and Pages setup.
 on:
   workflow_dispatch:
@@ -32,6 +33,31 @@ on:
         description: "Releases to withdraw, space-separated component:version (e.g. care:3.1.0+be.x.fe.y)"
         type: string
         default: ""
+
+  workflow_call:
+    inputs:
+      images_run_id:
+        description: images.yml run ID to take digests from; the caller's own run when it called images.yml
+        type: string
+        default: ""
+      care:
+        type: boolean
+        default: true
+      engine:
+        type: boolean
+        default: false
+      migrations:
+        type: boolean
+        default: true
+      expires_days:
+        type: string
+        default: "30"
+      block:
+        type: string
+        default: ""
+    secrets:
+      FEED_SIGNING_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -71,6 +97,12 @@ jobs:
       - name: Build the release CLI
         working-directory: app
         run: go build -o "$RUNNER_TEMP/release" ./cmd/release
+      - name: Download the images artifact of this run
+        if: inputs.care && inputs.images_run_id == github.run_id
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: images
+          path: in/images
       - name: Collect image digests
         if: inputs.care
         env:
@@ -85,7 +117,9 @@ jobs:
             [ -n "$RUN_ID" ] || { echo "::error::No successful images.yml run on main; run it first or pass images_run_id."; exit 1; }
           fi
           echo "Using images from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
-          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n images -D in/images
+          if [ "$RUN_ID" != "$GITHUB_RUN_ID" ]; then
+            gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n images -D in/images
+          fi
           jq -e '.care.images | has("backend") and has("frontend") and has("caddy") and has("backup")' in/images/images.json >/dev/null ||
             { echo "::error::images.json of run $RUN_ID has no complete care section"; exit 1; }
           jq --argjson m "$MIGRATIONS" '.care.migrations = $m' in/images/images.json >in/care.json
@@ -103,9 +137,9 @@ jobs:
         env:
           EXPIRES_DAYS: ${{ inputs.expires_days }}
           BLOCK: ${{ inputs.block }}
-          FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
           set -euo pipefail
+          FEED_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           parts=()
           for f in in/care.json in/engine-section.json; do
             if [ -f "$f" ]; then parts+=("$f"); fi
