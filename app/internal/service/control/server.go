@@ -5,6 +5,8 @@
 // api.AgentPrefix.
 //
 //	GET  /v1/service/status[?watch=1]   api.ServiceStatus (NDJSON stream with watch)
+//	GET  /v1/service/config             api.ServiceConfig
+//	POST /v1/service/config             api.ServiceConfig -> api.ServiceConfig (persisted, applied)
 //	POST /v1/vm/{start,stop,restart}    api.EngineStatus
 //	GET  /v1/engine/slots               api.SlotList
 //	POST /v1/engine/install?sha256=hex  body: engine tarball -> slots.Slot
@@ -26,7 +28,9 @@ import (
 	"net/http/httputil"
 	"os"
 	"path"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots"
@@ -51,7 +55,19 @@ type Slots interface {
 	Prune() ([]string, error)
 }
 
+// Settings is the persisted service configuration.
+type Settings interface {
+	Get() api.ServiceConfig
+	// Set validates (api.ErrInvalidConfig), persists and applies cfg and
+	// returns it normalized.
+	Set(cfg api.ServiceConfig) (api.ServiceConfig, error)
+}
+
 const maxRequestBody = 64 << 10
+
+// watchPoll is how often a status watch checks the parts of the status that
+// have no change notifications (forwarding, mDNS).
+const watchPoll = time.Second
 
 // Config configures a Server.
 type Config struct {
@@ -62,6 +78,12 @@ type Config struct {
 	StagingDir string
 	MaxUpload  int64 // slots.MaxTarballBytes when 0
 	Log        *slog.Logger
+
+	// Optional parts of the service; nil leaves them out of the status (and
+	// the config endpoints answer 404 without Settings).
+	Forward  func() api.ForwardStatus
+	MDNS     func() api.MDNSStatus
+	Settings Settings
 }
 
 // Server is the control API's http.Handler.
@@ -73,6 +95,9 @@ type Server struct {
 	log       *slog.Logger
 	mux       *http.ServeMux
 	relay     *httputil.ReverseProxy
+	forward   func() api.ForwardStatus
+	mdns      func() api.MDNSStatus
+	settings  Settings
 }
 
 // NewServer returns the control API.
@@ -84,7 +109,8 @@ func NewServer(cfg Config) *Server {
 	if cfg.MaxUpload == 0 {
 		cfg.MaxUpload = slots.MaxTarballBytes
 	}
-	s := &Server{engine: engine, slots: cfg.Slots, staging: cfg.StagingDir, maxUpload: cfg.MaxUpload, log: log, mux: http.NewServeMux()}
+	s := &Server{engine: engine, slots: cfg.Slots, staging: cfg.StagingDir, maxUpload: cfg.MaxUpload, log: log, mux: http.NewServeMux(),
+		forward: cfg.Forward, mdns: cfg.MDNS, settings: cfg.Settings}
 	s.relay = &httputil.ReverseProxy{
 		Rewrite: s.rewrite,
 		Transport: &http.Transport{
@@ -95,6 +121,10 @@ func NewServer(cfg Config) *Server {
 		ErrorHandler:  s.relayError,
 	}
 	s.mux.HandleFunc("GET /v1/service/status", s.handleStatus)
+	if s.settings != nil {
+		s.mux.HandleFunc("GET /v1/service/config", s.handleGetConfig)
+		s.mux.HandleFunc("POST /v1/service/config", s.handleSetConfig)
+	}
 	s.mux.HandleFunc("POST /v1/vm/start", s.vmCommand(engine.Start))
 	s.mux.HandleFunc("POST /v1/vm/stop", s.vmCommand(engine.Stop))
 	s.mux.HandleFunc("POST /v1/vm/restart", s.vmCommand(engine.Restart))
@@ -123,7 +153,16 @@ func (s *Server) serviceStatus() api.ServiceStatus {
 	if err != nil {
 		s.log.Warn("read slot pointer", "err", err)
 	}
-	return api.ServiceStatus{Engine: s.engine.Status(), Slots: p}
+	st := api.ServiceStatus{Engine: s.engine.Status(), Slots: p}
+	if s.forward != nil {
+		f := s.forward()
+		st.Forward = &f
+	}
+	if s.mdns != nil {
+		m := s.mdns()
+		st.MDNS = &m
+	}
+	return st
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -136,16 +175,42 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	enc := json.NewEncoder(w)
 	rc := http.NewResponseController(w)
+	poll := time.NewTicker(watchPoll)
+	defer poll.Stop()
+	var last api.ServiceStatus
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ch:
+		case <-poll.C:
+			if cur := s.serviceStatus(); reflect.DeepEqual(cur.Forward, last.Forward) && reflect.DeepEqual(cur.MDNS, last.MDNS) {
+				continue
+			}
 		}
-		if enc.Encode(s.serviceStatus()) != nil || rc.Flush() != nil {
+		last = s.serviceStatus()
+		if enc.Encode(last) != nil || rc.Flush() != nil {
 			return
 		}
 	}
+}
+
+func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.settings.Get())
+}
+
+func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
+	var req api.ServiceConfig
+	if !decode(w, r, &req) {
+		return
+	}
+	cfg, err := s.settings.Set(req)
+	if err != nil {
+		s.commandError(w, err)
+		return
+	}
+	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName)
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 func (s *Server) vmCommand(f func(context.Context) error) http.HandlerFunc {
@@ -168,6 +233,8 @@ func (s *Server) commandError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, api.CodeChecksumMismatch, err.Error())
 	case errors.Is(err, slots.ErrIsCurrent):
 		writeError(w, http.StatusConflict, api.CodeIsCurrent, err.Error())
+	case errors.Is(err, api.ErrInvalidConfig):
+		writeError(w, http.StatusBadRequest, api.CodeInvalidConfig, err.Error())
 	default:
 		s.log.Error("control request failed", "err", err)
 		writeError(w, http.StatusInternalServerError, api.CodeInternal, err.Error())

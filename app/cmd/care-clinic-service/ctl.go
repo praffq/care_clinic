@@ -27,6 +27,8 @@ commands:
   activate <version>        switch to an installed engine and boot it
   start | stop | restart    control the engine VM
   prune                     delete slots other than current and previous
+  config                    service configuration
+  set-name <name>           advertise <name>.local instead (saved in config.json)
   agent-status              agent status through the relay
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
 `
@@ -66,7 +68,7 @@ var errUsage = errors.New("usage")
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
 	nargs := map[string][]int{
-		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2},
+		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "set-name": {1, 1},
 	}[cmd]
 	if nargs == nil {
 		nargs = []int{0, 0}
@@ -95,6 +97,14 @@ func runCtl(ctx context.Context, c *control.Client, args []string) error {
 		v, err = c.Restart(ctx)
 	case "prune":
 		v, err = c.Prune(ctx)
+	case "config":
+		v, err = c.Config(ctx)
+	case "set-name":
+		var cfg api.ServiceConfig
+		if cfg, err = c.Config(ctx); err == nil {
+			cfg.MDNSName = args[0]
+			v, err = c.SetConfig(ctx, cfg)
+		}
 	case "agent-status":
 		v, err = c.Agent().Status(ctx)
 	case "agent-op":

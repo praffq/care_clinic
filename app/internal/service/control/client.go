@@ -48,6 +48,8 @@ func (e *APIError) Is(target error) bool {
 		return e.Code == api.CodeChecksumMismatch
 	case slots.ErrIsCurrent:
 		return e.Code == api.CodeIsCurrent
+	case api.ErrInvalidConfig:
+		return e.Code == api.CodeInvalidConfig
 	}
 	return false
 }
@@ -144,6 +146,21 @@ func (c *Client) Status(ctx context.Context) (api.ServiceStatus, error) {
 	var st api.ServiceStatus
 	err := c.do(ctx, http.MethodGet, "/v1/service/status", nil, &st)
 	return st, err
+}
+
+// Config returns the service configuration.
+func (c *Client) Config(ctx context.Context) (api.ServiceConfig, error) {
+	var cfg api.ServiceConfig
+	err := c.do(ctx, http.MethodGet, "/v1/service/config", nil, &cfg)
+	return cfg, err
+}
+
+// SetConfig replaces the service configuration and returns it normalized.
+// Invalid values match api.ErrInvalidConfig.
+func (c *Client) SetConfig(ctx context.Context, cfg api.ServiceConfig) (api.ServiceConfig, error) {
+	var out api.ServiceConfig
+	err := c.do(ctx, http.MethodPost, "/v1/service/config", cfg, &out)
+	return out, err
 }
 
 // Watch calls fn with the current status and after every change until ctx

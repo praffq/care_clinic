@@ -46,8 +46,50 @@ func (s EngineStatus) AgentReachable() bool {
 
 // ServiceStatus is GET /v1/service/status.
 type ServiceStatus struct {
-	Engine EngineStatus  `json:"engine"`
-	Slots  slots.Pointer `json:"slots"`
+	Engine  EngineStatus   `json:"engine"`
+	Slots   slots.Pointer  `json:"slots"`
+	Forward *ForwardStatus `json:"forward,omitempty"`
+	MDNS    *MDNSStatus    `json:"mdns,omitempty"`
+}
+
+// ForwardStatus describes the host listeners that forward to the engine.
+type ForwardStatus struct {
+	// ProxyProtocol reports whether each forwarded connection starts with a
+	// PROXY protocol v2 header carrying the client address.
+	ProxyProtocol bool              `json:"proxy_protocol"`
+	Listeners     []ForwardListener `json:"listeners"`
+}
+
+// ForwardListener is one host listener. A listener that could not bind
+// reports Error and is retried.
+type ForwardListener struct {
+	Name      string `json:"name"`
+	Listen    string `json:"listen"`
+	VsockPort uint32 `json:"vsock_port"`
+	Listening bool   `json:"listening"`
+	Error     string `json:"error,omitempty"`
+}
+
+// MDNSStatus describes the service's <name>.local advertisement.
+type MDNSStatus struct {
+	Enabled     bool          `json:"enabled"`
+	Name        string        `json:"name"` // label; the host is Name + ".local"
+	Advertising bool          `json:"advertising"`
+	Since       time.Time     `json:"since,omitzero"`
+	Conflict    *MDNSConflict `json:"conflict,omitempty"`
+	LastError   string        `json:"last_error,omitempty"`
+}
+
+// MDNSConflict is another device answering for the advertised name.
+type MDNSConflict struct {
+	Host    string `json:"host"`
+	Address string `json:"address"`
+}
+
+// ServiceConfig is the persisted service configuration: GET and POST
+// /v1/service/config.
+type ServiceConfig struct {
+	MDNSName string `json:"mdns_name"`
 }
 
 // SlotList is GET /v1/engine/slots.
@@ -81,6 +123,7 @@ const (
 	CodeIsCurrent         = "is_current"
 	CodeInvalidBundle     = "invalid_bundle"
 	CodeBadRequest        = "bad_request"
+	CodeInvalidConfig     = "invalid_config"
 	CodeTooLarge          = "too_large"
 	CodeNotFound          = "not_found"
 	CodeAgentUnreachable  = "agent_unreachable"
@@ -90,6 +133,7 @@ const (
 var (
 	ErrNoEngine          = errors.New("no engine is installed")
 	ErrEngineUnavailable = errors.New("engine is not running")
+	ErrInvalidConfig     = errors.New("invalid service configuration")
 )
 
 // AgentPrefix is the path prefix of the agent relay: /v1/agent/v1/status

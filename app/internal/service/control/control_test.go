@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/vm"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
+	"github.com/ohcnetwork/care_desktop/app/internal/service/settings"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots/slotstest"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/supervisor"
@@ -36,6 +38,17 @@ type env struct {
 	staging string
 	store   *slots.Store
 	factory *supervisortest.Factory
+	cfgPath string
+
+	mu      sync.Mutex
+	mdns    api.MDNSStatus
+	applied []api.ServiceConfig
+}
+
+func (e *env) setMDNS(st api.MDNSStatus) {
+	e.mu.Lock()
+	e.mdns = st
+	e.mu.Unlock()
 }
 
 // shortDir returns a temp dir whose paths fit in a sockaddr_un.
@@ -73,12 +86,31 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 		t.Fatal(err)
 	}
 	staging := filepath.Join(dir, "staging")
+	e := &env{cl: control.NewClient(sock), sock: sock, staging: staging, store: store, factory: f, cfgPath: filepath.Join(dir, "config.json")}
+	e.mdns = api.MDNSStatus{Enabled: true, Name: "care"}
+	cfg, err := settings.Open(e.cfgPath, func(c api.ServiceConfig) {
+		e.mu.Lock()
+		e.applied = append(e.applied, c)
+		e.mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := &http.Server{Handler: control.NewServer(control.Config{
 		Engine:     sup,
 		Slots:      store,
 		StagingDir: staging,
 		MaxUpload:  maxUpload,
 		Log:        slog.New(slog.DiscardHandler),
+		Forward: func() api.ForwardStatus {
+			return api.ForwardStatus{Listeners: []api.ForwardListener{{Name: "http", Listen: "0.0.0.0:80", VsockPort: 8080, Listening: true}}}
+		},
+		MDNS: func() api.MDNSStatus {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			return e.mdns
+		},
+		Settings: cfg,
 	}), ReadHeaderTimeout: time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
@@ -89,7 +121,7 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 			t.Error("two machines ran at once")
 		}
 	})
-	return &env{cl: control.NewClient(sock), sock: sock, staging: staging, store: store, factory: f}
+	return e
 }
 
 // maxUpload caps uploads in tests; test bundles are a few KiB.
@@ -482,4 +514,83 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += n
 	return n, err
+}
+
+func TestStatusIncludesForwardAndMDNS(t *testing.T) {
+	e := newEnv(t, nil)
+	st, err := e.cl.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Forward == nil || len(st.Forward.Listeners) != 1 || !st.Forward.Listeners[0].Listening {
+		t.Fatalf("forward = %+v", st.Forward)
+	}
+	if st.MDNS == nil || st.MDNS.Name != "care" {
+		t.Fatalf("mdns = %+v", st.MDNS)
+	}
+}
+
+func TestWatchReportsMDNSChanges(t *testing.T) {
+	e := newEnv(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	seen := make(chan api.MDNSStatus, 64)
+	go func() {
+		_ = e.cl.Watch(ctx, func(st api.ServiceStatus) { seen <- *st.MDNS })
+	}()
+	if st := <-seen; st.Advertising {
+		t.Fatalf("first = %+v", st)
+	}
+	e.setMDNS(api.MDNSStatus{Enabled: true, Name: "care", Advertising: true})
+	for {
+		select {
+		case st := <-seen:
+			if st.Advertising {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("watch never reported the mDNS change")
+		}
+	}
+}
+
+func TestServiceConfig(t *testing.T) {
+	e := newEnv(t, nil)
+	cfg, err := e.cl.Config(t.Context())
+	if err != nil || cfg.MDNSName != settings.DefaultMDNSName {
+		t.Fatalf("config = %+v, %v", cfg, err)
+	}
+	cfg, err = e.cl.SetConfig(t.Context(), api.ServiceConfig{MDNSName: "Clinic-East.local"})
+	if err != nil || cfg.MDNSName != "clinic-east" {
+		t.Fatalf("set = %+v, %v", cfg, err)
+	}
+	if b, err := os.ReadFile(e.cfgPath); err != nil || !strings.Contains(string(b), `"clinic-east"`) {
+		t.Fatalf("config.json = %s, %v", b, err)
+	}
+	if _, err := e.cl.SetConfig(t.Context(), api.ServiceConfig{MDNSName: "not valid"}); !errors.Is(err, api.ErrInvalidConfig) {
+		t.Fatalf("invalid name = %v", err)
+	}
+	resp, err := rawPost(t, e.sock, "/v1/service/config", `{"mdns_name":"care","extra":1}`)
+	if err != nil || resp != http.StatusBadRequest {
+		t.Fatalf("unknown field = %d, %v", resp, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.applied) != 1 || e.applied[0].MDNSName != "clinic-east" {
+		t.Fatalf("applied = %+v", e.applied)
+	}
+}
+
+func rawPost(t *testing.T, sock, path, body string) (int, error) {
+	t.Helper()
+	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", sock)
+	}}}
+	resp, err := hc.Post("http://x"+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode, nil
 }
