@@ -71,9 +71,12 @@ type Config struct {
 	PollInterval   time.Duration // agent status poll while starting (1s)
 	HealthInterval time.Duration // agent status poll once ready (15s)
 	StopTimeout    time.Duration // guest power-off after the shutdown request (30s)
-	BackoffMin     time.Duration // first restart delay (1s), doubled per failure
-	BackoffMax     time.Duration // restart delay cap (2m)
-	StableAfter    time.Duration // uptime that resets the backoff (10m)
+	// ForceStopTimeout bounds a force stop. A VM still running after it is
+	// kept as lingering: no new VM boots on its disk until it stops (30s).
+	ForceStopTimeout time.Duration
+	BackoffMin       time.Duration // first restart delay (1s), doubled per failure
+	BackoffMax       time.Duration // restart delay cap (2m)
+	StableAfter      time.Duration // uptime that resets the backoff (10m)
 	// UnreachableProbes is how many health polls in a row may fail to reach
 	// the agent before the watchdog restarts the VM (4, i.e. 1m at 15s).
 	UnreachableProbes int
@@ -89,6 +92,7 @@ func (c *Config) setDefaults() {
 	def(&c.PollInterval, time.Second)
 	def(&c.HealthInterval, 15*time.Second)
 	def(&c.StopTimeout, 30*time.Second)
+	def(&c.ForceStopTimeout, 30*time.Second)
 	def(&c.BackoffMin, time.Second)
 	def(&c.BackoffMax, 2*time.Minute)
 	def(&c.StableAfter, 10*time.Minute)
@@ -145,6 +149,9 @@ type Supervisor struct {
 	want     bool
 	failures int
 	retry    *time.Timer
+	// lingering is a VM that did not stop when told to; it may still be
+	// using the data disk.
+	lingering vm.Machine
 
 	mu      sync.Mutex
 	st      Status
@@ -243,6 +250,14 @@ func (s *Supervisor) handle(ctx context.Context, c command) error {
 
 // boot starts the current slot; failures schedule a retry.
 func (s *Supervisor) boot(ctx context.Context) error {
+	if m := s.lingering; m != nil {
+		select {
+		case <-m.Done():
+			s.lingering = nil
+		default:
+			return s.failed(errors.New("the previous engine VM has not stopped; not starting another on its disk"))
+		}
+	}
 	sl, err := s.cfg.Slots.Current()
 	if errors.Is(err, slots.ErrNoCurrent) {
 		s.update(func(st *Status) { st.State = StateNoEngine; st.EngineVersion = "" })
@@ -327,11 +342,30 @@ func (s *Supervisor) hungUp(ctx context.Context, cause error) {
 	s.resetIfStable(b)
 	s.cfg.Log.Error("engine watchdog: forcing the VM off", "err", cause)
 	s.update(func(st *Status) { st.State = StateStopping })
-	if err := b.m.ForceStop(ctx); err != nil {
+	fctx, cancel := context.WithTimeout(ctx, s.cfg.ForceStopTimeout)
+	defer cancel()
+	if err := b.m.ForceStop(fctx); err != nil {
 		s.cfg.Log.Error("force-stopping engine VM", "err", err)
 	}
-	<-b.m.Done()
+	if err := s.awaitStop(fctx, b.m); err != nil {
+		cause = fmt.Errorf("%w; %w", cause, err)
+	}
 	_ = s.failed(fmt.Errorf("engine watchdog restarted the VM: %w", cause))
+}
+
+// awaitStop waits until m stops or ctx ends. A VM that has not stopped by
+// then is kept as lingering so the Run loop stays responsive without
+// booting a second VM on the same disk.
+func (s *Supervisor) awaitStop(ctx context.Context, m vm.Machine) error {
+	select {
+	case <-m.Done():
+		return nil
+	case <-ctx.Done():
+	}
+	s.lingering = m
+	err := errors.New("engine VM did not stop")
+	s.cfg.Log.Error("engine VM is not stopping; no new VM will boot until it does", "err", err)
+	return err
 }
 
 func (s *Supervisor) resetIfStable(b *boot) {
@@ -370,16 +404,25 @@ func (s *Supervisor) shutdown(ctx context.Context) {
 	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err := c.Shutdown(sctx)
 	cancel()
+	// Bounds the power-off wait and the force stop after it.
+	sctx, cancel = context.WithTimeout(ctx, s.cfg.StopTimeout+s.cfg.ForceStopTimeout)
+	defer cancel()
 	if err != nil {
 		s.cfg.Log.Warn("agent shutdown failed; forcing the VM off", "err", err)
-		err = b.m.ForceStop(ctx)
+		err = b.m.ForceStop(sctx)
 	} else {
-		err = b.m.Stop(ctx, s.cfg.StopTimeout)
+		err = b.m.Stop(sctx, s.cfg.StopTimeout)
 	}
 	if err != nil {
 		s.cfg.Log.Error("stopping engine VM", "err", err)
 	}
-	<-b.m.Done()
+	if err := s.awaitStop(sctx, b.m); err != nil {
+		s.update(func(st *Status) {
+			st.State, st.Agent, st.StartedAt, st.NextRetryAt = StateCrashed, nil, time.Time{}, time.Time{}
+			st.LastError, st.LastErrorAt = err.Error(), time.Now()
+		})
+		return
+	}
 	s.cfg.Log.Info("engine VM stopped", "took", time.Since(start).Round(time.Millisecond))
 	s.update(func(st *Status) {
 		st.State, st.Agent, st.StartedAt, st.NextRetryAt = StateStopped, nil, time.Time{}, time.Time{}

@@ -40,15 +40,16 @@ func newEnv(t *testing.T, versions ...string) *env {
 	}
 	f := &supervisortest.Factory{Dir: dir}
 	sup := New(Config{
-		Slots:          store,
-		VM:             vm.Config{DataDisk: filepath.Join(dir, "data.img"), ConsoleLog: filepath.Join(dir, "console.log")},
-		NewMachine:     f.New,
-		ReadyTimeout:   300 * time.Millisecond,
-		PollInterval:   10 * time.Millisecond,
-		HealthInterval: 20 * time.Millisecond,
-		StopTimeout:    time.Second,
-		BackoffMin:     20 * time.Millisecond,
-		BackoffMax:     200 * time.Millisecond,
+		Slots:            store,
+		VM:               vm.Config{DataDisk: filepath.Join(dir, "data.img"), ConsoleLog: filepath.Join(dir, "console.log")},
+		NewMachine:       f.New,
+		ReadyTimeout:     300 * time.Millisecond,
+		PollInterval:     10 * time.Millisecond,
+		HealthInterval:   20 * time.Millisecond,
+		StopTimeout:      time.Second,
+		ForceStopTimeout: 100 * time.Millisecond,
+		BackoffMin:       20 * time.Millisecond,
+		BackoffMax:       200 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &env{sup: sup, store: store, factory: f, cancel: cancel, stopped: make(chan struct{})}
@@ -271,6 +272,38 @@ func TestWatchdogUnreachableWhileRunning(t *testing.T) {
 		t.Fatal("hung VM was not forced off")
 	}
 	e.wait(t, "ready after restart", func(s Status) bool { return s.State == StateReady && s.Restarts == 1 })
+}
+
+func TestWatchdogVMWontStop(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitState(t, StateReady)
+	first := e.factory.Last()
+	first.Stick(errors.New("hypervisor wedged"))
+	first.Hang()
+	e.wait(t, "refusing to boot over the stuck VM", func(s Status) bool {
+		return s.State == StateBackoff && strings.Contains(s.LastError, "has not stopped")
+	})
+	if n := len(e.factory.Machines()); n != 1 {
+		t.Fatalf("booted %d machines while the first was still running", n)
+	}
+	// Run stays responsive.
+	if err := e.sup.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.sup.Status(); st.State != StateStopped {
+		t.Fatalf("state after stop = %s", st.State)
+	}
+	if err := e.sup.Start(ctxT(t)); err == nil {
+		t.Fatal("started while the old VM is still running")
+	}
+	first.Crash(nil) // finally stops
+	e.wait(t, "ready after the old VM stopped", func(s Status) bool { return s.State == StateReady })
+	if n := len(e.factory.Machines()); n != 2 {
+		t.Fatalf("machines = %d, want 2", n)
+	}
 }
 
 func TestDialGuest(t *testing.T) {

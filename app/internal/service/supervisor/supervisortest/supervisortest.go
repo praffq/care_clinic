@@ -101,6 +101,7 @@ type Machine struct {
 	srv    *http.Server
 	done   chan struct{}
 	forced bool
+	stuck  error
 }
 
 var _ vm.Machine = (*Machine)(nil)
@@ -216,7 +217,21 @@ func (m *Machine) Stop(ctx context.Context, timeout time.Duration) error {
 }
 
 func (m *Machine) ForceStop(context.Context) error {
+	m.mu.Lock()
+	stuck := m.stuck
+	m.mu.Unlock()
+	if stuck != nil {
+		return stuck
+	}
 	m.halt(nil, true)
 	<-m.done
 	return nil
+}
+
+// Stick makes Stop and ForceStop fail with err and leave the VM running,
+// until it crashes.
+func (m *Machine) Stick(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stuck = err
 }
