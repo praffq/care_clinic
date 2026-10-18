@@ -55,7 +55,8 @@ func TestClinicBrandingContract(t *testing.T) {
 	if !strings.Contains(string(read("../deployments/Caddyfile")), `root_cn "`+trust.CommonName+`"`) {
 		t.Error("Caddy's root certificate must match the native trust identity")
 	}
-	if _, err := release.Load(read("../deployments/.env")); err != nil {
+	// stage-install.mjs prepends CARE_CLINIC_VERSION from versions.yml.
+	if _, err := release.Load(append([]byte("CARE_CLINIC_VERSION=0.0.0-dev\n"), read("../deployments/.env")...)); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"frontend/package.json", "frontend/package-lock.json"} {

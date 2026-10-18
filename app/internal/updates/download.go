@@ -22,7 +22,9 @@ const (
 	maxSigBytes  = 4 << 10
 )
 
-// HTTPFetcher fetches URL and URL+".sig".
+// HTTPFetcher fetches URL and URL+".sig". A missing (404) signature is
+// returned as nil: an unsigned feed, which feed.Verify rejects unless the
+// build allows unsigned feeds.
 type HTTPFetcher struct {
 	URL    string
 	Client *http.Client // nil means http.DefaultClient
@@ -34,11 +36,16 @@ func (f HTTPFetcher) Fetch(ctx context.Context) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 	sig, err := httpGet(ctx, f.Client, f.URL+".sig", maxSigBytes)
+	if errors.Is(err, errNotFound) {
+		return data, nil, nil
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	return data, sig, nil
 }
+
+var errNotFound = errors.New("not found")
 
 func httpGet(ctx context.Context, hc *http.Client, url string, limit int64) ([]byte, error) {
 	resp, err := open(ctx, hc, url)
@@ -67,6 +74,10 @@ func open(ctx context.Context, hc *http.Client, url string) (*http.Response, err
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("GET %s: %s: %w", url, resp.Status, errNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()

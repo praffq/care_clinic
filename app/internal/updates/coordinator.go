@@ -84,6 +84,10 @@ type Options struct {
 	Keys feed.TrustedKeys
 	// AllowInsecureURLs accepts http URLs (feed.DevBuild).
 	AllowInsecureURLs bool
+	// AllowUnsigned accepts an unsigned feed with a warning
+	// (feed.UnsignedFeedAllowed: no production key in this build). Keys may
+	// then be empty.
+	AllowUnsigned bool
 	// HTTP downloads assets; nil means http.DefaultClient.
 	HTTP *http.Client
 
@@ -188,7 +192,7 @@ func Open(o Options) (*Coordinator, error) {
 		return nil, errors.New("updates: Dir required")
 	case o.Feed == nil || o.Service == nil || o.Agent == nil || o.Stack == nil:
 		return nil, errors.New("updates: Feed, Service, Agent and Stack required")
-	case len(o.Keys) == 0:
+	case len(o.Keys) == 0 && !o.AllowUnsigned:
 		return nil, errors.New("updates: no trusted feed keys")
 	}
 	if _, err := versions.ParseSemver(o.DesktopVersion); err != nil {
@@ -280,6 +284,7 @@ type Status struct {
 	Installed Installed      `json:"installed"`
 	Revision  uint64         `json:"highest_revision"`
 	CheckedAt time.Time      `json:"last_verified_at,omitzero"`
+	Unsigned  bool           `json:"unsigned,omitempty"` // the verified feed is unsigned
 	Journal   *Journal       `json:"journal,omitempty"`
 	Last      *HistoryEntry  `json:"last,omitempty"`
 	History   []HistoryEntry `json:"-"`
@@ -296,7 +301,7 @@ func (c *Coordinator) Status() (Status, error) {
 	if err != nil {
 		return s, err
 	}
-	s.Revision, s.CheckedAt = v.HighestRevision, v.LastVerifiedAt
+	s.Revision, s.CheckedAt, s.Unsigned = v.HighestRevision, v.LastVerifiedAt, v.Unsigned
 	if s.Journal, err = c.st.journal(); err != nil {
 		return s, err
 	}
@@ -327,7 +332,10 @@ type PlannedStep struct {
 
 // CheckResult is the outcome of Check.
 type CheckResult struct {
-	Revision  uint64        `json:"revision"`
+	Revision uint64 `json:"revision"`
+	// Unsigned means the feed was accepted without a signature (this build
+	// has no production feed key); see UnsignedFeedWarning.
+	Unsigned  bool          `json:"unsigned,omitempty"`
 	Available bool          `json:"available"`
 	Reason    string        `json:"reason,omitempty"` // why nothing is available
 	Urgent    bool          `json:"urgent,omitempty"`
@@ -360,24 +368,28 @@ func (c *Coordinator) Check(ctx context.Context) (*CheckResult, error) {
 		return nil, err
 	}
 	now := c.now()
-	m, err := feed.Verify(data, sig, feed.VerifyOptions{Keys: c.o.Keys, Now: now, MinRevision: ver.HighestRevision, AllowInsecureURLs: c.o.AllowInsecureURLs})
+	m, err := feed.Verify(data, sig, c.verifyOptions(now, ver.HighestRevision))
 	if err != nil {
 		c.logf("Rejected the update feed: %v", err)
 		return nil, fmt.Errorf("update feed rejected: %w", err)
 	}
 	fs := feed.State{HighestRevision: ver.HighestRevision}
 	fs.Record(data, m, now)
-	ver = Verified{HighestRevision: fs.HighestRevision, LastVerifiedAt: fs.LastVerifiedAt, ManifestSHA256: fs.ManifestSHA256, Manifest: data, Signature: sig}
+	ver = Verified{HighestRevision: fs.HighestRevision, LastVerifiedAt: fs.LastVerifiedAt, ManifestSHA256: fs.ManifestSHA256, Manifest: data, Signature: sig, Unsigned: m.Unsigned}
 	if err := c.st.save(VerifiedFile, ver); err != nil {
 		return nil, err
 	}
-	c.logf("Verified update feed revision %d", m.Revision)
+	if m.Unsigned {
+		c.logf("%s (revision %d)", UnsignedFeedWarning, m.Revision)
+	} else {
+		c.logf("Verified update feed revision %d", m.Revision)
+	}
 
 	in, err := c.installed()
 	if err != nil {
 		return nil, err
 	}
-	res := &CheckResult{Revision: m.Revision}
+	res := &CheckResult{Revision: m.Revision, Unsigned: m.Unsigned}
 	if in, err = c.adopt(ctx, m, in); errors.Is(err, ErrUnknownCare) {
 		res.Reason = err.Error()
 		return res, nil
@@ -421,11 +433,22 @@ func (c *Coordinator) manifest() (*feed.Manifest, Verified, error) {
 	if len(ver.Manifest) == 0 {
 		return nil, ver, ErrNotVerified
 	}
-	m, err := feed.Verify(ver.Manifest, ver.Signature, feed.VerifyOptions{Keys: c.o.Keys, Now: c.now(), MinRevision: ver.HighestRevision, AllowInsecureURLs: c.o.AllowInsecureURLs})
+	m, err := feed.Verify(ver.Manifest, ver.Signature, c.verifyOptions(c.now(), ver.HighestRevision))
 	if err != nil {
 		return nil, ver, fmt.Errorf("verified feed no longer valid (check for updates again): %w", err)
 	}
 	return m, ver, nil
+}
+
+// UnsignedFeedWarning is logged when an unsigned feed is accepted.
+const UnsignedFeedWarning = "WARNING: the update feed is unsigned. This build has no production feed key, " +
+	"so it cannot tell a genuine feed from a forged one; only use it with a feed you trust"
+
+func (c *Coordinator) verifyOptions(now time.Time, minRevision uint64) feed.VerifyOptions {
+	return feed.VerifyOptions{
+		Keys: c.o.Keys, Now: now, MinRevision: minRevision,
+		AllowInsecureURLs: c.o.AllowInsecureURLs, AllowUnsigned: c.o.AllowUnsigned,
+	}
 }
 
 func (c *Coordinator) resolve(m *feed.Manifest, in Installed) (*feed.Plan, error) {

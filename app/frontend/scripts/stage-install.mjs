@@ -1,6 +1,7 @@
 // Stage deployments/ into ../install so Go can embed it (//go:embed all:install).
 // Runs from the Wails pre-build hook (including dev) and standalone frontend builds.
 // deployments/ is the single source of truth; nothing is duplicated in git.
+// The staged .env also gets CARE_CLINIC_VERSION (versions.yml desktop.version).
 //
 // The list is read from the directory rather than hardcoded: a hand-maintained
 // array silently drifts, and a file added to the stack but missed here goes
@@ -10,18 +11,28 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url)); // app/frontend/scripts
-const source = join(here, "..", "..", "..", "deployments");
+const root = join(here, "..", "..", "..");
+const source = join(root, "deployments");
 const install = join(here, "..", "..", "install"); // app/install
 
-const versions = [...readFileSync(join(source, ".env"), "utf8").matchAll(/^CARE_CLINIC_VERSION=([^\r\n]*)$/gm)];
-if (versions.length !== 1 || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$/.test(versions[0][1].trim())) {
-  throw new Error("deployments/.env must contain one CARE_CLINIC_VERSION=X.Y.Z or X.Y.Z-dev");
+// The desktop version is versions.yml desktop.version (docs/versions.md). It
+// is written into wails.json (installer and bundle metadata) and, as
+// CARE_CLINIC_VERSION, at the top of the staged .env, where the app reads it.
+const block = readFileSync(join(root, "versions.yml"), "utf8").match(/^desktop:[^\S\r\n]*\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*)\r?\n)*)/m);
+const versions = block ? [...block[1].matchAll(/^  version:[ \t]*"?([^"\s#]*)"?[ \t]*(?:#.*)?$/gm)] : [];
+if (versions.length !== 1 || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev)?$/.test(versions[0][1])) {
+  throw new Error("versions.yml must contain one desktop.version X.Y.Z or X.Y.Z-dev");
 }
-const version = versions[0][1].trim().replace(/-dev$/, "");
+const version = versions[0][1];
+const env = readFileSync(join(source, ".env"), "utf8");
+if (/^CARE_CLINIC_VERSION=/m.test(env)) {
+  throw new Error("deployments/.env must not set CARE_CLINIC_VERSION; the desktop version is versions.yml desktop.version");
+}
 const metadataPath = join(here, "..", "..", "wails.json");
 const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-if (metadata.info.productVersion !== version) {
-  metadata.info.productVersion = version;
+const productVersion = version.replace(/-dev$/, "");
+if (metadata.info.productVersion !== productVersion) {
+  metadata.info.productVersion = productVersion;
   writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
 }
 
@@ -40,4 +51,5 @@ for (const stale of readdirSync(install)) {
 for (const item of items) {
   cpSync(join(source, item), join(install, item), { recursive: true });
 }
+writeFileSync(join(install, ".env"), `CARE_CLINIC_VERSION=${version}\n` + env);
 console.log(`staged ${items.length} entries → app/install`);

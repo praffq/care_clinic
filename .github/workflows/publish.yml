@@ -1,9 +1,11 @@
 name: Publish update feed
 
-# Builds the signed update feed from the latest images.yml digests and an
+# Builds the update feed from the latest images.yml digests and an
 # engine-v<version> release, signs it with the FEED_SIGNING_KEY secret, and
 # deploys updates.json + updates.json.sig to this repository's GitHub Pages
-# (merged with the feed already published there). Run manually, or called by
+# (merged with the feed already published there). Without FEED_SIGNING_KEY
+# the feed is published unsigned (no updates.json.sig) with a warning; only
+# apps built without a production feed key accept it. Run manually, or called by
 # track.yml after it rebuilt the images for new upstream commits.
 # See docs/ci-publishing.md for the one-time key and Pages setup.
 on:
@@ -79,13 +81,16 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Require the signing key
+      - name: Check for the signing key
+        id: key
         env:
           FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
         run: |
           if [ -z "$FEED_SIGNING_KEY" ]; then
-            echo "::error title=FEED_SIGNING_KEY is not set::Create a key with 'go run ./cmd/release keygen --out feed.key' (in app/) and store it with 'gh secret set FEED_SIGNING_KEY -R $GITHUB_REPOSITORY < feed.key'. See docs/ci-publishing.md."
-            exit 1
+            echo "::warning title=FEED_SIGNING_KEY is not set::Publishing the feed unsigned (no updates.json.sig). Only apps built without a production feed key accept it. To sign, create a key with 'go run ./cmd/release keygen --out feed.key' (in app/) and store it with 'gh secret set FEED_SIGNING_KEY -R $GITHUB_REPOSITORY < feed.key'. See docs/ci-publishing.md."
+            echo "sign=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "sign=true" >>"$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,6 +170,7 @@ jobs:
           mkdir -p site
           "$RUNNER_TEMP/release" generate --revision "$revision" "${args[@]}"
       - name: Sign and verify
+        if: steps.key.outputs.sign == 'true'
         env:
           FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
         run: |
@@ -185,6 +191,11 @@ jobs:
           "$RUNNER_TEMP/release" verify --pub "$RUNNER_TEMP/feed.pub" --in site/updates.json | tee -a "$GITHUB_STEP_SUMMARY"
           cp "$RUNNER_TEMP/feed.pub" site/feed.pub
           echo "Public key: \`$pub\`" >>"$GITHUB_STEP_SUMMARY"
+      - name: Report the unsigned feed
+        if: steps.key.outputs.sign != 'true'
+        run: |
+          test ! -e site/updates.json.sig
+          echo "**updates.json is unsigned**: FEED_SIGNING_KEY is not set. Only apps built without a production feed key accept it." >>"$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/
