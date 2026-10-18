@@ -45,7 +45,7 @@ import (
 
 const (
 	systemRoot   = "/Library/Application Support/care-clinic"
-	systemSocket = "/var/run/care-clinic/control.sock"
+	systemSocket = control.SystemSocket
 	devRootName  = "care-clinic-dev"
 )
 

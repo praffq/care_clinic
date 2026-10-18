@@ -33,6 +33,7 @@ commands:
                               proxy_protocol=true|false PROXY v2 to the guest
   agent-status              agent status through the relay
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
+  clinic <command>          install and drive the CARE stack (ctl clinic for help)
 `
 
 func ctl(args []string) int {
@@ -54,6 +55,10 @@ func ctl(args []string) int {
 		defer stop()
 		err = runCtl(ctx, control.NewClient(sock), fs.Args())
 	}
+	if errors.Is(err, errClinicUsage) {
+		fmt.Fprint(os.Stderr, clinicUsage)
+		return 2
+	}
 	if errors.Is(err, errUsage) {
 		fs.Usage()
 		return 2
@@ -69,6 +74,13 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
+	if cmd == "clinic" {
+		v, err := clinicCtl(ctx, c, args)
+		if err != nil || v == nil {
+			return err
+		}
+		return printJSON(v)
+	}
 	nargs := map[string][]int{
 		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 2},
 	}[cmd]

@@ -54,6 +54,9 @@ func (e *APIError) Is(target error) bool {
 	return false
 }
 
+// SystemSocket is the installed service's control socket.
+const SystemSocket = "/var/run/care-clinic/control.sock"
+
 // Client talks to the host service over its control socket.
 type Client struct {
 	socket string
