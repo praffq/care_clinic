@@ -55,8 +55,8 @@ which the tests sign and verify.
   An optional `tar` URL points at an image tarball for development feeds that
   side-load locally built images.
 - `build_env` keys follow the engine rule (`REACT_*` or `CARE_*`).
-- `blocked` entries are `<desktop|engine|care>:<version>`; the update resolver (a later slice) treats them as withdrawn and will not
-  select them.
+- `blocked` entries are `<desktop|engine|care>:<version>`; the update resolver treats them as withdrawn and never
+  selects them (see [Update plans](#update-plans)).
 - Unknown fields anywhere are errors.
 
 ## Signature
@@ -103,3 +103,67 @@ After a successful verification the client records the feed in
 `manifest_sha256`) via `LoadState` / `SaveState`, which writes atomically.
 `highest_revision` is passed back as `MinRevision` next time so a replayed older
 feed is rejected.
+
+## Update plans
+
+`feed.ResolvePlan(installed, manifest)` turns a verified manifest and the
+installed versions into a `Plan`: an ordered list of `Step`s (component, from,
+to, and the feed entry), at most one per component. It only decides; applying
+a plan, one healthy step at a time, belongs to the update coordinator. Updates
+are never automatic.
+
+Rules:
+
+1. **Candidates.** For each component, the resolver considers releases that
+   are newer than the installed one (CARE ordered by `CareRelease.Newer`, so
+   `released_at` breaks ties at equal semver), not `blocked`, and that have an
+   asset for this machine (`Installed.DesktopAsset` / `Installed.EngineArch`).
+   Only the newest `MaxCandidates` (5) per component are tried. Nothing is
+   ever downgraded.
+2. **Compatibility after every step.** A candidate set is usable if some order
+   of its steps keeps every installed component's `requires` satisfied by the
+   others after *each* step. Requirements of installed versions are looked up
+   in the feed by exact version; if an installed version is not in the feed,
+   its requirements are unknown and only the other entries' are checked. CARE
+   cannot be installed before an engine.
+3. **Choosing a plan.** Every combination of candidates (plus "keep the
+   installed one") is tried, and plans are compared by, in order: most
+   blocked installed versions replaced; most components at their newest
+   candidate; then the newest desktop, then engine, then CARE. Orders are
+   tried as permutations of desktop, engine, CARE starting with that order,
+   and the first valid one wins. The result is deterministic.
+4. **Held back.** `Plan.Held` explains every component left below its newest
+   candidate (e.g. `engine 0.2.0 requires desktop >=0.3.0, which is not
+   published for this machine`), so CARE may still update while the engine
+   waits for a desktop release.
+5. **No path.** If newer releases exist but nothing can be installed, the
+   resolver returns `*NoPathError` with the same reasons in `Details`. If
+   everything is up to date it returns an empty plan.
+6. **Fresh install.** With no engine installed (zero `Installed.Engine`) the
+   plan installs the newest compatible engine and CARE for the installed
+   desktop app; the desktop app itself is not updated during install.
+7. **Blocked installed versions.** If an installed version is `blocked`, the
+   plan moves off it whenever any path exists and sets `Plan.Urgent`; if none
+   exists, that is reported like a held component.
+
+### Example
+
+Installed: desktop `0.1.0`, engine `0.1.0`, CARE `3.0.0+be.111.fe.111`.
+
+| Release | requires |
+| --- | --- |
+| desktop `0.2.0` | engine `>=0.1.0 <0.2.0` |
+| engine `0.1.1` | desktop `>=0.2.0` |
+| CARE `3.1.0+be.4f2a1c.fe.9b33d0` | desktop `>=0.2.0`, engine `>=0.1.1` |
+
+All three newest releases are compatible together, and the only order that
+stays compatible after every step is:
+
+1. desktop `0.1.0` → `0.2.0` (still accepts engine `0.1.0`),
+2. engine `0.1.0` → `0.1.1` (needs desktop `0.2.0`),
+3. CARE `3.0.0+be.111.fe.111` → `3.1.0+be.4f2a1c.fe.9b33d0` (needs both).
+
+If the feed later adds engine `0.2.0` requiring desktop `>=0.3.0` while no
+such desktop is published, the plan still takes engine `0.1.1` and the new
+CARE, and `Held` reports why engine `0.2.0` was skipped. These cases are
+covered by `TestResolvePlan` in `app/internal/feed/plan_test.go`.
