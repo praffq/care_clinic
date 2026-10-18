@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -452,6 +454,47 @@ func TestStackStartOutcomes(t *testing.T) {
 		if st.State != StateReady {
 			t.Errorf("engine state = %s; a stack failure must not affect the engine", st.State)
 		}
+	}
+}
+
+func TestStackStateFollowsTheEngineAfterBoot(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	var mu sync.Mutex
+	var services []protocol.ServiceState
+	e.factory.Setup = func(x *agent.FakeExecutor) {
+		x.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+			switch op.(type) {
+			case *protocol.StackUp:
+				return nil, &protocol.OpError{Code: protocol.CodeNotInstalled, Message: "no clinic"}
+			case *protocol.StackStatus:
+				mu.Lock()
+				defer mu.Unlock()
+				return protocol.StackStatusResult{Services: slices.Clone(services)}, nil
+			}
+			return nil, nil
+		}
+	}
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStack(t, api.StackNotInstalled)
+
+	mu.Lock()
+	services = []protocol.ServiceState{{Name: "backend", State: "running", Health: "healthy"}, {Name: "db", State: "running"}}
+	mu.Unlock()
+	e.waitStack(t, api.StackRunning)
+
+	mu.Lock()
+	services = []protocol.ServiceState{{Name: "backend", State: "exited"}, {Name: "db", State: "exited"}}
+	mu.Unlock()
+	e.waitStack(t, api.StackStopped)
+
+	mu.Lock()
+	services = nil
+	mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	if st := e.sup.Status(); st.Stack == nil || st.Stack.State != api.StackStopped {
+		t.Fatalf("an empty stack status changed the state: %+v", st.Stack)
 	}
 }
 

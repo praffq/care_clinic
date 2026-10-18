@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -490,6 +491,9 @@ func (s *Supervisor) monitor(b *boot) {
 			err = errors.New("docker is not ready")
 		}
 		s.health(b, st, err)
+		if err == nil {
+			s.refreshStack(b, c)
+		}
 		if misses >= s.cfg.UnreachableProbes {
 			s.reportHang(b, fmt.Errorf("agent unreachable for %d health checks: %w", misses, err))
 			return
@@ -584,6 +588,38 @@ func whenIdle(ctx context.Context, f func() error) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func (s *Supervisor) refreshStack(b *boot, c *client.Client) {
+	s.mu.Lock()
+	cur := s.st.Stack
+	s.mu.Unlock()
+	if cur == nil || cur.State == api.StackStarting || cur.State == api.StackStopping {
+		return
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 10*time.Second)
+	defer cancel()
+	var res protocol.StackStatusResult
+	if err := c.Op(ctx, protocol.StackStatus{}, &res, nil); err != nil || len(res.Services) == 0 {
+		return
+	}
+	running := slices.ContainsFunc(res.Services, func(sv protocol.ServiceState) bool { return sv.State == "running" })
+	var next api.StackState
+	switch {
+	case running && cur.State != api.StackRunning:
+		next = api.StackRunning
+	case !running && (cur.State == api.StackRunning || cur.State == api.StackNotInstalled):
+		next = api.StackStopped
+	default:
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b.ctx.Err() != nil || s.st.Stack != cur {
+		return
+	}
+	s.st.Stack = &api.StackStatus{State: next, Since: time.Now()}
+	s.publishLocked()
 }
 
 // setStack records the stack state unless b (when given) was stopped.

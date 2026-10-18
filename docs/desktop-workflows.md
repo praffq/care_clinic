@@ -104,6 +104,14 @@ version, clinic stack state, the advertised `<name>.local` address, and the
 forwarded ports. It updates live from `service-status`. If the service can't
 be reached, Overview says so with the error.
 
+The service sets the clinic stack state when the engine boots and then checks
+the engine's `stack.status` on every health poll (every 15 seconds). A clinic
+installed or started after boot, for example by first setup, moves from "not
+installed", "stopped" or "failed" to running once its containers run, and a
+running clinic whose containers all stopped shows as stopped. An empty answer
+never changes the state, and the service's own starting and stopping states are
+left alone.
+
 **Start**, **Stop** and **Restart** need no password and are disabled while
 another job runs. Stop keeps all data. The service starts the clinic again
 after a reboot without the app.
