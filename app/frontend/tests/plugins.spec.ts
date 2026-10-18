@@ -6,7 +6,7 @@ const password = "ClinicTest123";
 const card = (page: Page) => page.locator("section[aria-labelledby='advanced-plugins-title']");
 const dialog = (page: Page) => page.getByRole("alertdialog");
 const lastCall = (page: Page, method: string) => page.evaluate((name) =>
-  window.careTest.calls.filter((call) => call.method === name).at(-1)?.args ?? null, method);
+  window.careTest.calls.filter((call) => call.method === name).slice(-1)[0]?.args ?? null, method);
 
 test.use({ trace: "off" });
 test.beforeEach(async ({ page }) => {
