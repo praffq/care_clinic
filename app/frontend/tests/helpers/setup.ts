@@ -7,6 +7,9 @@ export async function continueServerChecks(page: Page) {
   await expect(page.locator("#setup-title")).toHaveText("Checking this computer");
   await expect(next(page)).toBeEnabled();
   await next(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Removing stale files from an earlier setup");
+  await expect(next(page)).toBeEnabled();
+  await next(page).click();
   await expect(page.locator("#setup-title")).toHaveText("Choosing the clinic address");
 }
 

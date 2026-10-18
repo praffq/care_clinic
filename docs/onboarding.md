@@ -2,8 +2,9 @@
 
 [Documentation index](README.md)
 
-Setting up a Mac as the clinic server takes three steps in the desktop app:
-**computer checks**, **clinic name and admin password**, and **install**. The
+Setting up a Mac as the clinic server takes four steps in the desktop app:
+**computer checks**, **cleanup of an earlier setup**, **clinic name and admin
+password**, and **install**. The
 app only drives the steps; the engine VM and the clinic containers belong to
 the boot-time [`care-clinic-service`](../app/cmd/care-clinic-service/README.md).
 Nothing is installed on the host besides that service: no Docker, Rancher
@@ -25,6 +26,8 @@ sequenceDiagram
     App->>OS: osascript ... with administrator privileges
     OS->>Svc: copy binary, plist, care-clinic group, launchctl bootstrap
     App->>Svc: wait until the control socket answers
+    UI->>App: ScanResidue (PurgeResidue if anything is left)
+    App->>Svc: engine status, stack status, uploaded config
     UI->>App: RunSetup(name, adminPassword)
     App->>Svc: engine install + activate (bundled engine, if newer)
     Svc->>VM: boot engine, forward 80/443/8480, advertise name.local
@@ -73,7 +76,52 @@ Developers can install the same service with `scripts/service-macos.sh
 install` or `install-built` (needs sudo); see
 [development](development-and-release.md#the-care-clinic-service).
 
-## 2. Clinic name and admin password
+## 2. Cleanup of an earlier setup
+
+The wizard page **Cleanup stale files** comes right after the computer
+checks, so the service is already running. `ScanResidue()` returns a
+[`residue.Report`](../app/internal/residue/residue.go): `clean` and the list of
+traces an earlier CARE Clinic (v1 or v2) left on this computer. Continue stays
+disabled until a scan is clean, and Review does not re-run it.
+
+| Trace | Found when | Blocks setup |
+| --- | --- | --- |
+| `engine` | The engine is installed and its stack has containers or an uploaded `stack.env`, or the engine is stopped, crashed or backing off so its data couldn't be checked. | Yes |
+| `containers`, `volumes`, `networks` | Docker answers and has v1 resources labelled `com.docker.compose.project=care-clinic`. | Yes |
+| `images` | Docker answers and has `ghcr.io/ohcnetwork/care*` images. | No |
+| `install-dir` | The install folder (`.../care-clinic/install`) exists. | Yes |
+| `secrets` | The host copy of `secrets.env` exists in the clinic state folder. The backup certificate and recovery key next to it are kept. | Yes |
+| `config` | `config.json` holds a password hash, `setup_done` or `removing`. A saved role or clinic name alone is not a trace. | Yes |
+| `hosts`, `certificate` | A `# care-clinic` hosts line, or a trusted `CARE` root certificate. | Yes |
+| `firewall` | CARE's own Windows firewall rules (`CARE Clinic <name>`). The service's `CARE Clinic` rule is not counted. | No |
+| `autostart` | The v1 start-at-login entry: `~/Library/LaunchAgents/ohc.care-clinic.plist`, `~/.config/autostart/care-clinic.desktop`, or the `CARE Clinic` value under `HKCU\...\Run`. | Yes |
+
+A service that does not answer, or an engine that is starting, stopping or not
+ready, makes the scan fail rather than report clean. A stopped Docker is not
+checked: its old containers can't hold ports or data open, and v1 volumes are
+never attached to the engine.
+
+**Remove it all** calls `PurgeResidue(true)`, which refuses a finished clinic
+(use Uninstall instead), persists `removing`, and then:
+
+1. If the scan found `engine`, waits for the engine (starting it if stopped)
+   and runs `Clinic.Uninstall` with `RemoveData`: `StackDown` with volumes,
+   the uploaded config files and `secrets.env`. Without it, `SkipStack` leaves
+   the engine alone.
+2. Reverts the hosts entry, certificate trust, CARE firewall rules and
+   Tailscale home access, then deletes the install folder.
+3. Removes the v1 Docker containers, volumes, networks and CARE images
+   (an image still in use is logged and kept), the v1 start-at-login entry and
+   any remaining `secrets.env`.
+4. Forgets the settings except the role, rescans, and fails while anything
+   blocking is left.
+
+The service, the engine slots, backups already exported to the backup folder,
+the backup key, admin recovery codes and the log stay. Approval prompts are the
+same as for Uninstall: the in-window confirmation for the hosts file, and the
+operating system's own password prompt.
+
+## 3. Clinic name and admin password
 
 The clinic name becomes `<name>.local` (default `care`). `MDNSStatus` and
 `ValidateDomain` check it before setup; `RunSetup` checks again that no other
@@ -110,7 +158,7 @@ Advanced and need the admin password. Review checks the codes again before
 installing. Cleaning up a failed install keeps the saved codes for the next
 attempt; Uninstall deletes them.
 
-## 3. Install
+## 4. Install
 
 `RunSetup(name, adminPassword)` validates its input synchronously, then runs
 the `setup` job:

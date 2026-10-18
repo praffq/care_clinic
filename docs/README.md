@@ -99,8 +99,8 @@ These guides describe the code in this checkout: the UI-only app, the
 `care-clinic-service`, the engine VM and the Silo-backed storage service.
 Backups, extra copies and restore are described in [backups.md](backups.md).
 Storage monitoring, CARE software updates, recovery codes, web password
-reset, start at login and residue cleanup were removed in v2; they return
-later via engine agent ops.
+reset and start at login were removed in v2; they return later via engine
+agent ops. Cleanup of an earlier setup is part of [onboarding](onboarding.md#2-cleanup-of-an-earlier-setup).
 
 The implementation and these guides are the source of truth; removed design
 boards and historical notes are not runtime specifications.

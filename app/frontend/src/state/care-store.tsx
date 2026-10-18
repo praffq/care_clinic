@@ -45,7 +45,7 @@ const IDLE_RUN: RunState = {
   finished: false,
   failMessage: "",
   failure: null,
-  pages: ["computer", "address", "admin", "review", "install"],
+  pages: ["computer", "cleanup", "address", "admin", "review", "install"],
 };
 
 const ACTION_LABELS: Record<ClinicAction, string> = {

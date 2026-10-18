@@ -13,13 +13,13 @@ the engine.
 | --- | --- | --- | --- |
 | Pause the clinic | `ClinicAction("stop")` | Nothing; the stack stops. | Containers, data, configuration. |
 | Remove the clinic | `RunUninstall(removeData, adminPassword)` | The stack in the engine; with **also delete clinic data**, its database, files and uploaded configuration. This computer's hosts entry, certificate trust, firewall rules and Tailscale home access; the install folder; `config.json` is reset to `{}`. | The service, the engine and its slots, the app, logs. Without **also delete clinic data**, the clinic's volumes in the engine. |
+| Remove an earlier setup before a new one | `ScanResidue()`, `PurgeResidue(true)` from the setup wizard | Everything [the scan reports](onboarding.md#2-cleanup-of-an-earlier-setup): the earlier clinic in the engine with its data, v1 Docker resources and start-at-login entry, the install folder, `secrets.env`, the hosts entry, certificate trust, CARE firewall rules, Tailscale home access, saved settings other than the role. | The service, the engine and its slots, exported backups and the backup key, recovery codes, logs. |
 | Recover from failed first setup | `CleanupFailedInstall()` | The unfinished clinic in the engine (with its data) and the install folder. If the service isn't answering, only the install folder. The saved name and password hash are forgotten. | The role, the service and the engine. |
 | Disconnect a client | `DisconnectClient()` | This client's hosts entry and owned certificate, then the role. See [native integrations](native-integrations.md#removing-client-access). | Certificates this client did not install. |
 | Remove the desktop app | `RemoveApp()`, or the Windows uninstaller | The app. | Everything else. |
 | Remove the service and engine | `scripts/service-macos.sh uninstall [--purge]` | See [section 4](#4-removing-the-service-and-engine). | |
 
-Backups, residue scans and "Remove everything" were removed in v2;
-they return later via engine agent ops.
+"Remove everything" was removed in v2.
 
 ## 2. Uninstall, phase by phase
 

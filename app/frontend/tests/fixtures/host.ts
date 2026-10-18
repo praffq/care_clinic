@@ -1,7 +1,7 @@
 import type {
   AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupSet, BackupStatus, CareHealth, CheckResult, ClientPreflight,
   ClientReachability, ClinicUpdates, ConfirmationRequest, HistoryEntry, HomeAccess, HostCheck, HostReport, Journal, NetworkStatus,
-  Plugin, PluginPreset, QuitRequest, RestoreChoice, Section, ServiceState, SetupRecoveryStatus, StepRecord, StorageState, SystemInfo,
+  Plugin, PluginPreset, QuitRequest, ResidueTrace, RestoreChoice, Section, ServiceState, SetupRecoveryStatus, StepRecord, StorageState, SystemInfo,
   UpdateChecks,
 } from "../../src/types";
 
@@ -13,6 +13,7 @@ type Results = { [K in Method]: Awaited<ReturnType<Host[K]>> };
 type Fixtures = {
   checks: HostCheck[];
   serviceInstalled: boolean;
+  leftovers: ResidueTrace[];
   network: NetworkStatus;
   homeAccess: HomeAccess;
   preflight: ClientPreflight;
@@ -150,6 +151,7 @@ export function installTestHost() {
       { id: "disk", title: "Disk space", level: "ok", detail: "212 GB free." },
     ],
     serviceInstalled: true,
+    leftovers: [],
     network: { applicable: state.platform === "windows", ok: true, message: "", how: "", fixable: true },
     homeAccess: {
       installed: false, running: false, https: false, host: "", url: "", ip: "", enabled: false, conflict: false, unknown: false,
@@ -299,6 +301,13 @@ export function installTestHost() {
     fixtures.network.ok = false;
   }
   if (scenario === "setup-address") fixtures.addressTaken = true;
+  if (scenario === "setup-cleanup") {
+    fixtures.leftovers = [
+      { id: "engine", label: "Old clinic data", detail: "the database and files of an earlier clinic" },
+      { id: "install-dir", label: "Installed files", detail: "/Users/clinic/Library/Application Support/care-clinic/install" },
+      { id: "hosts", label: "Hosts file entry", detail: "this computer still resolves the old clinic address to itself" },
+    ];
+  }
   if (scenario.startsWith("client-")) state.role = "client";
   if (scenario === "client-saved" || scenario === "client-offline") {
     state.client_url = "https://care.local";
@@ -500,6 +509,17 @@ export function installTestHost() {
       state.mdns_name = name;
     },
     HostChecks: async () => { requireServer(); return hostReport(); },
+    ScanResidue: async () => {
+      requireServer();
+      return { clean: fixtures.leftovers.length === 0, traces: fixtures.leftovers.map((trace) => ({ ...trace })) };
+    },
+    PurgeResidue: async (confirmed: boolean) => {
+      requireServer();
+      if (!confirmed) throw new Error("confirm the removal of the earlier CARE Clinic before it can be removed");
+      await wait(150);
+      fixtures.leftovers = [];
+      return { clean: true, traces: [] };
+    },
     InstallService: async () => {
       requireServer();
       await wait(150);

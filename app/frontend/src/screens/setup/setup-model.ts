@@ -2,6 +2,7 @@ import type { SetupPage, SetupRecoveryStatus } from "@/types";
 
 export const SETUP_LABELS: Record<SetupPage, string> = {
   computer: "Computer checks",
+  cleanup: "Cleanup stale files",
   address: "Clinic address",
   admin: "Admin password",
   review: "Review",
