@@ -262,7 +262,8 @@ func (r *Runtime) Down(ctx context.Context, purge bool) error {
 		return nil
 	}
 	ag := r.Service.Agent()
-	names := []string{StackEnv, ClinicEnv, SecretsEnv}
+	// The host keeps the backup recovery key: exported backups still need it.
+	names := []string{StackEnv, ClinicEnv, SecretsEnv, BackupCert}
 	for _, f := range kitFiles {
 		names = append(names, f.dst)
 	}
