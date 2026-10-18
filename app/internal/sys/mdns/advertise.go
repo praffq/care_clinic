@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -134,8 +136,40 @@ func ValidateLabel(name string) error {
 
 var virtualIface = []string{"docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "utun", "tun", "tap"}
 
-func lanInterfaces() ([]lanInterface, error) {
-	ifaces, err := net.Interfaces()
+// Apple's link-local and peer-to-peer links: AWDL, low-latency WLAN,
+// Wi-Fi Aware, the access-point side of Internet Sharing and the
+// Apple-silicon private link to attached devices. None of them carry the LAN.
+var appleVirtualIface = regexp.MustCompile(`^(awdl|llw|nan|ap|anpi)[0-9]+$`)
+
+var (
+	macBridge   = regexp.MustCompile(`^bridge[0-9]+$`)
+	physicalNIC = regexp.MustCompile(`^en[0-9]+$`)
+)
+
+// ifaceSource reads the host's interfaces; tests replace it with fakes.
+type ifaceSource struct {
+	interfaces func() ([]net.Interface, error)
+	addrs      func(net.Interface) ([]net.Addr, error)
+	// bridgeMembers lists the member ports of a macOS bridgeN interface.
+	// Nil disables the bridge check (other systems name bridges freely).
+	bridgeMembers func(name string) ([]string, error)
+}
+
+var system = ifaceSource{
+	interfaces: net.Interfaces,
+	addrs:      func(ifi net.Interface) ([]net.Addr, error) { return ifi.Addrs() },
+}
+
+func init() {
+	if runtime.GOOS == "darwin" {
+		system.bridgeMembers = ifconfigBridgeMembers
+	}
+}
+
+func lanInterfaces() ([]lanInterface, error) { return system.lanInterfaces() }
+
+func (src ifaceSource) lanInterfaces() ([]lanInterface, error) {
+	ifaces, err := src.interfaces()
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +182,7 @@ func lanInterfaces() ([]lanInterface, error) {
 			isVirtual(ifi.Name) {
 			continue
 		}
-		addrs, err := ifi.Addrs()
+		addrs, err := src.addrs(ifi)
 		if err != nil {
 			return nil, fmt.Errorf("read addresses on %s: %w", ifi.Name, err)
 		}
@@ -167,7 +201,7 @@ func lanInterfaces() ([]lanInterface, error) {
 				link.networks = append(link.networks, network)
 			}
 		}
-		if len(link.ips) > 0 {
+		if len(link.ips) > 0 && !src.hostOnlyBridge(ifi.Name) {
 			links = append(links, link)
 		}
 	}
@@ -177,6 +211,51 @@ func lanInterfaces() ([]lanInterface, error) {
 	return links, nil
 }
 
+// hostOnlyBridge reports whether a macOS bridge has no physical port.
+// Virtualization.framework and vmnet NAT networks (the engine VM's
+// 192.168.64.1, Docker Desktop, UTM, ...) are bridgeN interfaces whose only
+// members are vmenetN, so only the host and its VMs can reach that address.
+// Thunderbolt Bridge and wired Internet Sharing bridge real enN ports, so
+// devices on those segments can reach the host through the bridge address.
+// A bridge whose members cannot be read is treated as host-only: missing a
+// rare real bridge costs less than advertising an unreachable address.
+func (src ifaceSource) hostOnlyBridge(name string) bool {
+	if src.bridgeMembers == nil || !macBridge.MatchString(name) {
+		return false
+	}
+	members, err := src.bridgeMembers(name)
+	if err != nil {
+		return true
+	}
+	for _, m := range members {
+		if physicalNIC.MatchString(m) {
+			return false
+		}
+	}
+	return true
+}
+
+func ifconfigBridgeMembers(name string) ([]string, error) {
+	out, err := exec.Command("/sbin/ifconfig", name).Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseBridgeMembers(string(out)), nil
+}
+
+// parseBridgeMembers reads the "member: <port> flags=..." lines of ifconfig.
+func parseBridgeMembers(ifconfig string) []string {
+	var members []string
+	for line := range strings.Lines(ifconfig) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "member:"); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				members = append(members, f[0])
+			}
+		}
+	}
+	return members
+}
+
 func isVirtual(name string) bool {
 	lower := strings.ToLower(name)
 	for _, prefix := range virtualIface {
@@ -184,7 +263,7 @@ func isVirtual(name string) bool {
 			return true
 		}
 	}
-	return false
+	return appleVirtualIface.MatchString(lower)
 }
 
 func sameLinks(a, b []lanInterface) bool {
