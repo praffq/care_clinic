@@ -66,7 +66,7 @@ func (c *Coordinator) engineForward() map[string]stepFunc {
 			if !j.Engine.WithCare {
 				return nil
 			}
-			return c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil)
+			return c.stackUp(ctx)
 		},
 		StepEngineCheck: func(ctx context.Context, j *Journal) error {
 			if !j.Engine.WithCare {

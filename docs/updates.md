@@ -68,6 +68,12 @@ as its own journaled operation. Each step of an operation runs at most 3 times
 | `start-stack` | `stack.up` and wait | |
 | `health` | services running and `https://localhost/ping/` | |
 
+Every `stack.up` an update makes (CARE, engine and desktop updates and their
+rollbacks) waits while the agent answers busy, retrying every 2 seconds for up
+to the 600-second `stack.up` timeout. After a service or engine restart the
+service brings the clinic back with its own `stack.up`, and the update's call
+must wait for it rather than spend its three step attempts on "busy".
+
 Rollback undoes exactly what the journal says happened:
 
 - failure before `stop-app`: nothing to undo;
