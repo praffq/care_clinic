@@ -99,9 +99,21 @@ failure.
 
 ## Agent
 
-`app/cmd/care-engine-agent` is a placeholder: `GET /v1/status` on TCP
-`:47377` returns `{"engine_version": "...", "docker_ready": bool}`. It is
-built static (`CGO_ENABLED=0`) during the image build.
+`app/cmd/care-engine-agent` serves the engine protocol
+(`app/internal/engine/agent`, executing ops with the docker CLI). It is built
+static (`CGO_ENABLED=0`) during the image build. Listeners:
+
+| Listener | When | Used by |
+| --- | --- | --- |
+| AF_VSOCK port `1024` (any CID) | always | Virtualization.framework (virtio-socket device) |
+| TCP `:47377`, mutual TLS 1.3 | only if `/sys/firmware/qemu_fw_cfg/by_name/opt/care/tls/raw` exists | QEMU (Windows) |
+
+The TLS bundle is passed with `-fw_cfg name=opt/care/tls,file=bundle.pem` and
+holds three PEM blocks, in order: the CA certificate, the server certificate
+and the server private key. Clients must present a certificate issued by that
+CA. Without the bundle there is no TCP listener at all. The `vmw_vsock_virtio_transport`
+and `qemu_fw_cfg` modules are loaded from `/etc/modules`. Request lines are
+logged to `/var/log/care-engine-agent.log`.
 
 ## Smoke test
 
@@ -110,9 +122,35 @@ engine/smoke.sh arm64   # or amd64; optional 2nd arg = timeout seconds
 ```
 
 Boots the built bundle under QEMU TCG inside an `alpine` container with a
-blank 8 GiB data disk, forwards guest port 47377 via QEMU `hostfwd`, and
-waits until `/v1/status` reports `docker_ready: true`. The serial log is
-written to `dist/smoke-<arch>.log`. The status request is made from inside
-the container because Rancher Desktop's published-port forwarding proved
-unreliable. On an Apple Silicon Mac both arches reach `docker_ready` in
-under a minute.
+blank 8 GiB data disk, generates a throwaway CA plus server/client
+certificates, passes the server bundle through fw_cfg, forwards guest port
+47377 via QEMU `hostfwd`, and waits until `/v1/status` (over mutual TLS)
+reports `docker_ready: true`; it then checks that a request without a client
+certificate is rejected. (vhost-vsock is not available inside the container,
+so the smoke test covers the TLS listener; the vsock listener is exercised by
+`vzboot` below.) The serial log is written to `dist/smoke-<arch>.log`. The
+status request is made from inside the container because Rancher Desktop's
+published-port forwarding proved unreliable.
+
+## Booting with Virtualization.framework (macOS)
+
+`app/cmd/vzboot` is a development harness that boots a bundle the way the
+macOS host service will:
+
+```sh
+engine/build.sh arm64
+tar -C dist -xzf dist/care-engine-0.1.0-arm64.tar.gz
+app/cmd/vzboot/build.sh            # builds dist/vzboot, ad-hoc signed with
+                                   # com.apple.security.virtualization
+dist/vzboot --bundle dist/care-engine-0.1.0-arm64 --data /tmp/data.img \
+  [--mem 4096 --cpus 2] [--call "POST /v1/ops/stack.status"] [--exit]
+```
+
+It creates a sparse 64 GiB data disk if absent, boots with the Linux boot
+loader (`console=hvc0 care.system=/dev/vda care.data=/dev/vdb`), virtio-blk
+(system.img read-only, then the data disk), NAT networking and a virtio-socket
+device, mirrors the console to stdout and `<data>.console.log`, then polls
+`GET /v1/status` over vsock port 1024 until `docker_ready` is true. Ctrl-C (or
+`--exit`) sends `POST /v1/shutdown` and waits for the VM to power off,
+force-stopping it after 30 s. On an M-series Mac the agent is ready ~7 s after
+start on a blank data disk and ~3 s on later boots.

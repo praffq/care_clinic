@@ -5,14 +5,16 @@
 ARG ALPINE_VERSION=3.24
 ARG GO_VERSION=1.26
 
-# --- placeholder agent, cross-compiled on the build platform -----------------
+# --- agent, cross-compiled on the build platform -----------------------------
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS agent
 ARG TARGETARCH
 ARG ENGINE_VERSION
 WORKDIR /src
 COPY --from=app go.mod go.sum ./
+COPY --from=app internal/engine ./internal/engine
 COPY --from=app cmd/care-engine-agent ./cmd/care-engine-agent
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=${ENGINE_VERSION}" \
     -o /out/care-engine-agent ./cmd/care-engine-agent
 

@@ -1,55 +1,143 @@
-// Command care-engine-agent is a placeholder agent baked into the engine VM
-// image. It only reports engine status; the real agent replaces it later.
+// Command care-engine-agent runs inside the engine VM and serves the engine
+// protocol (internal/engine/agent) to the host service.
+//
+// Listeners:
+//   - AF_VSOCK port 1024 (Virtualization.framework on macOS), always;
+//   - TCP :47377 with mutual TLS, only when QEMU passes a TLS bundle through
+//     fw_cfg (see DefaultTLSBundle). There is never a plain TCP listener.
 package main
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/tls"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 )
 
 var version = "dev"
 
-type status struct {
-	EngineVersion string `json:"engine_version"`
-	DockerReady   bool   `json:"docker_ready"`
+const (
+	DefaultVsockPort = 1024
+	DefaultTLSListen = ":47377"
+)
+
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
 }
 
-func dockerReady(socket string) bool {
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-			},
-		},
+func (r *statusRecorder) WriteHeader(code int) {
+	r.code = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// logRequests writes one line per request to the service log.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		log.Printf("%s %s %s %d %s", r.RemoteAddr, r.Method, r.URL.Path, rec.code, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+// tlsListener returns the mutual-TLS TCP listener, or nil when bundlePath
+// does not exist.
+func tlsListener(bundlePath, addr string) (net.Listener, error) {
+	data, err := os.ReadFile(bundlePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	resp, err := client.Get("http://docker/_ping")
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("read tls bundle: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
+	cfg, err := parseTLSBundle(data)
+	if err != nil {
+		return nil, err
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return tls.NewListener(l, cfg), nil
 }
 
 func main() {
-	addr := flag.String("listen", ":47377", "TCP listen address")
-	socket := flag.String("docker-socket", "/var/run/docker.sock", "Docker daemon socket")
+	vsockPort := flag.Uint("vsock-port", DefaultVsockPort, "AF_VSOCK listen port (0 disables)")
+	tlsBundle := flag.String("tls-bundle", DefaultTLSBundle, "PEM bundle (CA cert, server cert, server key) enabling the mutual-TLS TCP listener")
+	tlsAddr := flag.String("tls-listen", DefaultTLSListen, "TCP listen address for mutual TLS")
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.LUTC)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
-		s := status{EngineVersion: version, DockerReady: dockerReady(*socket)}
-		log.Printf("%s %s docker_ready=%t", r.Method, r.URL.Path, s.DockerReady)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(s)
-	})
+	srv := &http.Server{
+		Handler: logRequests(agent.NewServer(agent.Config{
+			EngineVersion: version,
+			ShutdownDelay: 500 * time.Millisecond,
+		}, &agent.DockerExecutor{})),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 
-	log.Printf("care-engine-agent %s listening on %s", version, *addr)
-	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	var listeners []net.Listener
+	if *vsockPort != 0 {
+		l, err := listenVsock(uint32(*vsockPort))
+		if err != nil {
+			log.Fatal(err)
+		}
+		listeners = append(listeners, l)
+	}
+	tl, err := tlsListener(*tlsBundle, *tlsAddr)
+	if err != nil {
+		log.Fatalf("mutual-TLS listener: %v", err)
+	}
+	if tl != nil {
+		listeners = append(listeners, tl)
+	} else {
+		log.Printf("no TLS bundle at %s; TCP listener disabled", *tlsBundle)
+	}
+	if len(listeners) == 0 {
+		log.Fatal("no listeners configured")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	errc := make(chan error, len(listeners))
+	var wg sync.WaitGroup
+	for _, l := range listeners {
+		log.Printf("care-engine-agent %s listening on %s %s", version, l.Addr().Network(), l.Addr())
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("serve %s: %w", l.Addr(), err)
+			}
+		}()
+	}
+
+	select {
+	case err := <-errc:
+		log.Print(err)
+		_ = srv.Close()
+		wg.Wait()
+		os.Exit(1)
+	case <-ctx.Done():
+		log.Print("stopping")
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+		wg.Wait()
+	}
 }

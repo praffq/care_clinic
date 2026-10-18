@@ -1,6 +1,9 @@
 #!/bin/sh
 # Boot a built bundle under QEMU (TCG, inside a container) with a blank data
-# disk and wait for the agent to answer GET /v1/status via hostfwd.
+# disk and wait for the agent to answer GET /v1/status over mutual TLS via
+# hostfwd. A throwaway CA, server and client certificate are generated in the
+# container; the server bundle reaches the guest through fw_cfg
+# (opt/care/tls), which is what enables the agent's TCP listener.
 # Usage: engine/smoke.sh <arm64|amd64> [timeout-seconds]
 set -eu
 arch=${1:-}
@@ -40,13 +43,25 @@ log="$repo/dist/smoke-$arch.log"
 
 docker run -d --name "$container" \
 	-v "$work/$name:/bundle:ro" alpine:3.24 sh -c "
-	apk add --no-cache -q $pkg qemu-img >/dev/null &&
+	apk add --no-cache -q $pkg qemu-img openssl curl >/dev/null &&
+	mkdir /pki && cd /pki &&
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+		-subj /CN=smoke-ca -keyout ca.key -out ca.crt 2>/dev/null &&
+	for n in server client; do
+		openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+			-subj /CN=\$n -keyout \$n.key -out \$n.csr 2>/dev/null &&
+		printf 'subjectAltName=IP:127.0.0.1\\nextendedKeyUsage=%sAuth\\n' \$n >\$n.ext &&
+		openssl x509 -req -in \$n.csr -CA ca.crt -CAkey ca.key -days 1 \
+			-extfile \$n.ext -out \$n.crt 2>/dev/null || exit 1
+	done &&
+	cat ca.crt server.crt server.key >tls-bundle.pem &&
 	qemu-img create -f raw /data.img 8G >/dev/null &&
 	exec $qemu -accel tcg -smp 2 -m 2048 -nographic -no-reboot \
 		-kernel /bundle/vmlinuz -initrd /bundle/initramfs \
 		-append 'console=$console care.system=/dev/vda care.data=/dev/vdb panic=-1' \
 		-drive file=/bundle/system.img,if=virtio,format=raw,readonly=on \
 		-drive file=/data.img,if=virtio,format=raw \
+		-fw_cfg name=opt/care/tls,file=/pki/tls-bundle.pem \
 		-netdev user,id=n0,hostfwd=tcp::47377-:47377 -device virtio-net-pci,netdev=n0" >/dev/null
 
 echo "booting $name under QEMU TCG (log: $log)"
@@ -55,9 +70,16 @@ while :; do
 	docker logs "$container" >"$log" 2>&1 || true
 	# Query through QEMU's hostfwd from inside the container; this avoids
 	# depending on the Docker host's port publishing (flaky on Rancher/Lima).
-	if out=$(docker exec "$container" wget -qO- -T 3 http://127.0.0.1:47377/v1/status 2>/dev/null) &&
+	if out=$(docker exec "$container" curl -sf -m 5 --cacert /pki/ca.crt \
+		--cert /pki/client.crt --key /pki/client.key https://127.0.0.1:47377/v1/status 2>/dev/null) &&
 		echo "$out" | grep -q '"docker_ready":true'; then
 		echo "agent ready after $(($(date +%s) - start))s: $out"
+		if docker exec "$container" curl -sf -m 5 --cacert /pki/ca.crt \
+			https://127.0.0.1:47377/v1/status >/dev/null 2>&1; then
+			echo "FAIL: agent accepted a request without a client certificate" >&2
+			exit 1
+		fi
+		echo "request without a client certificate rejected"
 		exit 0
 	fi
 	if [ -z "$(docker ps -q -f "name=^$container$")" ]; then

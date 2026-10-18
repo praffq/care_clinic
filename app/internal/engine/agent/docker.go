@@ -73,6 +73,8 @@ type DockerExecutor struct {
 	Run Runner
 	// Now returns the current time; nil uses time.Now.
 	Now func() time.Time
+	// Stat stats files; nil uses os.Stat.
+	Stat func(name string) (os.FileInfo, error)
 }
 
 var _ Executor = (*DockerExecutor)(nil)
@@ -89,6 +91,13 @@ func (d *DockerExecutor) now() time.Time {
 		return d.Now()
 	}
 	return time.Now()
+}
+
+func (d *DockerExecutor) stat(name string) (os.FileInfo, error) {
+	if d.Stat != nil {
+		return d.Stat(name)
+	}
+	return os.Stat(name)
 }
 
 func compose(args ...string) []string {
@@ -258,6 +267,10 @@ type composePS struct {
 
 func (d *DockerExecutor) StackStatus(ctx context.Context) (protocol.StackStatusResult, error) {
 	res := protocol.StackStatusResult{Services: []protocol.ServiceState{}}
+	// A fresh engine has no stack yet: report it as empty, not as a failure.
+	if _, err := d.stat(ComposeFile); errors.Is(err, os.ErrNotExist) {
+		return res, nil
+	}
 	out, err := d.capture(ctx, "compose ps", Command{Args: compose("ps", "--all", "--format", "json"), Dir: ComposeDir})
 	if err != nil {
 		return res, err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -71,7 +73,11 @@ func (e *recEmitter) Log(l protocol.LogLine) { e.mu.Lock(); e.logs = append(e.lo
 
 func newDocker(respond func(Command) fakeRun) (*DockerExecutor, *fakeRunner) {
 	r := &fakeRunner{respond: respond}
-	return &DockerExecutor{Run: r.run, Now: func() time.Time { return time.Date(2026, 10, 18, 5, 4, 3, 0, time.UTC) }}, r
+	return &DockerExecutor{
+		Run:  r.run,
+		Now:  func() time.Time { return time.Date(2026, 10, 18, 5, 4, 3, 0, time.UTC) },
+		Stat: func(string) (os.FileInfo, error) { return nil, nil },
+	}, r
 }
 
 var composePrefix = []string{"docker", "compose", "--project-name", "care", "--file", "/var/lib/care/clinic/docker-compose.yml", "--project-directory", "/var/lib/care/clinic"}
@@ -200,6 +206,20 @@ func TestDockerStackStatus(t *testing.T) {
 	d, _ := newDocker(func(Command) fakeRun { return fakeRun{stdout: ""} })
 	if res, err := d.StackStatus(context.Background()); err != nil || len(res.Services) != 0 || res.Services == nil {
 		t.Fatalf("empty: %+v %v", res, err)
+	}
+
+	d, r := newDocker(func(Command) fakeRun { return fakeRun{err: errors.New("must not run")} })
+	d.Stat = func(name string) (os.FileInfo, error) {
+		if name != ComposeFile {
+			t.Errorf("stat %q", name)
+		}
+		return nil, fs.ErrNotExist
+	}
+	if res, err := d.StackStatus(context.Background()); err != nil || len(res.Services) != 0 || res.Services == nil {
+		t.Fatalf("no compose file: %+v %v", res, err)
+	}
+	if len(r.argv()) != 0 {
+		t.Fatalf("ran %v without a compose file", r.argv())
 	}
 }
 
