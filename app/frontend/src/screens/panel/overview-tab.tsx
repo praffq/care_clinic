@@ -14,6 +14,7 @@ import { PanelBadge, PanelLogButton, PanelPageHeader, usePanelTask } from "./pan
 import { usePanelUpdateLock } from "./panel-update-lock";
 import { BackupStatusCard } from "./backup-status";
 import { StorageHealthCard } from "./storage-health";
+import { SystemCard } from "./system-card";
 
 const ENGINE_LABELS: Record<EngineState, [string, PanelTone]> = {
   no_engine: ["Not installed", "danger"],
@@ -117,6 +118,7 @@ export function OverviewTab() {
     </div>
     <StorageHealthCard />
     <BackupStatusCard />
+    <SystemCard />
     {phoneOpen ? <PhoneDialog onClose={() => setPhoneOpen(false)} /> : null}
   </div>;
 }

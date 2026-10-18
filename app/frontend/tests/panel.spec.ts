@@ -203,7 +203,7 @@ test("home access has its own tab and is not on Overview", async ({ page }) => {
   await openPanel(page);
   await expect(overview(page).getByRole("region", { name: "Home access", exact: true })).toHaveCount(0);
   const tabs = page.getByRole("navigation", { name: "Clinic sections" }).getByRole("button");
-  await expect(tabs).toHaveText(["Overview", "Home access", "Updates", "Advanced"]);
+  await expect(tabs).toHaveText(["Overview", "Home access", "Updates", "Backups", "Advanced"]);
   await expect(homeAccess(page)).toBeHidden();
   await section(page, "Home access").click();
   await expect(section(page, "Home access")).toHaveAttribute("aria-current", "page");

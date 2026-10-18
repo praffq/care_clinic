@@ -69,6 +69,9 @@ func (s EngineStatus) AgentReachable() bool {
 
 // ServiceStatus is GET /v1/service/status.
 type ServiceStatus struct {
+	// Version is the care-clinic-service build ("dev" when built without
+	// a version).
+	Version string         `json:"version,omitempty"`
 	Engine  EngineStatus   `json:"engine"`
 	Slots   slots.Pointer  `json:"slots"`
 	Forward *ForwardStatus `json:"forward,omitempty"`

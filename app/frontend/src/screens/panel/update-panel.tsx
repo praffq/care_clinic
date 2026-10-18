@@ -7,6 +7,7 @@ import type { AppUpdateController } from "@/hooks/use-app-update";
 import { bridge } from "@/lib/bridge";
 import { megabytes } from "@/lib/format";
 import { useCare } from "@/state/care-store";
+import { ClinicUpdatesCard } from "./clinic-updates";
 import { PanelBadge, PanelLogButton, PanelNotice, PanelPageHeader, usePanelTask } from "./panel-ui";
 
 function checkedTime(timestamp: number) {
@@ -20,6 +21,7 @@ export function UpdatePanel({ appUpdate }: { appUpdate: AppUpdateController }) {
     <PanelPageHeader title="Updates" subtitle="Keep CARE Clinic up to date." />
     <UpdateChecksNotice />
     <ClinicApplicationCard controller={appUpdate} />
+    <ClinicUpdatesCard />
     <div className="panel-update-foot">
       <p className="panel-small panel-grow">Updates need internet. Your clinic records are kept.</p>
       <PanelLogButton />

@@ -8,9 +8,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { bridge } from "@/lib/bridge";
+import { buildFailure } from "@/lib/operation-errors";
+import { dateTime } from "@/lib/format";
 import { useCare } from "@/state/care-store";
-import type { FrontendPlugin, Plugin, PluginPreset } from "@/types";
-import { AdvancedError, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem } from "./advanced-ui";
+import type { FrontendPlugin, HistoryEntry, Plugin, PluginPreset } from "@/types";
+import { AdvancedError, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem } from "./advanced-ui";
+import { useClinicUpdates } from "./clinic-updates";
+import { JournalSteps, stepLabel, useUpdateJournal } from "./panel-journal";
 import { draftFor, isPresetSource, isSecret, pluginFrom, presetFor, type PluginDraft } from "./plugin-model";
 
 const JOB = "plugins";
@@ -19,7 +23,9 @@ const JOB = "plugins";
  *  journaled operation in the service (backup, build, migrate, health check,
  *  rollback on failure); care-done "plugins" reports its end. */
 export function PluginSettings({ adminPassword }: { adminPassword: string }) {
-  const { busy, runJob } = useCare();
+  const { busy, busyLabel, runJob } = useCare();
+  const updates = useClinicUpdates(true);
+  const [journal, setJournal] = useUpdateJournal();
   const lock = useAdvancedLock();
   const [catalog, setCatalog] = useState<PluginPreset[]>([]);
   const [screens, setScreens] = useState<FrontendPlugin[]>([]);
@@ -49,15 +55,16 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
     return () => { live.current = false; };
   }, [reload]);
   useEffect(() => {
-    if (wasBusy.current && !busy) void reload();
+    if (wasBusy.current && !busy) { void reload(); setJournal(undefined); }
     wasBusy.current = busy;
-  }, [busy, reload]);
+  }, [busy, reload, setJournal]);
 
   const blocked = busy || lock.disabled || starting || enabled === null;
   const start = async (label: string, call: () => Promise<void>) => {
     if (blocked || lock.isLocked()) return false;
     setStarting(true);
     setProblem(null);
+    setJournal(undefined);
     try {
       return await runJob(JOB, label, call);
     } catch (cause) {
@@ -75,6 +82,10 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
     await start(`Removing ${plugin.id}`, () => bridge.DisablePlugin(plugin.id, adminPassword));
   };
 
+  const changing = busy && (busyLabel.startsWith("Setting up ") || busyLabel.startsWith("Removing "));
+  const liveJournal = changing && journal?.component === "plugins" ? journal : null;
+  const lastChange = updates.data?.history.find((entry) => entry.component === "plugins");
+  const undone = !changing && lastChange && lastChange.result !== "applied" ? lastChange : null;
   const enabledIds = new Set((enabled ?? []).map((plugin) => plugin.id));
   const available = catalog.filter((preset) => !enabledIds.has(preset.id));
   return <section className="advanced-card advanced-card-pad" aria-labelledby="advanced-plugins-title">
@@ -91,6 +102,11 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
     </div>
     {enabled === null && !problem ? <div className="advanced-busy" role="status"><Spinner />Reading plugins…</div> : null}
     <AdvancedError problem={problem} />
+    {changing ? <div className="plugin-progress" role="status" aria-live="polite">
+      <div className="advanced-busy"><Spinner />{busyLabel}…</div>
+      {liveJournal ? <JournalSteps journal={liveJournal} label="Plugin change steps" /> : null}
+    </div> : null}
+    {undone ? <RolledBack entry={undone} /> : null}
     {enabled !== null ? <ul className="plugin-list" aria-label="Enabled plugins">
       {enabled.length === 0 ? <li className="plugin-empty">No plugins are enabled.</li> : null}
       {enabled.map((plugin) => {
@@ -98,7 +114,7 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
         return <li key={plugin.id} className="plugin-row">
           <div className="advanced-grow">
             <div className="advanced-setting-label">{preset?.label ?? plugin.id}
-              <span className="plugin-tag">{isPresetSource(preset, plugin) && preset?.bundled ? "Included" : "Custom build"}</span>
+              <span className="plugin-tag">{isPresetSource(preset, plugin) && preset?.bundled ? "Bundled" : "Custom build"}</span>
             </div>
             <p className="plugin-source">{plugin.package}{plugin.version ? ` ${plugin.version}` : ""}</p>
           </div>
@@ -146,6 +162,18 @@ export function PluginSettings({ adminPassword }: { adminPassword: string }) {
       </AlertDialogContent>
     </AlertDialog>
   </section>;
+}
+
+/** The last plugin change, when CARE Clinic had to undo it. */
+function RolledBack({ entry }: { entry: HistoryEntry }) {
+  const reason = entry.error ? buildFailure(entry.error) : null;
+  const failed = entry.result === "rollback_failed";
+  return <AdvancedNotice title={failed ? "The last plugin change couldn't be undone" : "The last plugin change was undone"}>
+    <p>{failed ? "CARE Clinic couldn't put the previous plugins back. Resolve it under Updates, in Clinic software."
+      : `CARE Clinic put the previous plugins back${entry.finished_at ? ` on ${dateTime(entry.finished_at)}` : ""}.`}</p>
+    {reason ? <p><strong>The build failed and won&apos;t succeed by retrying:</strong> {reason}. Change the plugin&apos;s package or version before trying again.</p>
+      : entry.error ? <p>{entry.failed_step ? `${stepLabel(entry.failed_step)}: ` : ""}{entry.error}</p> : null}
+  </AdvancedNotice>;
 }
 
 function PluginDialog({ draft: initial, working, disabled, onCancel, onSave }: {

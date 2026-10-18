@@ -13,6 +13,9 @@ const OPERATIONS: Record<string, [string, string]> = {
   Stopping: ["Stopping", "Staff won't be able to use CARE until it is started again."],
   Restarting: ["Restarting", "Staff will be signed out briefly. Keep this computer on."],
   Uninstalling: ["Removing", "CARE is being removed from this computer."],
+  "Updating the clinic": ["Updating", "CARE restarts during the update. Keep this computer on."],
+  "Rolling back the clinic update": ["Rolling back", "CARE restarts on the previous version. Keep this computer on."],
+  "Restoring a backup": ["Restoring", "Staff can't use CARE until the restore finishes. Keep this computer on."],
 };
 
 /** Panel status, driven by the background service's summary. */

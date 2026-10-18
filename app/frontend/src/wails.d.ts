@@ -5,10 +5,12 @@ import type {
   AppState,
   AppUpdate,
   AppUpdateOutcome,
+  BackupsState,
   CareHealth,
   ClientPreflight,
   ClientReachability,
   ClinicInfo,
+  ClinicUpdates,
   ConfirmationRequest,
   FrontendPlugin,
   HomeAccess,
@@ -21,6 +23,7 @@ import type {
   RestoreChoice,
   ServiceState,
   StorageState,
+  SystemInfo,
   UpdateChecks,
 } from "./types";
 
@@ -100,6 +103,19 @@ declare global {
           ClearBackupCopyDir(adminPassword: string): Promise<void>;
           CopyBackupsNow(): Promise<void>;
           PruneEngineImages(): Promise<void>;
+          ClinicUpdateStatus(): Promise<ClinicUpdates>;
+          /** Background job "update-check"; ClinicUpdateStatus has the result. */
+          CheckClinicUpdates(): Promise<void>;
+          /** Background job "updates"; "update-journal" follows its steps. */
+          ApplyClinicUpdates(adminPassword: string): Promise<void>;
+          ResumeClinicUpdate(adminPassword: string): Promise<void>;
+          RollBackClinicUpdate(adminPassword: string): Promise<void>;
+          ListBackups(): Promise<BackupsState>;
+          /** Background job "backup"; "backup-progress" follows it. */
+          BackUpNow(): Promise<void>;
+          /** Resolves to the new folder, or "" when the dialog was cancelled. */
+          ChooseBackupFolder(adminPassword: string): Promise<string>;
+          SystemInfo(): Promise<SystemInfo>;
         };
       };
     };

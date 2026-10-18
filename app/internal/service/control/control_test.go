@@ -116,6 +116,7 @@ func newEnv(t *testing.T, setup func(*agent.FakeExecutor)) *env {
 		},
 		Settings: cfg,
 		Backups:  &e.backups,
+		Version:  "1.2.3-test",
 	}), ReadHeaderTimeout: time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
@@ -578,6 +579,9 @@ func TestStatusIncludesForwardAndMDNS(t *testing.T) {
 	}
 	if st.MDNS == nil || st.MDNS.Name != "care" {
 		t.Fatalf("mdns = %+v", st.MDNS)
+	}
+	if st.Version != "1.2.3-test" {
+		t.Fatalf("version = %q", st.Version)
 	}
 }
 

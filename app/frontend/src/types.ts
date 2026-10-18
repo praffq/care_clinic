@@ -255,3 +255,125 @@ export type PluginPreset = Plugin & {
   default?: boolean;
   required_configs?: string[];
 };
+
+/** An image the clinic runs (internal/updates.Image). */
+export type UpdateImage = { role: string; repo: string; digest: string };
+
+/** What the update coordinator recorded as installed (internal/updates.Installed). */
+export type InstalledVersions = {
+  desktop?: string;
+  engine?: { version: string; data_schema: number };
+  care?: { version: string; released_at: string; images: UpdateImage[] };
+  updated_at?: string;
+};
+
+export type UpdateComponent = "care" | "engine" | "desktop" | "plugins" | "frontend";
+
+export type PlannedStep = { component: UpdateComponent; from?: string; to: string };
+
+/** internal/updates.CheckResult. */
+export type CheckResult = {
+  revision: number;
+  unsigned?: boolean;
+  available: boolean;
+  reason?: string;
+  urgent?: boolean;
+  steps?: PlannedStep[];
+  held?: string[];
+  prefetched: boolean;
+  prefetch_error?: string;
+};
+
+export type ReleaseNote = {
+  component: UpdateComponent;
+  version: string;
+  released_at?: string;
+  migrations?: boolean;
+  data_schema?: number;
+  links?: { label: string; url: string }[];
+};
+
+export type JournalState = "running" | "uncertain" | "rolling_back" | "rollback_uncertain" | "failed";
+export type StepRecord = {
+  name: string;
+  status: "pending" | "running" | "done" | "failed";
+  attempts: number;
+  error?: string;
+  at?: string;
+};
+
+/** An unfinished update, plugin or frontend operation (internal/updates.Journal). */
+export type Journal = {
+  id: string;
+  component: UpdateComponent;
+  from?: string;
+  to: string;
+  revision: number;
+  state: JournalState;
+  started_at: string;
+  updated_at: string;
+  steps: StepRecord[];
+  rollback_steps?: StepRecord[];
+  error?: string;
+  failed_step?: string;
+};
+
+export type HistoryEntry = {
+  id: string;
+  component: UpdateComponent;
+  from?: string;
+  to: string;
+  revision: number;
+  result: "applied" | "rolled_back" | "rollback_failed";
+  error?: string;
+  failed_step?: string;
+  backup_id?: string;
+  started_at: string;
+  finished_at: string;
+};
+
+export type UpdateBlocker = "up_to_date" | "needs_desktop" | "blocked" | "unknown_care" | "no_path";
+
+/** ClinicUpdateStatus: the Updates screen. */
+export type ClinicUpdates = {
+  installed: InstalledVersions;
+  verified_at?: string;
+  unsigned?: boolean;
+  check?: CheckResult;
+  check_error?: string;
+  checked_at?: string;
+  blocker?: UpdateBlocker;
+  notes?: ReleaseNote[];
+  journal?: Journal;
+  history: HistoryEntry[];
+};
+
+/** One backup set; copied sets are in the backup folder on this computer. */
+export type BackupSet = {
+  id: string;
+  created_at: string;
+  size: number;
+  /** A copied set's folder, for RestoreBackup. */
+  dir?: string;
+  copied: boolean;
+  latest?: boolean;
+  verified_at?: string;
+};
+
+export type BackupsState = { dir: string; sets: BackupSet[]; status: BackupStatus; engine_error?: string };
+
+/** The backup-progress event. */
+export type BackupProgress = { job: "backup" | "restore"; state?: string; bytes?: number; total?: number; message?: string };
+
+export type EngineSlot = { version: string; arch?: string; data_schema: number; current?: boolean; fallback?: boolean };
+
+/** SystemInfo: the versions and engine slots on this computer. */
+export type SystemInfo = {
+  desktop_version: string;
+  service_version?: string;
+  engine?: EngineStatus;
+  current?: string;
+  fallback?: string;
+  slots: EngineSlot[];
+  error?: string;
+};

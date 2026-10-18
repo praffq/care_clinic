@@ -110,8 +110,9 @@ after a reboot without the app.
 | --- | --- |
 | Overview | Clinic status, Start/Stop/Restart, opening CARE, phone/tablet connection, network fix. |
 | Home access | Tailscale setup, turning home access on or off and doctor sharing. See [Home access](home-access.md). |
-| Updates | CARE Clinic app updates and the update-check switch. |
-| Advanced | Clinic settings, CARE Clinic password and recovery codes, CARE web password reset, diagnostic log and uninstall. |
+| Updates | CARE Clinic app updates, clinic software (CARE and engine) updates, interrupted-update recovery and history. |
+| Backups | Backup sets in the backup folder, Back up now, restore, and choosing the backup folder. |
+| Advanced | Clinic settings, plugins, CARE Clinic password and recovery codes, CARE web password reset, diagnostic log and uninstall. |
 
 **Connect phone or tablet** displays a QR code for
 `http://<clinic>.local/setup`. Phones and tablets still need to follow their
@@ -121,6 +122,11 @@ platform's certificate instructions.
 disk and on the backup folder's drive, and pings CARE (`https://localhost/ping/`)
 alongside each stack service's state. It refreshes every minute while Overview
 is open. Below 10 GB free the service summary warns; below 5 GB it is critical.
+
+**Engine and system** on Overview lists the CARE Clinic app, background
+service and engine versions, the engine VM state and uptime, and the installed
+engine slots: the one **In use** and the **Fallback** an engine update can
+return to. It reloads when the engine state or current slot changes.
 
 **Recovery codes.** When no codes are saved, a banner asks for the CARE Clinic
 password and saves six one-time codes to a text file you choose.
@@ -144,6 +150,15 @@ Clinic settings edit the installed `backend.env` and `frontend.env`; see
 [configuration](configuration-and-settings.md#environment-file-api). Email,
 SMS and MFA settings are not offered.
 
+**Plugins** lists enabled plugins with a **Bundled** badge (shipped presets)
+or **Custom build** badge (any other package or git URL). **Settings** edits a
+plugin's settings; secrets (keys, tokens, passwords) show as `********` and
+are kept unless you type a new value. While a change runs, its steps
+(backup, build, migrate, restart, health) update live from the update journal.
+If the last plugin change was undone, a notice gives the reason. When the
+image build itself failed, it says the build won't succeed by retrying, so
+change the package or version first. See [plugins](plugins.md).
+
 ### App updates
 
 A CARE Clinic update downloads a verified application installer or replaces
@@ -159,6 +174,48 @@ the app bundle. Conflicting actions stay locked while it runs:
 
 A handoff acknowledgement does not prove the external installer finished and
 does not change the running version to "Up to date".
+
+### Clinic software updates
+
+The **Clinic software** card on Updates covers CARE and the engine from the
+update feed (see [updates](updates.md)). It shows the installed CARE, engine
+and app versions, and an **Unsigned feed** badge when this build accepts an
+unsigned feed (testing only).
+
+| State | What it means and what to do |
+| --- | --- |
+| Not checked yet / Up to date | **Check now** asks the service to read the feed and download what's next. |
+| Update available | The plan lists each step (engine, CARE) with from → to, release date, release-notes links and a **Database changes** badge. **Apply update** asks for the CARE Clinic password. |
+| Can't update yet | The reason is shown: a newer CARE Clinic app is needed first (update it on the card above), the next release is on hold, the installed CARE isn't in the feed, or no path exists. |
+| Updating / Rolling back | Each journal step (backup, images, migrate, restart, health) updates live. CARE restarts and staff are signed out briefly. |
+| Needs attention | An operation was interrupted (for example by a power cut). **Resume** carries on from the interrupted step; **Roll back** puts the previous version back, restoring the pre-update backup if the database changed. When a rollback itself failed, only **Try the rollback again** is offered. Both need the CARE Clinic password. |
+
+**Recent changes** lists applied, rolled-back and rollback-failed updates and
+plugin changes, with the failing step and reason. The app's own self-update
+stays on the CARE Clinic application card.
+
+## Backups
+
+The **Backups** tab lists the backup sets in the backup folder on this
+computer, newest first, with time, id and size. The newest set is **Verified**
+once its checksum was checked; older sets show **Copied**, and a set still
+inside the engine shows **Not copied out**.
+
+- The status card shows when backups were last copied out, how many are
+  waiting, and the backup folder. Alerts appear when backups haven't been
+  copied out for too long, the last copy failed (for example the disk is full),
+  or the engine's backup list couldn't be read.
+- **Back up now** takes a backup and copies it out, with progress.
+- **Restore…** (copied sets only) asks for the CARE Clinic password and warns
+  that everything recorded after that backup is lost. CARE is unavailable until
+  the restore finishes; progress shows on the tab.
+- **Change folder…** asks for the CARE Clinic password and opens a folder
+  picker; new backups go there.
+- **Extra copy** shows the USB drive or network share copy, when one is set,
+  and whether it is connected and up to date. **Open Advanced** manages it.
+
+The recovery key, the extra copy and restoring from another folder or another
+computer are in Advanced under **Backup recovery**; see [backups](backups.md).
 
 ## Closing and removing CARE
 

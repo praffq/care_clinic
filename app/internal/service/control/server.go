@@ -99,6 +99,8 @@ type Config struct {
 	MDNS     func() api.MDNSStatus
 	Settings Settings
 	Backups  Backups
+	// Version is reported in the status.
+	Version string
 }
 
 // Server is the control API's http.Handler.
@@ -114,6 +116,7 @@ type Server struct {
 	mdns      func() api.MDNSStatus
 	settings  Settings
 	backups   Backups
+	version   string
 }
 
 // NewServer returns the control API.
@@ -126,7 +129,7 @@ func NewServer(cfg Config) *Server {
 		cfg.MaxUpload = slots.MaxTarballBytes
 	}
 	s := &Server{engine: engine, slots: cfg.Slots, staging: cfg.StagingDir, maxUpload: cfg.MaxUpload, log: log, mux: http.NewServeMux(),
-		forward: cfg.Forward, mdns: cfg.MDNS, settings: cfg.Settings, backups: cfg.Backups}
+		forward: cfg.Forward, mdns: cfg.MDNS, settings: cfg.Settings, backups: cfg.Backups, version: cfg.Version}
 	s.relay = &httputil.ReverseProxy{
 		Rewrite: s.rewrite,
 		Transport: &http.Transport{
@@ -175,7 +178,7 @@ func (s *Server) serviceStatus() api.ServiceStatus {
 	if err != nil {
 		s.log.Warn("read slot pointer", "err", err)
 	}
-	st := api.ServiceStatus{Engine: s.engine.Status(), Slots: p}
+	st := api.ServiceStatus{Version: s.version, Engine: s.engine.Status(), Slots: p}
 	if s.forward != nil {
 		f := s.forward()
 		st.Forward = &f

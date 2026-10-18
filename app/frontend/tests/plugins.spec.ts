@@ -11,14 +11,18 @@ const lastCall = (page: Page, method: string) => page.evaluate((name) =>
 test.use({ trace: "off" });
 test.beforeEach(async ({ page }) => {
   await page.routeWebSocket("**", (socket) => socket.close());
-  await page.goto("/tests/fixtures/index.html?scenario=panel-running");
+  await openPlugins(page, "panel-running");
+});
+
+async function openPlugins(page: Page, scenario: string) {
+  await page.goto(`/tests/fixtures/index.html?scenario=${scenario}`);
   await page.waitForFunction(() => !!window.careTest);
   await page.getByRole("button", { name: "Advanced", exact: true }).click();
   const advanced = page.locator(".care-advanced");
   await advanced.getByLabel("CARE Clinic admin password", { exact: true }).fill(password);
   await advanced.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(card(page).getByRole("list", { name: "Enabled plugins" })).toContainText("Files on every address");
-});
+}
 
 test("CARE Onboarding is listed as always on, with no remove button", async ({ page }) => {
   const screens = card(page).getByRole("list", { name: "Built-in screens" });
@@ -96,6 +100,37 @@ test("a plugin build that can't succeed says why and isn't retried", async ({ pa
   const alert = page.getByRole("alert").filter({ hasText: "The plugin change didn't finish" });
   await expect(alert).toContainText("The build failed and won't succeed by retrying: ERROR: No matching distribution found for care-x==9.9.");
   await expect(alert).toContainText("put the previous plugins back");
+});
+
+test("bundled plugins are badged", async ({ page }) => {
+  const enabled = card(page).getByRole("list", { name: "Enabled plugins" });
+  await expect(enabled.getByRole("listitem").filter({ hasText: "Files on every address" })).toContainText("Bundled");
+});
+
+test("a plugin change shows its build and migrate steps live", async ({ page }) => {
+  await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
+  await card(page).getByRole("button", { name: "Remove care_multihost_files_be" }).click();
+  await dialog(page).getByRole("button", { name: "Remove plugin" }).click();
+  await page.evaluate(() => window.careTest.journal({
+    id: "op-p", component: "plugins", from: "2026.3.0", to: "2026.3.0", revision: 8, state: "running",
+    started_at: "2026-03-11T02:30:00Z", updated_at: "2026-03-11T02:30:00Z", steps: [
+      { name: "backup", status: "done", attempts: 1 },
+      { name: "build", status: "done", attempts: 1 },
+      { name: "migrate", status: "running", attempts: 1 },
+      { name: "health", status: "pending", attempts: 0 },
+    ],
+  }));
+  const steps = card(page).getByRole("list", { name: "Plugin change steps" });
+  await expect(steps.getByLabel("Building CARE with the plugins: done")).toBeVisible();
+  await expect(steps.getByLabel("Updating the database: running")).toBeVisible();
+  await page.evaluate(() => window.careTest.finishJob("plugins"));
+  await expect(card(page).getByRole("list", { name: "Plugin change steps" })).toHaveCount(0);
+});
+
+test("the last plugin change that was undone says why, including a permanent build failure", async ({ page }) => {
+  await openPlugins(page, "panel-plugin-rolled-back");
+  await expect(card(page)).toContainText("The last plugin change was undone");
+  await expect(card(page)).toContainText("The build failed and won't succeed by retrying: pip couldn't find care_filly@v9.");
 });
 
 test("plugin model parses settings like the service", () => {

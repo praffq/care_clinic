@@ -21,7 +21,7 @@ import { applyProgress, failActiveStep, type SetupProgress, type SetupSteps, ste
 import type { AppUpdateOutcome, AppUpdateProgress, ServiceState, SetupFailure, SetupPage, UpdateChecks } from "@/types";
 
 export type Flow = "role" | "client" | "setup" | "installing" | "failed" | "panel" | "remove";
-export type PanelTab = "overview" | "home-access" | "updates" | "advanced";
+export type PanelTab = "overview" | "home-access" | "updates" | "backups" | "advanced";
 export type ClinicAction = "start" | "stop" | "restart";
 
 export type InstallParams = {
