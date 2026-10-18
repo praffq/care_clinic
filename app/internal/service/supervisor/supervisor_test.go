@@ -207,12 +207,15 @@ func TestBackoffDelays(t *testing.T) {
 	}
 }
 
-func TestNotReadyThenReady(t *testing.T) {
+// Docker going down while the agent answers is reported, not restarted.
+func TestNotReadyWhileRunningKeepsVM(t *testing.T) {
 	e := newEnv(t, "1.0.0")
-	e.factory.Setup = func(x *agent.FakeExecutor) { x.PingErr = errors.New("docker down") }
 	if err := e.sup.Start(ctxT(t)); err != nil {
 		t.Fatal(err)
 	}
+	e.waitState(t, StateReady)
+	m := e.factory.Last()
+	m.Exec.SetPingErr(errors.New("docker down"))
 	st := e.waitState(t, StateNotReady)
 	if st.Agent == nil || st.Agent.DockerReady || !strings.Contains(st.LastError, "not ready") {
 		t.Fatalf("status = %+v", st)
@@ -223,13 +226,75 @@ func TestNotReadyThenReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
+	time.Sleep(10 * 20 * time.Millisecond) // many health intervals
+	if n := len(e.factory.Machines()); n != 1 || m.Forced() {
+		t.Fatalf("watchdog fired on a reachable agent: %d machines, forced=%v", n, m.Forced())
+	}
+	m.Exec.SetPingErr(nil)
+	e.waitState(t, StateReady)
+}
+
+func TestWatchdogNeverReady(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	e.factory.Setup = func(x *agent.FakeExecutor) { x.PingErr = errors.New("docker down") }
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	first := e.factory.Last()
+	st := e.waitState(t, StateBackoff)
+	if !strings.Contains(st.LastError, "watchdog") || !strings.Contains(st.LastError, "after boot") {
+		t.Fatalf("last error = %q", st.LastError)
+	}
+	if !first.Forced() {
+		t.Fatal("hung VM was not forced off")
+	}
 	e.factory.Setup = nil
-	if err := e.sup.Restart(ctxT(t)); err != nil {
+	e.wait(t, "ready after restart", func(s Status) bool { return s.State == StateReady && s.Restarts == 1 })
+	if e.factory.Last() == first {
+		t.Fatal("no new machine")
+	}
+}
+
+func TestWatchdogUnreachableWhileRunning(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	if err := e.sup.Start(ctxT(t)); err != nil {
 		t.Fatal(err)
 	}
 	e.waitState(t, StateReady)
-	if n := len(e.factory.Machines()); n != 2 {
-		t.Fatalf("%d machines", n)
+	first := e.factory.Last()
+	first.Hang()
+	st := e.waitState(t, StateBackoff)
+	if !strings.Contains(st.LastError, "unreachable for 4 health checks") {
+		t.Fatalf("last error = %q", st.LastError)
+	}
+	if !first.Forced() {
+		t.Fatal("hung VM was not forced off")
+	}
+	e.wait(t, "ready after restart", func(s Status) bool { return s.State == StateReady && s.Restarts == 1 })
+}
+
+func TestDialGuest(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	if _, err := e.sup.DialGuest(ctxT(t), vm.AgentVsockPort); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("dial while stopped = %v", err)
+	}
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitState(t, StateReady)
+	conn, err := e.sup.DialGuest(ctxT(t), vm.AgentVsockPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if _, err := e.sup.DialGuest(ctxT(t), 8080); err == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("dial of a closed guest port = %v", err)
+	}
+	if err := e.sup.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.sup.DialGuest(ctxT(t), vm.AgentVsockPort); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("dial after stop = %v", err)
 	}
 }
 

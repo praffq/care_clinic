@@ -67,7 +67,16 @@ func (f *FakeExecutor) none(ctx context.Context, method string, op protocol.Op, 
 
 func (f *FakeExecutor) Ping(context.Context) error {
 	f.record(FakeCall{Method: "Ping"})
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.PingErr
+}
+
+// SetPingErr changes PingErr while the executor is in use.
+func (f *FakeExecutor) SetPingErr(err error) {
+	f.mu.Lock()
+	f.PingErr = err
+	f.mu.Unlock()
 }
 
 func (f *FakeExecutor) StackUp(ctx context.Context, op protocol.StackUp, em Emitter) error {

@@ -152,6 +152,16 @@ func (m *Machine) halt(err error, forced bool) {
 // off on its own (nil).
 func (m *Machine) Crash(err error) { m.halt(err, false) }
 
+// Hang makes the agent unreachable while the VM keeps running, like a
+// wedged guest.
+func (m *Machine) Hang() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == vm.StateRunning {
+		_ = m.srv.Close()
+	}
+}
+
 // Forced reports whether the VM was force-stopped.
 func (m *Machine) Forced() bool {
 	m.mu.Lock()
