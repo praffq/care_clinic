@@ -129,7 +129,13 @@ func TestDockerStackCommands(t *testing.T) {
 		}, c("logs", "--no-color", "--no-log-prefix", "--tail", "200", "--since", "2026-10-17T18:30:00Z", "backend")},
 		{"migrations", func(d *DockerExecutor) error { return d.RunMigrations(ctx, em) },
 			c("run", "--rm", "-T", "migrate")},
-		{"backup", func(d *DockerExecutor) error { return d.BackupRun(ctx, em) },
+		{"backup", func(d *DockerExecutor) error {
+			res, err := d.BackupRun(ctx, em)
+			if err == nil && res.BackupID != "manual-20261018T050403Z" {
+				err = errors.New("backup id " + res.BackupID)
+			}
+			return err
+		},
 			c("exec", "-T", "backup", "/bin/sh", "/backup.sh", "once", "manual-20261018T050403Z")},
 		{"ping", func(d *DockerExecutor) error { return d.Ping(ctx) },
 			[]string{"docker", "version", "--format", "{{.Server.Version}}"}},
@@ -418,8 +424,7 @@ func TestDockerNotImplemented(t *testing.T) {
 	ctx, em := context.Background(), &recEmitter{}
 	_, e1 := d.ImageBuild(ctx, protocol.ImageBuild{}, em)
 	_, e2 := d.DBDump(ctx, protocol.DBDump{}, em)
-	e3 := d.DBRestore(ctx, protocol.DBRestore{}, em)
-	for _, err := range []error{e1, e2, e3} {
+	for _, err := range []error{e1, e2} {
 		var oe *protocol.OpError
 		if !errors.As(err, &oe) || oe.Code != protocol.CodeNotImplemented {
 			t.Fatalf("err = %v", err)

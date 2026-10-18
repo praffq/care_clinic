@@ -1,23 +1,31 @@
 #!/bin/sh
+# CARE backups, inside the engine VM (compose service "backup").
+#
+#   backup.sh                 daemon: a set every midnight (TZ), retry hourly
+#   backup.sh once <id>       one set now (op backup.run)
+#   backup.sh restore <id>    restore set <id> from /restore-input (op db.restore)
+#
+# A set is /backups/<id>/ with database.dump.enc (pg_dump -Fc) and
+# files.tar.gz.enc (the Silo/minio data), both CMS-encrypted to the clinic
+# certificate, and manifest.json listing each file's size and SHA-256. Sets are
+# built in /backups/.partial-<id>/ and renamed into place once complete, so the
+# agent never lists a half-written set. The host service copies complete sets
+# out and deletes them here; there is no retention in the VM.
 set -eu
 
 BACKUP_DIR=/backups
 MINIO_DIR=/minio-data
 CERT=/keys/backup-cert.pem
-STATE_DIR=/state
+INPUT_DIR=/restore-input
+NEXT_FILE="$BACKUP_DIR/.next-backup"
 
-RET="${DB_BACKUP_RETENTION_PERIOD:-0}"
+DB_HOST="${POSTGRES_HOST:-db}"
+DB_PORT="${POSTGRES_PORT:-5432}"
+DB_USER="${POSTGRES_USER:-postgres}"
+DB_NAME="${POSTGRES_DB:-care}"
 
-if [ "$RET" -eq 0 ]; then
-	RET_DESC="retention 0 - backups are kept forever"
-else
-	RET_DESC="retention ${RET}d"
-fi
-
-if [ ! -f "$CERT" ]; then
-	echo "[backup] ERROR: $CERT not found - all backups must be encrypted, refusing to run"
-	exit 1
-fi
+log() { echo "[backup] $*"; }
+fail() { echo "[backup] ERROR: $*"; return 1; }
 
 if [ -z "${POSTGRES_PASSWORD:-}" ]; then
 	echo "[backup] ERROR: POSTGRES_PASSWORD is not set - refusing to run"
@@ -25,379 +33,216 @@ if [ -z "${POSTGRES_PASSWORD:-}" ]; then
 fi
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
-DB_HOST="${POSTGRES_HOST:-db}"
-DB_PORT="${POSTGRES_PORT:-5432}"
-DB_USER="${POSTGRES_USER:-postgres}"
-DB_NAME="${POSTGRES_DB:-care}"
+valid_id() {
+	case "$1" in
+	''|.*|*[!A-Za-z0-9T:_-]*) return 1 ;;
+	esac
+	[ "${#1}" -le 64 ]
+}
 
 wait_for_database() {
 	attempt=1
-	until pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -t 5 >/dev/null 2>&1; do
-		if [ "$attempt" -eq 1 ]; then
-			echo "[backup] database: waiting for PostgreSQL to accept connections"
-		fi
-		if [ "$attempt" -ge 30 ]; then
-			echo "[backup] ERROR: PostgreSQL did not become ready after 30 checks; no backup files were changed"
-			return 1
-		fi
+	until pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -t 5 >/dev/null 2>&1; do
+		[ "$attempt" -gt 1 ] || log "database: waiting for PostgreSQL"
+		[ "$attempt" -lt 30 ] || fail "PostgreSQL did not become ready after 30 checks" || return 1
 		attempt=$((attempt + 1))
 		sleep 5
 	done
-	if [ "$attempt" -gt 1 ]; then
-		echo "[backup] database: ready"
-	fi
 }
 
-# seal: plaintext file $1 -> encrypted CMS blob at $2.
+mb() { echo "$(( $1 / 1024 )) MB"; }
+free_kb() { df -Pk "$BACKUP_DIR" | awk 'NR == 2 { print $4 }'; }
+
+# The set needs room for the plain and sealed copy of the dump and the archive.
+check_space() {
+	db_bytes=$(PGCONNECT_TIMEOUT=5 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc \
+		"select pg_database_size(current_database())" 2>/dev/null || echo 0)
+	case "$db_bytes" in ''|*[!0-9]*) db_bytes=0 ;; esac
+	files_kb=$(du -sk "$MINIO_DIR" 2>/dev/null | cut -f1)
+	case "$files_kb" in ''|*[!0-9]*) files_kb=0 ;; esac
+	need=$(( (2 * db_bytes / 1024 + 2 * files_kb) * 5 / 4 + 262144 ))
+	free=$(free_kb)
+	case "$free" in ''|*[!0-9]*) log "WARNING: could not read free space - trying anyway"; return 0 ;; esac
+	if [ "$free" -lt "$need" ]; then
+		fail "not enough space for a backup: about $(mb "$need") needed, $(mb "$free") free"
+		return 1
+	fi
+	log "space: $(mb "$free") free, about $(mb "$need") needed"
+}
+
 seal() {
 	openssl cms -encrypt -binary -aes-256-cbc -stream -outform DER -in "$1" -out "$2" "$CERT"
 }
 
-size_of() { du -h "$1" 2>/dev/null | cut -f1; }
-
-kb_of() {
-	if [ -f "$1" ]; then
-		echo $(( ($(wc -c < "$1") + 1023) / 1024 ))
-	else
-		echo 0
-	fi
+# manifest <dir> <id>: write <dir>/manifest.json for the files in <dir>.
+manifest() {
+	{
+		printf '{"id":"%s","created_at":"%s","files":[' "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		sep=""
+		for f in database.dump.enc files.tar.gz.enc; do
+			sum=$(sha256sum "$1/$f" | cut -d' ' -f1)
+			size=$(wc -c < "$1/$f" | tr -d ' ')
+			printf '%s{"name":"%s","size":%s,"sha256":"%s"}' "$sep" "$f" "$size" "$sum"
+			sep=","
+		done
+		printf ']}\n'
+	} > "$1/manifest.json.tmp" && mv "$1/manifest.json.tmp" "$1/manifest.json"
 }
 
-free_kb() { df -Pk "$BACKUP_DIR" | awk 'NR == 2 { print $4 }'; }
-
-mb() { echo "$(( $1 / 1024 )) MB"; }
-
-latest_daily_dump() {
-	latest=""
-	for candidate in "$BACKUP_DIR"/care-[0-9]*.dump.enc; do
-		[ -f "$candidate" ] && latest=$candidate
-	done
-	echo "$latest"
+# Leftovers of a set or restore that was interrupted.
+clean_scratch() {
+	rm -rf "$BACKUP_DIR"/.partial-* "$BACKUP_DIR"/.restore-*
 }
 
-estimate_sizes() {
-	dump=$(latest_daily_dump)
-	if [ -n "$dump" ]; then
-		stamp=${dump##*/care-}
-		stamp=${stamp%.dump.enc}
-		dump_kb=$(kb_of "$dump")
-		files_kb=$(kb_of "$BACKUP_DIR/files-$stamp.tar.gz.enc")
-		return
+make_set() {
+	id=$1
+	valid_id "$id" || fail "invalid backup id: $id" || return 1
+	[ -f "$CERT" ] || fail "$CERT not found - backups must be encrypted" || return 1
+	[ -d "$MINIO_DIR" ] || fail "$MINIO_DIR is not mounted" || return 1
+	final="$BACKUP_DIR/$id"
+	[ ! -e "$final" ] || fail "backup $id already exists" || return 1
+	log "===== backup set $id ====="
+	clean_scratch
+	wait_for_database || return 1
+	check_space || return 1
+
+	work="$BACKUP_DIR/.partial-$id"
+	mkdir -p "$work"
+	log "database: dumping $DB_NAME"
+	if ! pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -Fc -f "$work/database.dump"; then
+		rm -rf "$work"; fail "pg_dump failed"; return 1
 	fi
-	db_bytes=$(PGCONNECT_TIMEOUT=5 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc \
-		"select pg_database_size(current_database())" 2>/dev/null || echo 0)
-	case "$db_bytes" in ''|*[!0-9]*) db_bytes=0 ;; esac
-	dump_kb=$(( db_bytes / 1024 ))
-	files_kb=0
-	if [ -d "$MINIO_DIR" ]; then
-		files_kb=$(du -sk "$MINIO_DIR" 2>/dev/null | cut -f1)
-		case "$files_kb" in ''|*[!0-9]*) files_kb=0 ;; esac
+	if ! pg_restore --list "$work/database.dump" >/dev/null 2>&1; then
+		rm -rf "$work"; fail "the dump failed verification (pg_restore --list)"; return 1
 	fi
+	if ! seal "$work/database.dump" "$work/database.dump.enc"; then
+		rm -rf "$work"; fail "encrypting the dump failed"; return 1
+	fi
+	rm -f "$work/database.dump"
+
+	log "files: archiving uploads"
+	if ! tar -czf "$work/files.tar.gz" -C "$MINIO_DIR" . || ! tar -tzf "$work/files.tar.gz" >/dev/null; then
+		rm -rf "$work"; fail "archiving the files failed"; return 1
+	fi
+	if ! seal "$work/files.tar.gz" "$work/files.tar.gz.enc"; then
+		rm -rf "$work"; fail "encrypting the files archive failed"; return 1
+	fi
+	rm -f "$work/files.tar.gz"
+
+	if ! manifest "$work" "$id" || ! sync || ! mv "$work" "$final"; then
+		rm -rf "$work"; fail "publishing the set failed"; return 1
+	fi
+	sync
+	log "backup set $id: SUCCESS ($(du -sh "$final" | cut -f1))"
 }
 
-need_kb() {
-	estimate_sizes
-	if [ "$1" = database ]; then
-		peak=$(( 2 * dump_kb ))
-	else
-		peak=$(( dump_kb + 2 * files_kb ))
-		[ "$peak" -ge $(( 2 * dump_kb )) ] || peak=$(( 2 * dump_kb ))
-	fi
-	need=$(( peak * 5 / 4 + 262144 ))
-	[ "$need" -ge 1048576 ] || need=1048576
-	echo "$need"
-}
-
-write_status() {
-	[ -d "$STATE_DIR" ] || return 0
-	printf 'state=%s\nreason=%s\nat=%s\nneed_kb=%s\nfree_kb=%s\nmessage=%s\n' \
-		"$1" "$2" "$(date +%s)" "${3:-0}" "${4:-0}" "${5:-}" > "$STATE_DIR/backup-status" 2>/dev/null || true
-}
-
-check_space() {
-	need=$(need_kb "$1")
-	free=$(free_kb)
-	case "$free" in ''|*[!0-9]*)
-		echo "[backup] WARNING: could not read free space for $BACKUP_DIR - trying anyway"
-		return 0 ;;
-	esac
-	if [ "$free" -lt "$need" ]; then
-		echo "[backup] ERROR: not enough space in the backup folder: this backup needs about $(mb "$need"), $(mb "$free") is free"
-		SPACE_NEED=$need
-		SPACE_FREE=$free
-		return 1
-	fi
-	echo "[backup] space: $(mb "$free") free, about $(mb "$need") needed"
-}
-
-disk_full() {
-	free=$(free_kb)
-	case "$free" in ''|*[!0-9]*) return 1 ;; esac
-	SPACE_FREE=$free
-	SPACE_NEED=${SPACE_NEED:-0}
-	[ "$free" -lt 262144 ] || [ "$free" -lt "$SPACE_NEED" ]
-}
-
-remove_temp() {
-	if ! rm -f "$@"; then
-		echo "[backup] ERROR: removing temporary backup files failed: $*"
-		return 1
-	fi
-}
-
-require_new_paths() {
-	for backup_path in "$@"; do
-		if [ -e "$backup_path" ] || [ -L "$backup_path" ]; then
-			echo "[backup] ERROR: refusing to overwrite existing backup: $backup_path"
-			return 1
-		fi
-	done
-}
-
-
-db_backup() {
-	ts=$1
-	plain="$BACKUP_DIR/.care-$ts.dump.tmp"
-	sealed="$plain.enc"
-	final="$BACKUP_DIR/care-$ts.dump.enc"
-	require_new_paths "$final" || return 1
-
-	echo "[backup] database: dumping $DB_NAME"
-	if ! pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -Fc -f "$plain"; then
-		echo "[backup] ERROR: pg_dump failed"
-		remove_temp "$plain"
-		return 1
-	fi
-
-	if ! pg_restore --list "$plain" >/dev/null 2>&1; then
-		echo "[backup] ERROR: dump failed verification (pg_restore --list)"
-		remove_temp "$plain"
-		return 1
-	fi
-	echo "[backup] database: $(size_of "$plain") verified"
-
-	if ! seal "$plain" "$sealed"; then
-		echo "[backup] ERROR: encrypting the dump failed"
-		remove_temp "$plain" "$sealed"
-		return 1
-	fi
-	if ! remove_temp "$plain"; then
-		remove_temp "$sealed"
-		return 1
-	fi
-
-	if ! mv "$sealed" "$final"; then
-		echo "[backup] ERROR: publishing the dump failed"
-		remove_temp "$sealed"
-		return 1
-	fi
-	echo "[backup] database: wrote $(basename "$final")"
-}
-
-files_backup() {
-	ts=$1
-	if [ ! -d "$MINIO_DIR" ]; then
-		echo "[backup] ERROR: $MINIO_DIR is not mounted - refusing to call this a complete backup"
-		return 1
-	fi
-	plain="$BACKUP_DIR/.files-$ts.tar.gz.tmp"
-	sealed="$plain.enc"
-	final="$BACKUP_DIR/files-$ts.tar.gz.enc"
-	require_new_paths "$final" || return 1
-
-	echo "[backup] files: archiving uploads"
-
-	if ! tar_err=$(tar -czf "$plain" -C "$MINIO_DIR" . 2>&1); then
-		echo "[backup] ERROR: archiving the files failed"
-		[ -z "$tar_err" ] || printf '%s\n' "$tar_err" | tail -n 3 | sed 's/^/[backup]   /'
-		remove_temp "$plain"
-		return 1
-	fi
-	if [ ! -s "$plain" ] || ! tar -tzf "$plain" >/dev/null 2>&1; then
-		echo "[backup] ERROR: files archive is missing or unreadable"
-		remove_temp "$plain"
-		return 1
-	fi
-	echo "[backup] files: $(size_of "$plain") verified"
-
-	if ! seal "$plain" "$sealed"; then
-		echo "[backup] ERROR: encrypting the files archive failed"
-		remove_temp "$plain" "$sealed"
-		return 1
-	fi
-	if ! remove_temp "$plain"; then
-		remove_temp "$sealed"
-		return 1
-	fi
-
-	if ! mv "$sealed" "$final"; then
-		echo "[backup] ERROR: publishing the files archive failed"
-		remove_temp "$sealed"
-		return 1
-	fi
-	echo "[backup] files: wrote $(basename "$final")"
-}
-
-
-prune() {
-	if ! find "$BACKUP_DIR" -maxdepth 1 -type f \( -name '.care-*.tmp*' -o -name '.files-*.tmp*' \) -delete; then
-		echo "[backup] ERROR: removing abandoned temporary backup files failed"
-		return 1
-	fi
-
-	if [ "$RET" -eq 0 ]; then
-		echo "[backup] $RET_DESC"
-		return 0
-	fi
-	echo "[backup] retention: deleting sets older than ${RET} days"
-	if ! find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'care-*.dump*' -o -name 'files-*.tar.gz*' \) -mtime +"$RET" -delete; then
-		echo "[backup] ERROR: pruning old backups failed"
-		return 1
-	fi
-}
-
-record_failure() {
-	if disk_full; then
-		echo "[backup] the backup folder ran out of space ($(mb "$SPACE_FREE") free)"
-		write_status failed disk_full "$SPACE_NEED" "$SPACE_FREE" "the backup folder ran out of space"
-	else
-		write_status failed error 0 0 "$1"
-	fi
-}
-
-run_backup() {
-	ts=$(date +%Y%m%d-%H%M%S)
-	echo "[backup] ===== backup set $ts (encrypted) ====="
-	write_status running "" 0 0 ""
-
-	SPACE_NEED=""
-	if ! check_space set; then
-		echo "[backup] backup set $ts: FAILED before writing (backup folder is full); retention skipped"
-		write_status failed disk_full "$SPACE_NEED" "$SPACE_FREE" "not enough space in the backup folder"
-		return 1
-	fi
-
-	if ! require_new_paths "$BACKUP_DIR/care-$ts.dump.enc" "$BACKUP_DIR/files-$ts.tar.gz.enc"; then
-		echo "[backup] backup set $ts: FAILED before writing; retention skipped"
-		write_status failed error 0 0 "a backup with this name already exists"
-		return 1
-	fi
-
-	if ! wait_for_database; then
-		echo "[backup] backup set $ts: FAILED waiting for the database; retention skipped"
-		write_status failed database_unavailable 0 0 "the database was not ready; existing backups were not changed"
-		return 1
-	fi
-
-	if ! db_backup "$ts"; then
-		echo "[backup] backup set $ts: FAILED at the database step; retention skipped"
-		record_failure "the database step failed"
-		return 1
-	fi
-
-	if ! files_backup "$ts"; then
-		echo "[backup] backup set $ts: FAILED at the files step; retention skipped"
-		record_failure "the files step failed"
-		return 1
-	fi
-
-	if ! prune; then
-		echo "[backup] backup set $ts: published, but cleanup FAILED"
-		write_status failed error 0 0 "the backup was written, but removing old backups failed"
-		return 1
-	fi
-	echo "[backup] backup set $ts: SUCCESS"
-	write_status ok "" 0 "$(free_kb)" ""
-	echo "[backup] done"
-}
-
-with_backup_lock() (
-	if ! flock -x 9; then
-		echo "[backup] ERROR: acquiring the backup lock failed"
-		return 1
-	fi
+with_lock() (
+	flock -x 9 || fail "acquiring the backup lock failed" || exit 1
 	"$@"
 ) 9>"$BACKUP_DIR/.backup.lock"
 
-manual_backup() {
-	name=$1
-	if ! require_new_paths "$BACKUP_DIR/care-$name.dump.enc" "$BACKUP_DIR/files-$name.tar.gz.enc"; then
-		return 1
-	fi
-	wait_for_database || return 1
-	if ! db_backup "$name"; then
-		echo "[backup] manual backup $name: FAILED at the database step"
-		return 1
-	fi
-	if ! files_backup "$name"; then
-		echo "[backup] manual backup $name: FAILED at the files step"
-		return 1
-	fi
-	echo "[backup] manual backup $name: SUCCESS"
-	write_status ok "" 0 "$(free_kb)" ""
+psql_admin() {
+	psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 -qAt "$@"
 }
 
-# One-shot mode, used by the app's "Backup now": database and files under the
-# name the caller picked, then exit. Same dump/archive/verify/seal/rename as the
-# daily run, without retention.
-if [ "${1:-}" = "once" ]; then
-	name=${2:?no backup name given}
-	SPACE_NEED=""
-	check_space set || exit 1
-	if ! with_backup_lock manual_backup "$name"; then
-		if disk_full; then
-			echo "[backup] ERROR: the backup folder ran out of space ($(mb "$SPACE_FREE") free)"
-		fi
-		exit 1
-	fi
-	exit
-fi
+# restore_set <id>: the agent verified the inputs against the manifest and
+# stopped everything that writes to the database or the files.
+restore_set() {
+	id=$1
+	valid_id "$id" || fail "invalid backup id: $id" || return 1
+	key="$INPUT_DIR/recovery-key.pem"
+	[ -s "$key" ] || fail "no recovery key in the restore input" || return 1
+	grep -q "\"id\":\"$id\"" "$INPUT_DIR/manifest.json" || fail "the restore input is not set $id" || return 1
+	wait_for_database || return 1
+	clean_scratch
+	work="$BACKUP_DIR/.restore-$id"
+	mkdir -p "$work/files"
+	trap 'rm -rf "$work"' EXIT
 
-DAILY_SECONDS=86400
+	log "restore $id: decrypting"
+	openssl cms -decrypt -binary -inform DER -inkey "$key" -in "$INPUT_DIR/database.dump.enc" -out "$work/database.dump" ||
+		fail "decrypting the database failed - is this the recovery key for this clinic?" || return 1
+	openssl cms -decrypt -binary -inform DER -inkey "$key" -in "$INPUT_DIR/files.tar.gz.enc" -out "$work/files.tar.gz" ||
+		fail "decrypting the files failed" || return 1
+
+	log "restore $id: checking"
+	pg_restore --list "$work/database.dump" >/dev/null || fail "the database dump is unreadable" || return 1
+	tar -tzf "$work/files.tar.gz" > "$work/files.list" || fail "the files archive is unreadable" || return 1
+	if grep -Eq '^/|(^|/)\.\.(/|$)' "$work/files.list"; then
+		fail "the files archive has unsafe paths"; return 1
+	fi
+	tar -xzf "$work/files.tar.gz" -C "$work/files" || fail "extracting the files failed" || return 1
+	rm -f "$work/files.tar.gz"
+
+	log "restore $id: loading the database into ${DB_NAME}_restore"
+	psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME}_restore" -c "DROP DATABASE IF EXISTS ${DB_NAME}_previous" || return 1
+	psql_admin -c "CREATE DATABASE ${DB_NAME}_restore TEMPLATE template0" || return 1
+	if ! pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "${DB_NAME}_restore" \
+		--exit-on-error --single-transaction --no-owner --no-privileges "$work/database.dump"; then
+		psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME}_restore" || true
+		fail "loading the dump failed; the current data was not changed"; return 1
+	fi
+	rm -f "$work/database.dump"
+
+	log "restore $id: switching databases"
+	psql_admin -1 \
+		-c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('$DB_NAME', '${DB_NAME}_restore') AND pid <> pg_backend_pid()" \
+		-c "ALTER DATABASE $DB_NAME RENAME TO ${DB_NAME}_previous" \
+		-c "ALTER DATABASE ${DB_NAME}_restore RENAME TO $DB_NAME" >/dev/null ||
+		fail "switching databases failed; the current data was not changed" || return 1
+
+	log "restore $id: replacing the files"
+	if ! find "$MINIO_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || ! cp -a "$work/files/." "$MINIO_DIR/"; then
+		fail "replacing the files failed: the database is restored but the files are incomplete; run the restore again"
+		return 1
+	fi
+	sync
+	psql_admin -c "DROP DATABASE IF EXISTS ${DB_NAME}_previous" || log "WARNING: could not drop ${DB_NAME}_previous"
+	log "restore $id: SUCCESS"
+}
+
+case "${1:-daemon}" in
+once)
+	with_lock make_set "${2:?no backup id given}"
+	exit
+	;;
+restore)
+	with_lock restore_set "${2:?no backup id given}"
+	exit
+	;;
+daemon) ;;
+*)
+	echo "usage: backup.sh [daemon | once <id> | restore <id>]" >&2
+	exit 2
+	;;
+esac
+
 RETRY_SECONDS=3600
 WAKE_SECONDS=300
-NEXT_FILE="$STATE_DIR/next-backup"
 
-saved_next() {
-	next=$(cat "$NEXT_FILE" 2>/dev/null || true)
-	case "$next" in ''|*[!0-9]*) echo 0 ;; *) echo "$next" ;; esac
-}
-
+# Midnight in TZ: seconds since the epoch of the next local 00:00.
 next_midnight() {
+	# shellcheck disable=SC2046
 	set -- $(date '+%s %H %M %S')
-	hour=${2#0}
-	minute=${3#0}
-	second=${4#0}
-	echo $(( $1 - ${hour:-0} * 3600 - ${minute:-0} * 60 - ${second:-0} + DAILY_SECONDS ))
-}
-
-schedule_retry() {
-	save_next $(( $(date +%s) + RETRY_SECONDS ))
-}
-
-schedule_next() {
-	save_next "$(next_midnight)"
+	echo $(( $1 - ${2#0} * 3600 - ${3#0} * 60 - ${4#0} + 86400 ))
 }
 
 save_next() {
+	printf '%s\n' "$1" > "$NEXT_FILE.tmp" && mv "$NEXT_FILE.tmp" "$NEXT_FILE" || true
 	NEXT=$1
-	if [ -d "$STATE_DIR" ]; then
-		printf '%s\n' "$NEXT" > "$NEXT_FILE" 2>/dev/null || true
-	fi
 }
 
-echo "[backup] sidecar started; encrypted backups -> $BACKUP_DIR ($RET_DESC)"
-
-NEXT=$(saved_next)
-[ -n "$(latest_daily_dump)" ] || NEXT=0
+NEXT=$(cat "$NEXT_FILE" 2>/dev/null || true)
+case "$NEXT" in ''|*[!0-9]*) NEXT=0 ;; esac
+log "daemon started (TZ=${TZ:-UTC}); encrypted sets -> $BACKUP_DIR"
 
 while true; do
 	if [ "$(date +%s)" -ge "$NEXT" ]; then
-		if with_backup_lock run_backup; then
-			schedule_next
+		if with_lock make_set "daily-$(date -u +%Y%m%dT%H%M%SZ)"; then
+			save_next "$(next_midnight)"
 		else
-			echo "[backup] backup cycle failed - see errors above; trying again in an hour"
-			schedule_retry
+			log "backup failed - see above; trying again in an hour"
+			save_next $(( $(date +%s) + RETRY_SECONDS ))
 		fi
 	fi
 	sleep "$WAKE_SECONDS"

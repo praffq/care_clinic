@@ -13,7 +13,8 @@
 // Besides the VM the service owns the host side of the network: it forwards
 // the host's ports 80/443 (and 127.0.0.1:8480) into the guest and advertises
 // <name>.local over mDNS, so CARE is reachable after a reboot without anyone
-// opening the app. Only one process per host may advertise the name; run
+// opening the app. It also copies finished backup sets out of the engine
+// into backup_dir (config.json) every few minutes. Only one process per host may advertise the name; run
 // with --mdns=false while a desktop app build that still advertises in-process
 // is in use.
 package main
@@ -32,9 +33,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/vm"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/advertise"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
+	"github.com/ohcnetwork/care_desktop/app/internal/service/backups"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/hostfwd"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/logfile"
@@ -157,7 +160,8 @@ func serve(args []string) error {
 		fw  *hostfwd.Forwarder
 		adv *advertise.Service
 	)
-	cfg, err := settings.Open(filepath.Join(rootDir, "config.json"), func(c api.ServiceConfig) {
+	defaults := api.ServiceConfig{BackupDir: filepath.Join(rootDir, "backups")}
+	cfg, err := settings.Open(filepath.Join(rootDir, "config.json"), defaults, func(c api.ServiceConfig) {
 		fw.SetProxyProtocol(c.ProxyProtocol)
 		adv.SetName(c.MDNSName)
 	})
@@ -168,6 +172,13 @@ func serve(args []string) error {
 	}
 	fw = hostfwd.New(hostfwd.Config{Rules: rules, Dial: sup.DialGuest, ProxyProtocol: cfg.Get().ProxyProtocol, Log: log})
 	adv = advertise.New(advertise.Config{Name: cfg.Get().MDNSName, Disabled: !*advertiseMDNS, Log: log})
+
+	exp := backups.New(backups.Config{
+		Agent: client.New(sup.DialAgent),
+		Ready: func() bool { return sup.Status().AgentReachable() },
+		Dir:   func() string { return cfg.Get().BackupDir },
+		Log:   log,
+	})
 
 	ln, err := control.Listen(control.ListenConfig{Path: sock, Group: *group, Log: log})
 	if err != nil {
@@ -181,6 +192,7 @@ func serve(args []string) error {
 		Forward:    fw.Status,
 		MDNS:       adv.Status,
 		Settings:   cfg,
+		Backups:    exp,
 	}), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -190,6 +202,8 @@ func serve(args []string) error {
 	netDone := make(chan struct{}, 2)
 	go func() { fw.Run(ctx); netDone <- struct{}{} }()
 	go func() { adv.Run(ctx); netDone <- struct{}{} }()
+	expDone := make(chan struct{})
+	go func() { exp.Run(ctx); close(expDone) }()
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.Serve(ln) }()
 	log.Info("care-clinic-service started", "root", rootDir, "socket", sock, "dev", *dev)
@@ -207,6 +221,7 @@ func serve(args []string) error {
 	log.Info("shutting down")
 	<-netDone
 	<-netDone // the advertiser says goodbye so clients drop the name
+	<-expDone
 	<-supDone // Run stops the VM gracefully before returning
 	_ = srv.Close()
 	log.Info("stopped")

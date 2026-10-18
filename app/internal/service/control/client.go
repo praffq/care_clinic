@@ -239,3 +239,25 @@ func (c *Client) Prune(ctx context.Context) ([]string, error) {
 	err := c.do(ctx, http.MethodPost, "/v1/engine/prune", nil, &r)
 	return r.Removed, err
 }
+
+// Backups lists the backup sets on the host and still in the engine.
+func (c *Client) Backups(ctx context.Context) (api.BackupList, error) {
+	var l api.BackupList
+	err := c.do(ctx, http.MethodGet, "/v1/backups", nil, &l)
+	return l, err
+}
+
+// BackupStatus returns the backup export state.
+func (c *Client) BackupStatus(ctx context.Context) (api.BackupStatus, error) {
+	var st api.BackupStatus
+	err := c.do(ctx, http.MethodGet, "/v1/backups/status", nil, &st)
+	return st, err
+}
+
+// ExportBackups copies every complete engine set to the host now and
+// returns the resulting state; a failed export is in its LastError.
+func (c *Client) ExportBackups(ctx context.Context) (api.BackupStatus, error) {
+	var st api.BackupStatus
+	err := c.do(ctx, http.MethodPost, "/v1/backups/export", nil, &st)
+	return st, err
+}

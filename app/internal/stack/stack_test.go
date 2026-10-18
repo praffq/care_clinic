@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,10 +29,19 @@ func testDigest(c byte) protocol.Digest {
 func testImages() []Image {
 	var out []Image
 	for i, role := range RequiredRoles {
-		out = append(out, Image{Role: role, Repo: "example/" + string(role), Digest: testDigest("abcdef"[i])})
+		out = append(out, Image{Role: role, Repo: "example/" + string(role), Digest: testDigest("abcdef0"[i])})
 	}
 	return out
 }
+
+var testCert = sync.OnceValue(func() []byte {
+	backupKeyBits = 2048
+	cert, _, err := GenerateBackupKey()
+	if err != nil {
+		panic(err)
+	}
+	return cert
+})
 
 func envMap(t *testing.T, b []byte) map[string]string {
 	t.Helper()
@@ -48,11 +58,11 @@ func envMap(t *testing.T, b []byte) map[string]string {
 
 func TestRenderKit(t *testing.T) {
 	sec := NewSecrets()
-	files, err := Render(kit, Config{Host: "care.local", Origins: []string{"https://192.168.1.5"}, Images: testImages(), Secrets: sec})
+	files, err := Render(kit, Config{Host: "care.local", Origins: []string{"https://192.168.1.5"}, Images: testImages(), Secrets: sec, BackupCert: testCert(), BackupTZ: "<+0530>-05:30"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"compose.yml", "backend.env", "Caddyfile", "minio-entrypoint.sh", "setup.html", StackEnv, ClinicEnv, SecretsEnv} {
+	for _, name := range []string{"compose.yml", "backend.env", "Caddyfile", "minio-entrypoint.sh", "setup.html", "backup.sh", BackupCert, StackEnv, ClinicEnv, SecretsEnv} {
 		if len(files[name]) == 0 {
 			t.Errorf("%s missing", name)
 		}
@@ -64,7 +74,7 @@ func TestRenderKit(t *testing.T) {
 	if got, want := st["IMAGE_BACKEND"], "example/backend@"+string(testDigest('a')); got != want {
 		t.Errorf("IMAGE_BACKEND = %q, want %q", got, want)
 	}
-	if st["CARE_HOST"] != "care.local" || len(st["CADDY_CONFIG_SHA"]) != 16 {
+	if st["CARE_HOST"] != "care.local" || len(st["CADDY_CONFIG_SHA"]) != 16 || len(st["BACKUP_CONFIG_SHA"]) != 16 || st["BACKUP_TZ"] != "<+0530>-05:30" {
 		t.Errorf("stack.env = %v", st)
 	}
 	for _, role := range RequiredRoles {
@@ -96,7 +106,7 @@ func TestRenderKit(t *testing.T) {
 	}
 
 	// A different Caddyfile changes the hash so compose recreates caddy.
-	files2, err := Render(withFile(t, "Caddyfile", "# changed\n"), Config{Host: "care.local", Images: testImages(), Secrets: sec})
+	files2, err := Render(withFile(t, "Caddyfile", "# changed\n"), Config{Host: "care.local", Images: testImages(), Secrets: sec, BackupCert: testCert(), BackupTZ: "<+0530>-05:30"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +129,7 @@ func withFile(t *testing.T, name, content string) fs.FS {
 }
 
 func TestRenderRejects(t *testing.T) {
-	ok := Config{Host: "care.local", Images: testImages(), Secrets: NewSecrets()}
+	ok := Config{Host: "care.local", Images: testImages(), Secrets: NewSecrets(), BackupCert: testCert()}
 	for name, mut := range map[string]func(*Config){
 		"host":          func(c *Config) { c.Host = "care.local\nX=1" },
 		"empty host":    func(c *Config) { c.Host = "" },
@@ -131,6 +141,8 @@ func TestRenderRejects(t *testing.T) {
 		"origin path": func(c *Config) { c.Origins = []string{"https://x.local/a"} },
 		"origin nl":   func(c *Config) { c.Origins = []string{"https://x.local\nA=b"} },
 		"secrets":     func(c *Config) { c.Secrets = Secrets{} },
+		"no cert":     func(c *Config) { c.BackupCert = nil },
+		"tz":          func(c *Config) { c.BackupTZ = "UTC0\nX=1" },
 	} {
 		c := ok
 		mut(&c)
@@ -197,6 +209,7 @@ func TestDevImages(t *testing.T) {
 		"care-backend-A": "care-clinic-dev/care-backend-a:arm64", "care-backend-B": "care-clinic-dev/care-backend-b:arm64",
 		"care-frontend-A": "care-clinic-dev/care-frontend-a:arm64", "care-caddy": "localhost:5000/care-caddy:dev",
 		"postgres": "docker.io/library/postgres:16", "redis": "docker.io/library/redis:7", "silo": "minio/minio",
+		"care-backup": "care-clinic-dev/care-backup:arm64",
 	}
 	for file, ref := range names {
 		writeImageTar(t, filepath.Join(dir, file+".tar"), ref)
@@ -219,6 +232,7 @@ func TestDevImages(t *testing.T) {
 		protocol.ImageRoleBackend: "care-clinic-dev/care-backend-b", protocol.ImageRoleFrontend: "care-clinic-dev/care-frontend-a",
 		protocol.ImageRoleCaddy: "localhost:5000/care-caddy", protocol.ImageRolePostgres: "docker.io/library/postgres",
 		protocol.ImageRoleRedis: "docker.io/library/redis", protocol.ImageRoleSilo: "minio/minio",
+		protocol.ImageRoleBackup: "care-clinic-dev/care-backup",
 	}
 	for role, repo := range want {
 		if got[role] != repo {
@@ -249,7 +263,8 @@ func TestInstall(t *testing.T) {
 	if err := r.Install(ctxT(t), kit, "care.local", nil, imgs); err != nil {
 		t.Fatal(err)
 	}
-	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp"
+	testCert() // small keys
+	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp"
 	if got := strings.Join(svc.Methods(), " "); got != want {
 		t.Errorf("calls = %s\nwant    %s", got, want)
 	}
@@ -267,10 +282,23 @@ func TestInstall(t *testing.T) {
 	if err != nil || !bytes.Equal(vm, hostSec.Env()) {
 		t.Errorf("engine secrets.env differs from the host copy (%v)", err)
 	}
-	for _, name := range []string{"compose.yml", "Caddyfile", StackEnv, ClinicEnv} {
+	for _, name := range []string{"compose.yml", "Caddyfile", "backup.sh", StackEnv, ClinicEnv} {
 		if _, err := os.Stat(filepath.Join(svc.Files, "config", name)); err != nil {
 			t.Error(err)
 		}
+	}
+	hostCert, err := os.ReadFile(filepath.Join(state, BackupCert))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vmCert, _ := os.ReadFile(filepath.Join(svc.Files, "config", BackupCert)); !bytes.Equal(vmCert, hostCert) {
+		t.Error("engine backup-cert.pem differs from the host copy")
+	}
+	if _, err := ReadRecoveryKey(filepath.Join(state, BackupRecoveryKey)); err != nil {
+		t.Error(err)
+	}
+	if fi, err := os.Stat(filepath.Join(state, BackupRecoveryKey)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("recovery key mode = %v, %v", fi, err)
 	}
 
 	// Reinstalling keeps the secrets.
@@ -279,6 +307,54 @@ func TestInstall(t *testing.T) {
 	}
 	if vm2, _ := os.ReadFile(filepath.Join(svc.Files, "config", SecretsEnv)); !bytes.Equal(vm, vm2) {
 		t.Error("reinstall changed the secrets")
+	}
+	if c2, _ := os.ReadFile(filepath.Join(svc.Files, "config", BackupCert)); !bytes.Equal(c2, hostCert) {
+		t.Error("reinstall changed the backup certificate")
+	}
+}
+
+func TestBackupCertAdoptedFromEngine(t *testing.T) {
+	svc := stacktest.New(t)
+	cert := testCert()
+	if err := os.MkdirAll(filepath.Join(svc.Files, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.Files, "config", BackupCert), cert, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	r := &Runtime{Service: svc, StateDir: state}
+	got, err := r.BackupCertificate(ctxT(t))
+	if err != nil || !bytes.Equal(got, cert) {
+		t.Fatalf("BackupCertificate = %v; want the engine's", err)
+	}
+	if saved, _ := os.ReadFile(filepath.Join(state, BackupCert)); !bytes.Equal(saved, cert) {
+		t.Error("adopted certificate was not saved on the host")
+	}
+	if _, err := os.Stat(filepath.Join(state, BackupRecoveryKey)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("adopting wrote a recovery key: %v", err)
+	}
+}
+
+func TestPosixTZ(t *testing.T) {
+	for _, tc := range []struct {
+		off  int
+		want string
+	}{{19800, "<+0530>-05:30"}, {0, "<+0000>-00:00"}, {-4 * 3600, "<-0400>+04:00"}} {
+		if got := PosixTZ(time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("x", tc.off))); got != tc.want {
+			t.Errorf("PosixTZ(%d) = %q, want %q", tc.off, got, tc.want)
+		}
+	}
+}
+
+func TestReadRecoveryKey(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{"empty": "", "cert": string(testCert())} {
+		p := filepath.Join(dir, name)
+		_ = os.WriteFile(p, []byte(body), 0o600)
+		if _, err := ReadRecoveryKey(p); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 

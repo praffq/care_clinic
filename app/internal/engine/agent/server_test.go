@@ -208,6 +208,20 @@ func TestOpResultPayload(t *testing.T) {
 	}
 }
 
+func TestBackupRunResult(t *testing.T) {
+	e := newTestEnv(t)
+	e.fake.Handle = func(context.Context, protocol.Op, Emitter) (any, error) {
+		return protocol.BackupRunResult{BackupID: "manual-20261018T050403Z"}, nil
+	}
+	resp := e.do(t, "POST", "/v1/ops/backup.run", nil)
+	expectStatus(t, resp, 200)
+	frames := readFrames(t, resp.Body)
+	var res protocol.BackupRunResult
+	if len(frames) != 1 || json.Unmarshal(frames[0].Result, &res) != nil || res.BackupID != "manual-20261018T050403Z" {
+		t.Fatalf("frames = %+v", frames)
+	}
+}
+
 func TestOpErrorFrames(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -482,6 +496,12 @@ func TestBackups(t *testing.T) {
 		&Manifest{CreatedAt: t2, Files: []protocol.BackupFile{{Name: "db.dump", Size: 4, SHA256: sha}}})
 	writeSet(t, root, "partial", map[string]string{"db.dump": "x"}, nil)
 	writeSet(t, root, "bad.id", map[string]string{"db.dump": "x"}, nil)
+	// Sets being written are hidden until renamed into place.
+	writeSet(t, root, ".partial-daily-3", map[string]string{"db.dump": "DUMP"},
+		&Manifest{CreatedAt: t2, Files: []protocol.BackupFile{{Name: "db.dump", Size: 4, SHA256: sha}}})
+	// A manifest copied from another set does not complete this one.
+	writeSet(t, root, "copied", map[string]string{"db.dump": "DUMP"},
+		&Manifest{ID: "nightly-1", CreatedAt: t2, Files: []protocol.BackupFile{{Name: "db.dump", Size: 4, SHA256: sha}}})
 
 	resp := e.do(t, "GET", "/v1/backups", nil)
 	expectStatus(t, resp, 200)
@@ -490,8 +510,11 @@ func TestBackups(t *testing.T) {
 	for _, s := range sets {
 		byID[s.ID] = s
 	}
-	if len(sets) != 3 {
+	if len(sets) != 4 {
 		t.Fatalf("sets = %+v", sets)
+	}
+	if s := byID["copied"]; s.Complete {
+		t.Fatalf("copied = %+v", s)
 	}
 	if s := byID["nightly-1"]; !s.Complete || !s.CreatedAt.Equal(t1) || len(s.Files) != 1 || s.Files[0].SHA256 != sha {
 		t.Fatalf("nightly-1 = %+v", s)

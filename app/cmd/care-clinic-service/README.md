@@ -45,6 +45,53 @@ starts the stack. Secrets are generated once and kept in
 `~/Library/Application Support/care-clinic/clinic/secrets.env`; see
 `internal/stack`.
 
+## Backups
+
+The stack's `backup` container (`deployments/scripts/backup.sh`) takes a set
+every night at local midnight and on demand (`backup.run`): a `pg_dump -Fc`
+of the database and a tarball of the Silo/minio files, each encrypted
+(`openssl cms`, AES-256) to the clinic's backup certificate, plus a
+`manifest.json` with every file's sha256. Sets are built under
+`/var/lib/care/backups/.partial-<id>/` in the VM and renamed to `<id>/` when
+complete.
+
+The service copies sets out on its own, app open or not: every 5 minutes and
+just after midnight it lists the engine's complete sets (oldest first) and
+for each one
+
+1. streams every file into `<backup_dir>/<id>.partial/` (the agent sends
+   the sha256, the service checks it while writing);
+2. writes `manifest.json`, re-hashes everything from disk and renames the
+   folder to `<id>/`;
+3. writes `export-state.json` (`last_exported`, `verified_at`, `last_error`);
+4. deletes older host sets (only once the new one is verified, so a good
+   set is always on the host), then deletes the set in the engine.
+
+A failure leaves the set in the engine and retries 5 minutes later;
+`ctl status` (under `backups`) then says `not copied out since <time>`, and
+more than 2 sets waiting in the engine sets `critical`. A crash between the
+rename and the engine delete is safe: a verified `<id>/` is reused, not
+downloaded again. `backup_dir` defaults to
+`/Library/Application Support/care-clinic/backups`.
+
+The certificate and its recovery key are created by `ctl clinic install`
+(`backup-cert.pem` and `backup-recovery-key.pem` next to `secrets.env`).
+**Keep the recovery key somewhere other than this Mac**: without it no
+backup can be read.
+
+```sh
+"$B" ctl backup run                # take one now and copy it out
+"$B" ctl backup list               # host and engine sets
+"$B" ctl backup status
+"$B" ctl backup restore daily-20260101T000000Z [--recovery-key key.pem]
+```
+
+`restore` verifies the host set, uploads it with the recovery key to the
+engine's `restore-input` area, runs `db.restore` and removes the inputs
+again. The engine stops the app containers, restores the dump into a new
+database and swaps it in, replaces the minio files, migrates and starts the
+stack.
+
 ## Developer install (LaunchDaemon)
 
 ```sh
@@ -76,6 +123,7 @@ B='/Library/Application Support/care-clinic/bin/care-clinic-service'
 "$B" ctl config
 "$B" ctl config mdns_name=clinic-east       # advertise clinic-east.local
 "$B" ctl config proxy_protocol=true
+"$B" ctl config backup_dir=/Volumes/ClinicBackup/care   # where backups are copied out to
 ```
 
 ### Without root

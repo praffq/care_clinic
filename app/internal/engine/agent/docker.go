@@ -79,6 +79,9 @@ type DockerExecutor struct {
 	Now func() time.Time
 	// Stat stats files; nil uses os.Stat.
 	Stat func(name string) (os.FileInfo, error)
+	// RestoreInputDir holds the uploaded restore inputs; empty uses
+	// DefaultRestoreInputDir.
+	RestoreInputDir string
 }
 
 var _ Executor = (*DockerExecutor)(nil)
@@ -547,10 +550,6 @@ func (d *DockerExecutor) DBDump(context.Context, protocol.DBDump, Emitter) (prot
 	return protocol.DBDumpResult{}, ErrNotImplemented
 }
 
-func (d *DockerExecutor) DBRestore(context.Context, protocol.DBRestore, Emitter) error {
-	return ErrNotImplemented
-}
-
 // trimPassword removes the trailing newline a password file usually has.
 func trimPassword(p []byte) string {
 	return strings.TrimSuffix(strings.TrimSuffix(string(p), "\n"), "\r")
@@ -588,18 +587,6 @@ func (d *DockerExecutor) Manage(ctx context.Context, op protocol.ManageCmd, pass
 		return &protocol.OpError{Code: protocol.CodeInvalidParams, Message: "unknown command " + string(op.Command)}
 	}
 	_, err := d.stream(ctx, em, "manage "+string(op.Command), protocol.ServiceBackend, Command{Args: args, Dir: ComposeDir, Env: env})
-	return err
-}
-
-// BackupRun asks the running backup service for a one-shot backup named
-// manual-<UTC timestamp>.
-func (d *DockerExecutor) BackupRun(ctx context.Context, em Emitter) error {
-	name := "manual-" + d.now().UTC().Format("20060102T150405Z")
-	em.Progress(protocol.Progress{Service: protocol.ServiceBackup, State: "running", Message: name})
-	_, err := d.stream(ctx, em, "backup", protocol.ServiceBackup, Command{
-		Args: compose("exec", "-T", string(protocol.ServiceBackup), "/bin/sh", "/backup.sh", "once", name),
-		Dir:  ComposeDir,
-	})
 	return err
 }
 

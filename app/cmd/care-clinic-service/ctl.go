@@ -31,9 +31,11 @@ commands:
   config [key=value ...]    show or change the service configuration (config.json):
                               mdns_name=<name>         advertise <name>.local
                               proxy_protocol=true|false PROXY v2 to the guest
+                              backup_dir=<abs path>    where backups are copied out to
   agent-status              agent status through the relay
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
   clinic <command>          install and drive the CARE stack (ctl clinic for help)
+  backup <command>          run | list | status | restore <id> (ctl backup for help)
 `
 
 func ctl(args []string) int {
@@ -59,6 +61,10 @@ func ctl(args []string) int {
 		fmt.Fprint(os.Stderr, clinicUsage)
 		return 2
 	}
+	if errors.Is(err, errBackupUsage) {
+		fmt.Fprint(os.Stderr, backupUsage)
+		return 2
+	}
 	if errors.Is(err, errUsage) {
 		fs.Usage()
 		return 2
@@ -74,15 +80,19 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
-	if cmd == "clinic" {
-		v, err := clinicCtl(ctx, c, args)
+	if cmd == "clinic" || cmd == "backup" {
+		sub := clinicCtl
+		if cmd == "backup" {
+			sub = backupCtl
+		}
+		v, err := sub(ctx, c, args)
 		if err != nil || v == nil {
 			return err
 		}
 		return printJSON(v)
 	}
 	nargs := map[string][]int{
-		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 2},
+		"install": {2, 2}, "activate": {1, 1}, "agent-op": {1, 2}, "config": {0, 3},
 	}[cmd]
 	if nargs == nil {
 		nargs = []int{0, 0}
@@ -146,6 +156,8 @@ func configUpdate(args []string) (api.ServiceConfigUpdate, error) {
 				return u, fmt.Errorf("proxy_protocol: %w", err)
 			}
 			u.ProxyProtocol = &on
+		case "backup_dir":
+			u.BackupDir = &val
 		default:
 			return u, fmt.Errorf("unknown config key %q", key)
 		}
@@ -163,10 +175,7 @@ func agentOp(ctx context.Context, c *control.Client, args []string) (any, error)
 		return nil, err
 	}
 	var res json.RawMessage
-	err = c.Agent().Op(ctx, op, &res, func(f protocol.Frame) {
-		b, _ := json.Marshal(f)
-		_, _ = fmt.Fprintf(os.Stderr, "%s\n", b)
-	})
+	err = c.Agent().Op(ctx, op, &res, printFrame)
 	if res == nil {
 		res = json.RawMessage("null")
 	}

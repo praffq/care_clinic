@@ -21,6 +21,7 @@ var devTarballs = map[protocol.ImageRole]string{
 	protocol.ImageRolePostgres: "postgres",
 	protocol.ImageRoleRedis:    "redis",
 	protocol.ImageRoleSilo:     "silo",
+	protocol.ImageRoleBackup:   "care-backup",
 }
 
 // DevImages returns the stack images in dir, as written by

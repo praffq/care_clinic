@@ -12,6 +12,9 @@
 //	POST /v1/engine/install?sha256=hex  body: engine tarball -> slots.Slot
 //	POST /v1/engine/activate            api.ActivateRequest -> api.EngineStatus
 //	POST /v1/engine/prune               api.PruneResult
+//	GET  /v1/backups                    api.BackupList (host and engine sets)
+//	GET  /v1/backups/status             api.BackupStatus
+//	POST /v1/backups/export             api.BackupStatus after an export pass
 //	*    /v1/agent/v1/...               agent routes (status, ops, files, backups, diagnostics)
 package control
 
@@ -55,6 +58,14 @@ type Slots interface {
 	Prune() ([]string, error)
 }
 
+// Backups is the backup exporter as seen by the control API.
+type Backups interface {
+	Status() api.BackupStatus
+	List(ctx context.Context) (api.BackupList, error)
+	// Export copies every complete engine set out now.
+	Export(ctx context.Context) error
+}
+
 // Settings is the persisted service configuration.
 type Settings interface {
 	Get() api.ServiceConfig
@@ -84,6 +95,7 @@ type Config struct {
 	Forward  func() api.ForwardStatus
 	MDNS     func() api.MDNSStatus
 	Settings Settings
+	Backups  Backups
 }
 
 // Server is the control API's http.Handler.
@@ -98,6 +110,7 @@ type Server struct {
 	forward   func() api.ForwardStatus
 	mdns      func() api.MDNSStatus
 	settings  Settings
+	backups   Backups
 }
 
 // NewServer returns the control API.
@@ -110,7 +123,7 @@ func NewServer(cfg Config) *Server {
 		cfg.MaxUpload = slots.MaxTarballBytes
 	}
 	s := &Server{engine: engine, slots: cfg.Slots, staging: cfg.StagingDir, maxUpload: cfg.MaxUpload, log: log, mux: http.NewServeMux(),
-		forward: cfg.Forward, mdns: cfg.MDNS, settings: cfg.Settings}
+		forward: cfg.Forward, mdns: cfg.MDNS, settings: cfg.Settings, backups: cfg.Backups}
 	s.relay = &httputil.ReverseProxy{
 		Rewrite: s.rewrite,
 		Transport: &http.Transport{
@@ -132,6 +145,11 @@ func NewServer(cfg Config) *Server {
 	s.mux.HandleFunc("POST /v1/engine/install", s.handleInstall)
 	s.mux.HandleFunc("POST /v1/engine/activate", s.handleActivate)
 	s.mux.HandleFunc("POST /v1/engine/prune", s.handlePrune)
+	if s.backups != nil {
+		s.mux.HandleFunc("GET /v1/backups", s.handleBackups)
+		s.mux.HandleFunc("GET /v1/backups/status", s.handleBackupStatus)
+		s.mux.HandleFunc("POST /v1/backups/export", s.handleBackupExport)
+	}
 	s.mux.HandleFunc(api.AgentPrefix+"/", s.handleAgent)
 	return s
 }
@@ -162,6 +180,10 @@ func (s *Server) serviceStatus() api.ServiceStatus {
 		m := s.mdns()
 		st.MDNS = &m
 	}
+	if s.backups != nil {
+		b := s.backups.Status()
+		st.Backups = &b
+	}
 	return st
 }
 
@@ -184,7 +206,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ch:
 		case <-poll.C:
-			if cur := s.serviceStatus(); reflect.DeepEqual(cur.Forward, last.Forward) && reflect.DeepEqual(cur.MDNS, last.MDNS) {
+			if cur := s.serviceStatus(); reflect.DeepEqual(cur.Forward, last.Forward) && reflect.DeepEqual(cur.MDNS, last.MDNS) && reflect.DeepEqual(cur.Backups, last.Backups) {
 				continue
 			}
 		}
@@ -209,8 +231,29 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		s.commandError(w, err)
 		return
 	}
-	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName, "proxy_protocol", cfg.ProxyProtocol)
+	s.log.Info("service configuration changed", "mdns_name", cfg.MDNSName, "proxy_protocol", cfg.ProxyProtocol, "backup_dir", cfg.BackupDir)
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) handleBackups(w http.ResponseWriter, r *http.Request) {
+	l, err := s.backups.List(r.Context())
+	if err != nil {
+		s.commandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
+func (s *Server) handleBackupStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.backups.Status())
+}
+
+// handleBackupExport runs an export pass; failures are in the status.
+func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
+	if err := s.backups.Export(r.Context()); err != nil {
+		s.log.Warn("backup export failed", "err", err)
+	}
+	writeJSON(w, http.StatusOK, s.backups.Status())
 }
 
 func (s *Server) vmCommand(f func(context.Context) error) http.HandlerFunc {

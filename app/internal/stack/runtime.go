@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
@@ -30,7 +31,8 @@ type Service interface {
 // Runtime installs and drives the clinic stack through the service relay.
 type Runtime struct {
 	Service Service
-	// StateDir keeps host-side clinic state (secrets.env); empty means
+	// StateDir keeps host-side clinic state (secrets.env, the backup
+	// certificate and recovery key); empty means
 	// DefaultStateDir.
 	StateDir string
 	// Log receives progress lines; nil discards them.
@@ -67,12 +69,9 @@ func (r *Runtime) frames(f protocol.Frame) {
 // data wiped) but the engine still has a clinic, its copy is adopted, since
 // the database volume was initialised with that password.
 func (r *Runtime) Secrets(ctx context.Context) (Secrets, error) {
-	dir := r.StateDir
-	if dir == "" {
-		var err error
-		if dir, err = DefaultStateDir(); err != nil {
-			return Secrets{}, err
-		}
+	dir, err := r.stateDir()
+	if err != nil {
+		return Secrets{}, err
 	}
 	path := filepath.Join(dir, SecretsEnv)
 	if s, ok, err := LoadSecrets(path); ok || err != nil {
@@ -111,7 +110,14 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 	if err != nil {
 		return err
 	}
-	files, err := Render(kit, Config{Host: host, Origins: origins, Images: images, Secrets: sec})
+	cert, err := r.BackupCertificate(ctx)
+	if err != nil {
+		return err
+	}
+	files, err := Render(kit, Config{
+		Host: host, Origins: origins, Images: images, Secrets: sec,
+		BackupCert: cert, BackupTZ: PosixTZ(time.Now()),
+	})
 	if err != nil {
 		return err
 	}

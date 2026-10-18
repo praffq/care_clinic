@@ -37,6 +37,11 @@ type DBDumpResult struct {
 	BackupID string `json:"backup_id"`
 }
 
+// BackupRunResult is the result of OpBackupRun.
+type BackupRunResult struct {
+	BackupID string `json:"backup_id"`
+}
+
 // BackupFile is one file in a BackupSet.
 type BackupFile struct {
 	Name   string `json:"name"`
@@ -48,6 +53,23 @@ type BackupFile struct {
 type BackupSet struct {
 	ID        string       `json:"id"`
 	Complete  bool         `json:"complete"`
+	CreatedAt time.Time    `json:"created_at"`
+	Files     []BackupFile `json:"files"`
+}
+
+// BackupManifestName is the file that marks a backup set complete. It lists
+// every other file of the set with its size and SHA-256. The same file
+// travels with an exported set and is uploaded with it for OpDBRestore.
+const BackupManifestName = "manifest.json"
+
+// BackupKeyName is the recovery key (PEM private key) uploaded to
+// FileAreaRestoreInput for OpDBRestore; the sets are encrypted to its
+// certificate.
+const BackupKeyName = "recovery-key.pem"
+
+// BackupManifest is the content of BackupManifestName.
+type BackupManifest struct {
+	ID        string       `json:"id,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
 	Files     []BackupFile `json:"files"`
 }

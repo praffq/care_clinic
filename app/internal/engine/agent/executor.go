@@ -42,7 +42,7 @@ type Executor interface {
 	// Manage runs a management command. password holds the contents of
 	// op.PasswordFile (read by the server from the config area) or is nil.
 	Manage(ctx context.Context, op protocol.ManageCmd, password []byte, em Emitter) error
-	BackupRun(ctx context.Context, em Emitter) error
+	BackupRun(ctx context.Context, em Emitter) (protocol.BackupRunResult, error)
 
 	// Containers returns one human-readable line per container for diagnostics.
 	Containers(ctx context.Context) ([]string, error)
@@ -92,7 +92,7 @@ func dispatch(ctx context.Context, ex Executor, op protocol.Op, body io.Reader, 
 	case *protocol.ManageCmd:
 		return none(ex.Manage(ctx, *o, password, em))
 	case *protocol.BackupRun:
-		return none(ex.BackupRun(ctx, em))
+		return ex.BackupRun(ctx, em)
 	}
 	return nil, &protocol.OpError{Code: protocol.CodeNotImplemented, Message: "no executor for op " + op.OpName()}
 }
