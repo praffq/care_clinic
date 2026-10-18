@@ -36,6 +36,19 @@ type vsockConn struct {
 func (c *vsockConn) LocalAddr() net.Addr  { return c.local }
 func (c *vsockConn) RemoteAddr() net.Addr { return c.remote }
 
+// CloseWrite shuts down the write half so the relay can pass on half-closes.
+func (c *vsockConn) CloseWrite() error {
+	rc, err := c.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var serr error
+	if err := rc.Control(func(fd uintptr) { serr = unix.Shutdown(int(fd), unix.SHUT_WR) }); err != nil {
+		return err
+	}
+	return serr
+}
+
 type vsockListener struct {
 	f    *os.File
 	rc   syscall.RawConn

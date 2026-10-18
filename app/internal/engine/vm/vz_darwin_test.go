@@ -95,6 +95,7 @@ func TestBootEngine(t *testing.T) {
 		t.Error("dial to a closed vsock port succeeded")
 	}
 	cancel()
+	checkHalfClose(t, m)
 
 	start := time.Now()
 	if code, _, err := agentDo(m, http.MethodPost, "/v1/shutdown"); err != nil || code != http.StatusAccepted {
@@ -164,6 +165,35 @@ func bootUntilReady(t *testing.T, cfg Config) (Machine, time.Duration) {
 	}
 	t.Fatalf("agent not ready after 3m; see %s", cfg.ConsoleLog)
 	return nil, 0
+}
+
+// checkHalfClose sends a keep-alive request and half-closes: the agent only
+// closes the connection (ending ReadAll) if it sees the EOF, while the
+// response must still arrive over the open read half.
+func checkHalfClose(t *testing.T, m Machine) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := m.DialVsock(ctx, AgentVsockPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	cw, ok := c.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatalf("DialVsock returned %T without CloseWrite", c)
+	}
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(c, "GET /v1/status HTTP/1.1\r\nHost: agent\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cw.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(c)
+	if err != nil || !strings.HasPrefix(string(b), "HTTP/1.1 200 ") {
+		t.Fatalf("half-closed request: %q, %v", b, err)
+	}
 }
 
 // agentDo makes one HTTP/1.1 request over a raw vsock connection.

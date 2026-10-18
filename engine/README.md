@@ -112,7 +112,28 @@ The TLS bundle is passed with `-fw_cfg name=opt/care/tls,file=bundle.pem` and
 holds three PEM blocks, in order: the CA certificate, the server certificate
 and the server private key. Clients must present a certificate issued by that
 CA. The bundle is read once at startup and never logged. Without the bundle
-there is no TCP listener at all. The `vmw_vsock_virtio_transport`
+there is no TCP listener at all.
+
+### Clinic port relay
+
+The clinic's Caddy publishes 80, 443 and `127.0.0.1:8480` inside the VM. With
+vsock the agent also relays fixed vsock ports to those guest loopback
+addresses so the macOS host can expose them without a host-visible VM IP
+(`app/internal/engine/forward`, `StandardPorts`):
+
+| vsock port | Guest target | Host listener (service, later) |
+| --- | --- | --- |
+| `8080` | `127.0.0.1:80` | `0.0.0.0:80` |
+| `8443` | `127.0.0.1:443` | `0.0.0.0:443` |
+| `8480` | `127.0.0.1:8480` | `127.0.0.1:8480` (Tailscale home access) |
+
+The table is the only thing ever forwarded; clients cannot pick a destination.
+Bytes pass through untouched (Caddy terminates TLS), half-closes are
+propagated, each port is capped at 512 concurrent connections, and a
+connection is closed at once when its target refuses (stack not up). Dial
+failures are logged at most every 30 s per port. The QEMU TCP listener has no
+relay; QEMU forwards these ports with `hostfwd`. Caddy sees every relayed
+connection as coming from the Docker bridge gateway (e.g. `172.18.0.1`). The `vmw_vsock_virtio_transport`
 and `qemu_fw_cfg` modules are loaded from `/etc/modules`. Request lines are
 logged to `/var/log/care-engine-agent.log`.
 
@@ -173,7 +194,8 @@ tar -C dist -xzf dist/care-engine-0.1.0-arm64.tar.gz
 app/cmd/vzboot/build.sh            # builds dist/vzboot, ad-hoc signed with
                                    # com.apple.security.virtualization
 dist/vzboot --bundle dist/care-engine-0.1.0-arm64 --data /tmp/data.img \
-  [--mem 4096 --cpus 2] [--call 'POST /v1/ops/stack.status [JSON body]'] [--exit]
+  [--mem 4096 --cpus 2] [--call 'POST /v1/ops/stack.status [JSON body]'] [--exit] \
+  [--forward 127.0.0.1:8080=80 --forward 127.0.0.1:8443=443 --forward 127.0.0.1:8480=8480]
 ```
 
 It creates a sparse 64 GiB data disk if absent, mirrors the console to stdout
@@ -182,6 +204,11 @@ until `docker_ready` is true. Ctrl-C (or `--exit`) sends `POST /v1/shutdown`
 and waits for the VM to power off, force-stopping it after 30 s. On an
 M-series Mac the agent is ready ~7 s after start on a blank data disk and ~3 s
 on later boots; the guest powers off ~5 s after `/v1/shutdown`.
+
+`--forward LISTEN=GUESTPORT` (guest port 80, 443 or 8480) listens on the host
+and forwards each connection over vsock to the agent's relay, the way the
+host service will (`forward.HostRules`). `DialVsock` connections support
+`CloseWrite`, which Virtualization.framework passes on as a vsock shutdown.
 
 The driver's integration test boots a real bundle. `go test` binaries also
 need the entitlement, so build, sign and run the test binary directly (from

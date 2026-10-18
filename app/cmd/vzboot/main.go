@@ -5,6 +5,7 @@
 // It is a development harness for the macOS host service, not shipped.
 //
 //	vzboot --bundle dist/care-engine-0.1.0-arm64 --data /tmp/data.img [--mem 4096 --cpus 2]
+//	       [--forward 127.0.0.1:8080=80 ...]
 //
 // The binary needs the com.apple.security.virtualization entitlement; build
 // it with build.sh in this directory.
@@ -21,10 +22,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/forward"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/vm"
 )
 
@@ -45,6 +49,8 @@ func main() {
 	exit := flag.Bool("exit", false, "shut the VM down after the status check and calls instead of waiting for SIGINT")
 	var calls callFlags
 	flag.Var(&calls, "call", `extra request to make once ready, "METHOD /path [JSON body]" (repeatable), e.g. "POST /v1/ops/stack.status"`)
+	var fwds callFlags
+	flag.Var(&fwds, "forward", `forward a host address to a guest port of the clinic's Caddy, "LISTEN=GUESTPORT" (repeatable; guest port 80, 443 or 8480), e.g. "127.0.0.1:8080=80"`)
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	if *bundle == "" || *data == "" {
@@ -54,7 +60,11 @@ func main() {
 	if *consoleLog == "" {
 		*consoleLog = *data + ".console.log"
 	}
-	if err := run(*bundle, *data, *consoleLog, *mem, *cpus, *readyTimeout, calls, *exit); err != nil {
+	ports, err := parseForwards(fwds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := run(*bundle, *data, *consoleLog, *mem, *cpus, *readyTimeout, calls, ports, *exit); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -89,7 +99,56 @@ func do(ctx context.Context, c *http.Client, method, path string, body []byte) (
 	return resp.StatusCode, bytes.TrimSpace(b), err
 }
 
-func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout time.Duration, calls []string, exit bool) error {
+type forwardFlag struct {
+	listen string
+	port   forward.Port
+}
+
+// parseForwards parses --forward values; only the standard ports are allowed.
+func parseForwards(vals []string) ([]forwardFlag, error) {
+	var out []forwardFlag
+	for _, v := range vals {
+		listen, gp, ok := strings.Cut(v, "=")
+		n, err := strconv.Atoi(gp)
+		if !ok || listen == "" || err != nil {
+			return nil, fmt.Errorf("--forward %q: want LISTEN=GUESTPORT", v)
+		}
+		p, ok := forward.PortForGuest(n)
+		if !ok {
+			return nil, fmt.Errorf("--forward %q: guest port must be one of 80, 443, 8480", v)
+		}
+		out = append(out, forwardFlag{listen, p})
+	}
+	return out, nil
+}
+
+// startForwards listens on each --forward address and forwards to the
+// guest relay over vsock. The returned function stops them and waits.
+func startForwards(m vm.Machine, fwds []forwardFlag) (stop func(), err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	stop = func() { cancel(); wg.Wait() }
+	for _, f := range fwds {
+		r := forward.HostRule(f.port, f.listen, m.DialVsock)
+		l, err := net.Listen("tcp", r.Listen)
+		if err != nil {
+			stop()
+			return nil, fmt.Errorf("--forward %s: %w", r.Listen, err)
+		}
+		log.Printf("forwarding %s to guest %s (vsock port %d)", l.Addr(), f.port.GuestAddr, f.port.VsockPort)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := forward.Serve(ctx, l, r.Dial, forward.Options{Name: "forward " + r.Name, Logf: log.Printf})
+			if err != nil {
+				log.Printf("forward %s stopped: %v", r.Listen, err)
+			}
+		}()
+	}
+	return stop, nil
+}
+
+func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout time.Duration, calls []string, fwds []forwardFlag, exit bool) error {
 	created, err := vm.EnsureDataDisk(data, vm.DefaultDataDiskSize)
 	if err != nil {
 		return err
@@ -117,6 +176,12 @@ func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout ti
 		return err
 	}
 	log.Printf("VM started (%d vCPU, %d MiB); console log: %s", cpus, mem, consoleLog)
+	stopForwards, err := startForwards(m, fwds)
+	if err != nil {
+		_ = m.ForceStop(ctx)
+		return err
+	}
+	defer stopForwards()
 	client := agentClient(m)
 	stopped := m.Done()
 
