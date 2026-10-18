@@ -58,7 +58,7 @@ The initramfs (`initramfs/init`):
 4. mounts a tmpfs-backed overlay over the system image as `/` (so `/etc`,
    `/run` … are writable but ephemeral);
 5. mounts the data disk at `/var/lib`, creates `/var/lib/docker`,
-   `/var/lib/care/{clinic,backups,builds,logs}`, and writes `1` to
+   `/var/lib/care/{files,backups,builds,logs}`, and writes `1` to
    `/var/lib/care/.data-schema` on first init. The write is crash-safe: the
    directories are synced first, then the value goes to a temp file that is
    fsynced and renamed into place, and the filesystem is synced, so a hard
@@ -149,9 +149,13 @@ digest checks rely on. Once dockerd answers, the agent logs the active store,
 e.g. `docker image store: containerd (overlayfs [["driver-type","io.containerd.snapshotter.v1"]])`,
 or a warning if it is not containerd.
 
-Before the clinic stack is installed (no `/var/lib/care/clinic/docker-compose.yml`),
-`stack.status` returns no services, `stack.stop`/`stack.down` succeed without
-doing anything, and `stack.logs` fails with error code `not_installed`.
+The clinic stack is the compose project `care` in the `config` file area,
+`/var/lib/care/files/config`: the host uploads `compose.yml`, `stack.env`
+(interpolation variables such as digest-pinned image refs, passed with
+`--env-file`) and the files they reference, all under flat names.
+Before it is installed (no `compose.yml`), `stack.status` returns no
+services, `stack.stop`/`stack.down` succeed without doing anything, and
+`stack.up`/`stack.logs` fail with error code `not_installed`.
 
 ## Smoke test
 

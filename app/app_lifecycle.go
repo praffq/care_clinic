@@ -130,11 +130,11 @@ func (a *App) refreshInstallDir() {
 	}
 }
 
+// syncInstallKit refreshes the install kit. Clinic.Start renders and
+// uploads the engine config from it.
 func (a *App) syncInstallKit() error {
-	if _, err := a.ensureInstallDir(); err != nil {
-		return err
-	}
-	return a.engine().ApplyDomain()
+	_, err := a.ensureInstallDir()
+	return err
 }
 
 func (a *App) shutdown(context.Context) {

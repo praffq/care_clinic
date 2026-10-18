@@ -64,7 +64,7 @@ func newWebPasswordFixture(t *testing.T) *webPasswordFixture {
 	t.Setenv("CARE_FAKE_STATE", "")
 	t.Setenv("CARE_FAKE_RESULT", "")
 	f.clinic = &Clinic{
-		InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: &release.Pins{},
+		InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: &release.Pins{}, Stack: fakeStack(t).Runtime,
 		Log: func(line string) {
 			f.mu.Lock()
 			defer f.mu.Unlock()

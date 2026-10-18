@@ -37,6 +37,29 @@ type EngineStatus struct {
 	LastErrorAt   time.Time        `json:"last_error_at,omitzero"`
 	ConsoleLog    string           `json:"console_log,omitempty"`
 	NextRetryAt   time.Time        `json:"next_retry_at,omitzero"`
+	// Stack is set once the agent is ready.
+	Stack *StackStatus `json:"stack,omitempty"`
+}
+
+// StackState is the outcome of the service's own clinic stack actions: it
+// starts the stack after every boot and stops it before shutting the VM
+// down. Per-service state is the agent's stack.status op.
+type StackState string
+
+const (
+	StackNotInstalled StackState = "not_installed" // no clinic config in the engine
+	StackStarting     StackState = "starting"
+	StackRunning      StackState = "running" // up and healthy after boot
+	StackFailed       StackState = "failed"
+	StackStopping     StackState = "stopping"
+	StackStopped      StackState = "stopped"
+)
+
+// StackStatus is the service's view of the clinic stack.
+type StackStatus struct {
+	State StackState `json:"state"`
+	Error string     `json:"error,omitempty"`
+	Since time.Time  `json:"since"`
 }
 
 // AgentReachable reports whether the agent answers (ready or not_ready).

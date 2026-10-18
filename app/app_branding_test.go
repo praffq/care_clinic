@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
@@ -45,16 +46,13 @@ func TestClinicBrandingContract(t *testing.T) {
 		}
 	}
 	var compose struct {
-		Name     string `yaml:"name"`
-		Networks map[string]struct {
-			Name string `yaml:"name"`
-		} `yaml:"networks"`
+		Name string `yaml:"name"`
 	}
 	if err := yaml.Unmarshal(read("../deployments/docker-compose.yml"), &compose); err != nil {
 		t.Fatal(err)
 	}
-	if compose.Name != appDirName || compose.Networks["default"].Name != appDirName {
-		t.Error("Compose project and network must match the clinic identity")
+	if compose.Name != agent.ComposeProject {
+		t.Error("the kit's Compose project must match the engine's fixed project")
 	}
 	if !strings.Contains(string(read("../deployments/Caddyfile")), `root_cn "`+trust.CommonName+`"`) {
 		t.Error("Caddy's root certificate must match the native trust identity")

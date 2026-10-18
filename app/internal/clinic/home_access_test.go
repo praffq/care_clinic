@@ -1,6 +1,30 @@
 package clinic
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func writeDomainFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readDomainFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
 
 func TestApplyHomeAccessSettingsMigratesManagedValues(t *testing.T) {
 	dir := t.TempDir()

@@ -71,6 +71,8 @@ type Config struct {
 	PollInterval   time.Duration // agent status poll while starting (1s)
 	HealthInterval time.Duration // agent status poll once ready (15s)
 	StopTimeout    time.Duration // guest power-off after the shutdown request (30s)
+	// StackStopTimeout bounds stopping the clinic stack before a shutdown (60s).
+	StackStopTimeout time.Duration
 	// ForceStopTimeout bounds a force stop. A VM still running after it is
 	// kept as lingering: no new VM boots on its disk until it stops (30s).
 	ForceStopTimeout time.Duration
@@ -92,6 +94,7 @@ func (c *Config) setDefaults() {
 	def(&c.PollInterval, time.Second)
 	def(&c.HealthInterval, 15*time.Second)
 	def(&c.StopTimeout, 30*time.Second)
+	def(&c.StackStopTimeout, time.Minute)
 	def(&c.ForceStopTimeout, 30*time.Second)
 	def(&c.BackoffMin, time.Second)
 	def(&c.BackoffMax, 2*time.Minute)
@@ -191,7 +194,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			s.cancelRetry()
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.StopTimeout+15*time.Second)
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.StackStopTimeout+s.cfg.StopTimeout+15*time.Second)
 			s.shutdown(sctx)
 			cancel()
 			return
@@ -269,7 +272,7 @@ func (s *Supervisor) boot(ctx context.Context) error {
 	cfg := s.cfg.VM
 	cfg.BundleDir = sl.Dir
 	s.update(func(st *Status) {
-		st.State, st.EngineVersion, st.Agent = StateStarting, sl.Version, nil
+		st.State, st.EngineVersion, st.Agent, st.Stack = StateStarting, sl.Version, nil, nil
 		st.StartedAt, st.NextRetryAt = time.Time{}, time.Time{}
 	})
 	m, err := s.cfg.NewMachine(cfg)
@@ -397,12 +400,16 @@ func (s *Supervisor) shutdown(ctx context.Context) {
 		})
 		return
 	}
+	c := agentClient(b.m)
+	defer c.Close()
+	if s.Status().State == StateReady {
+		s.stopStack(ctx, c)
+	}
 	s.detach()
 	s.update(func(st *Status) { st.State = StateStopping })
 	start := time.Now()
-	c := agentClient(b.m)
 	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := c.Shutdown(sctx)
+	err := whenIdle(sctx, func() error { return c.Shutdown(sctx) })
 	cancel()
 	// Bounds the power-off wait and the force stop after it.
 	sctx, cancel = context.WithTimeout(ctx, s.cfg.StopTimeout+s.cfg.ForceStopTimeout)
@@ -458,6 +465,7 @@ func (s *Supervisor) monitor(b *boot) {
 	}
 	s.cfg.Log.Info("engine ready", "version", b.version, "after", time.Since(b.startedAt).Round(time.Millisecond))
 	s.health(b, st, nil)
+	go s.startStack(b)
 	t := time.NewTicker(s.cfg.HealthInterval)
 	defer t.Stop()
 	misses := 0
@@ -521,6 +529,78 @@ func (s *Supervisor) health(b *boot, st protocol.Status, err error) {
 	s.publishLocked()
 }
 
+// startStack brings up the installed clinic after b booted, so CARE comes
+// back after a reboot without the app. It never migrates or updates.
+func (s *Supervisor) startStack(b *boot) {
+	s.setStack(b, api.StackStarting, nil)
+	c := agentClient(b.m)
+	defer c.Close()
+	err := opWhenIdle(b.ctx, c, protocol.StackUp{Wait: true, TimeoutSec: 600})
+	var oe *protocol.OpError
+	switch {
+	case b.ctx.Err() != nil:
+	case err == nil:
+		s.cfg.Log.Info("clinic stack started")
+		s.setStack(b, api.StackRunning, nil)
+	case errors.As(err, &oe) && oe.Code == protocol.CodeNotInstalled:
+		s.setStack(b, api.StackNotInstalled, nil)
+	default:
+		s.cfg.Log.Error("clinic stack start failed", "err", err)
+		s.setStack(b, api.StackFailed, err)
+	}
+}
+
+// stopStack stops the clinic's containers so the guest shutdown does not
+// cut off the database mid-write.
+func (s *Supervisor) stopStack(ctx context.Context, c *client.Client) {
+	s.setStack(nil, api.StackStopping, nil)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.StackStopTimeout)
+	defer cancel()
+	start := time.Now()
+	if err := opWhenIdle(ctx, c, protocol.StackStop{}); err != nil {
+		s.cfg.Log.Warn("stopping the clinic stack", "err", err)
+		s.setStack(nil, api.StackFailed, err)
+		return
+	}
+	s.cfg.Log.Info("clinic stack stopped", "took", time.Since(start).Round(time.Millisecond))
+	s.setStack(nil, api.StackStopped, nil)
+}
+
+// opWhenIdle runs op, waiting while the agent is busy with another one.
+func opWhenIdle(ctx context.Context, c *client.Client, op protocol.Op) error {
+	return whenIdle(ctx, func() error { return c.Op(ctx, op, nil, nil) })
+}
+
+// whenIdle calls f until the agent is not busy with another op.
+func whenIdle(ctx context.Context, f func() error) error {
+	for {
+		err := f()
+		if !errors.Is(err, client.ErrBusy) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// setStack records the stack state unless b (when given) was stopped.
+func (s *Supervisor) setStack(b *boot, state api.StackState, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b != nil && b.ctx.Err() != nil {
+		return
+	}
+	st := &api.StackStatus{State: state, Since: time.Now()}
+	if err != nil {
+		st.Error = err.Error()
+	}
+	s.st.Stack = st
+	s.publishLocked()
+}
+
 func agentClient(m vm.Machine) *client.Client {
 	return client.New(func(ctx context.Context) (net.Conn, error) {
 		return m.DialVsock(ctx, vm.AgentVsockPort)
@@ -550,6 +630,10 @@ func (s *Supervisor) snapshotLocked() Status {
 	if st.Agent != nil {
 		a := *st.Agent
 		st.Agent = &a
+	}
+	if st.Stack != nil {
+		k := *st.Stack
+		st.Stack = &k
 	}
 	if !st.StartedAt.IsZero() {
 		st.UptimeSeconds = int64(time.Since(st.StartedAt) / time.Second)

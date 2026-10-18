@@ -2,11 +2,38 @@
 	auto_https disable_redirects
 	order coraza_waf first
 
-	servers {
+	# Every connection arrives through the engine's port relay, which sends a
+	# PROXY v2 header with the real client address. Docker's port proxy makes
+	# it come from the pinned network gateway; anything else is rejected.
+	servers :443 {
+		listener_wrappers {
+			proxy_protocol {
+				allow 172.30.0.1/32
+				fallback_policy reject
+			}
+			tls
+		}
 		protocols h1 h2
 	}
 
+	servers :80 {
+		listener_wrappers {
+			proxy_protocol {
+				allow 172.30.0.1/32
+				fallback_policy reject
+			}
+		}
+		protocols h1 h2
+	}
+
+	# Home access (Tailscale serve) also sets X-Forwarded-For.
 	servers :8480 {
+		listener_wrappers {
+			proxy_protocol {
+				allow 172.30.0.1/32
+				fallback_policy reject
+			}
+		}
 		protocols h1 h2
 		trusted_proxies static private_ranges
 	}
@@ -25,6 +52,7 @@
 	handle @mobileSetup {
 		root * /setup
 		rewrite * /index.html
+		templates
 		file_server
 	}
 
@@ -37,6 +65,7 @@
 
 
 (site) {
+	log
 	encode gzip
 
 	header -Strict-Transport-Security
@@ -75,7 +104,7 @@
 	}
 }
 
-example.local:443 {
+{$CARE_HOST}:443 {
 	tls internal
 	import bootstrap
 	import site

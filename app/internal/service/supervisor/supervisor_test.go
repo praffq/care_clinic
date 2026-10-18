@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/vm"
+	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/slots/slotstest"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/supervisor/supervisortest"
@@ -387,5 +389,93 @@ func TestRunStopsVMOnExit(t *testing.T) {
 	}
 	if err := e.sup.Start(ctxT(t)); !errors.Is(err, ErrClosed) {
 		t.Fatalf("start after exit = %v", err)
+	}
+}
+
+func (e *env) waitStack(t *testing.T, s api.StackState) Status {
+	t.Helper()
+	return e.wait(t, "stack "+string(s), func(st Status) bool { return st.Stack != nil && st.Stack.State == s })
+}
+
+func TestStackStartsAfterBootAndStopsFirst(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStack(t, api.StackRunning)
+	m := e.factory.Last()
+	if err := e.sup.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.sup.Status(); st.Stack == nil || st.Stack.State != api.StackStopped {
+		t.Fatalf("stack after stop = %+v", st.Stack)
+	}
+	var methods []string
+	for _, c := range m.Exec.Calls() {
+		if c.Method == "Ping" || c.Method == "SetTime" {
+			continue
+		}
+		methods = append(methods, c.Method)
+		if up, ok := c.Op.(*protocol.StackUp); ok && !up.Wait {
+			t.Errorf("StackUp = %+v, want Wait", up)
+		}
+	}
+	if got := strings.Join(methods, " "); got != "StackUp StackStop PowerOff" {
+		t.Fatalf("agent calls = %s", got)
+	}
+}
+
+func TestStackStartOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want api.StackState
+	}{
+		{&protocol.OpError{Code: protocol.CodeNotInstalled, Message: "no clinic"}, api.StackNotInstalled},
+		{&protocol.OpError{Code: protocol.CodeCommandFailed, Message: "unhealthy"}, api.StackFailed},
+	} {
+		e := newEnv(t, "1.0.0")
+		e.factory.Setup = func(x *agent.FakeExecutor) {
+			x.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+				if _, ok := op.(*protocol.StackUp); ok {
+					return nil, tc.err
+				}
+				return nil, nil
+			}
+		}
+		if err := e.sup.Start(ctxT(t)); err != nil {
+			t.Fatal(err)
+		}
+		st := e.waitStack(t, tc.want)
+		if tc.want == api.StackFailed && !strings.Contains(st.Stack.Error, "unhealthy") {
+			t.Errorf("stack error = %q", st.Stack.Error)
+		}
+		if st.State != StateReady {
+			t.Errorf("engine state = %s; a stack failure must not affect the engine", st.State)
+		}
+	}
+}
+
+// A stack start still running at shutdown must not make the agent refuse to
+// power off (which would force the VM off).
+func TestStopWaitsForBusyAgent(t *testing.T) {
+	e := newEnv(t, "1.0.0")
+	e.factory.Setup = func(x *agent.FakeExecutor) {
+		x.Handle = func(ctx context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+			if _, ok := op.(*protocol.StackUp); ok {
+				time.Sleep(300 * time.Millisecond)
+			}
+			return nil, nil
+		}
+	}
+	if err := e.sup.Start(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStack(t, api.StackStarting)
+	m := e.factory.Last()
+	if err := e.sup.Stop(ctxT(t)); err != nil {
+		t.Fatal(err)
+	}
+	if m.Forced() {
+		t.Fatal("VM was forced off while the agent was busy")
 	}
 }

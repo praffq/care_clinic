@@ -1,8 +1,18 @@
-name: care-clinic
+# The CARE stack. It runs inside the engine VM as compose project "care":
+# the host uploads this file as compose.yml, together with backend.env,
+# Caddyfile, minio-entrypoint.sh, setup.html and the generated stack.env
+# (interpolation: digest-pinned images, host name), clinic.env (served
+# origins) and secrets.env (generated once). See app/internal/stack.
+name: care
 
 networks:
   default:
-    name: care-clinic
+    # Pinned so Caddy can accept PROXY headers only from the gateway, which is
+    # where the engine's port relay connects from (via docker's port proxy).
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
 
 volumes:
   postgres-data:
@@ -11,11 +21,18 @@ volumes:
   caddy-data:
   caddy-config:
 
+x-backend: &backend
+  image: ${IMAGE_BACKEND:?IMAGE_BACKEND not set}
+  pull_policy: never
+  restart: unless-stopped
+  env_file: [./backend.env, ./clinic.env, ./secrets.env]
+
 services:
   db:
-    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE not set - .env is missing from this directory}
+    image: ${IMAGE_POSTGRES:?IMAGE_POSTGRES not set}
+    pull_policy: never
     restart: unless-stopped
-    env_file: ./backend.env
+    env_file: [./backend.env, ./secrets.env]
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +42,8 @@ services:
       start_period: 10s
 
   redis:
-    image: ${REDIS_IMAGE:?REDIS_IMAGE not set - .env is missing from this directory}
+    image: ${IMAGE_REDIS:?IMAGE_REDIS not set}
+    pull_policy: never
     restart: unless-stopped
     volumes:
       - redis-data:/data
@@ -35,95 +53,96 @@ services:
       retries: 5
 
   minio:
-    image: ${MINIO_IMAGE:?MINIO_IMAGE not set - .env is missing from this directory}
+    image: ${IMAGE_SILO:?IMAGE_SILO not set}
+    pull_policy: never
     restart: unless-stopped
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-      FILE_UPLOAD_BUCKET: ${FILE_UPLOAD_BUCKET:-patient-bucket}
-      FACILITY_S3_BUCKET: ${FACILITY_S3_BUCKET:-facility-bucket}
+    env_file: [./backend.env, ./secrets.env]
+    labels:
+      care.config: ${MINIO_CONFIG_SHA:-}
     volumes:
       - minio-data:/data
-      - ./minio/entrypoint.sh:/entrypoint.sh:ro
+      - ./minio-entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
-    # No host port: browsers reach files through Caddy on :80 (/patient-bucket,
-    # /facility-bucket). One port to bind, and same-origin with the app.
+    # No published port: browsers reach files through Caddy (/patient-bucket,
+    # /facility-bucket), same-origin with the app.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
       interval: 10s
       retries: 5
 
-  backend:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE not set - .env is missing from this directory}
-    restart: unless-stopped
-    env_file: ./backend.env
-    entrypoint: ["bash", "start.sh"]
+  # One-shot: schema migrations and CARE's sync commands. Only migrations.run
+  # starts it (profile), so booting or restarting the stack never migrates.
+  migrate:
+    <<: *backend
+    profiles: [migrate]
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - ./wait_for_db.sh && ./wait_for_redis.sh &&
+        python manage.py migrate --noinput &&
+        python manage.py sync_permissions_roles &&
+        python manage.py sync_valueset
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
+
+  backend:
+    <<: *backend
+    entrypoint: ["bash", "start.sh"]
+    depends_on: &after-migrate
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully, required: false}
 
   celery-worker:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE not set - .env is missing from this directory}
-    restart: unless-stopped
-    env_file: ./backend.env
+    <<: *backend
     entrypoint: ["bash", "celery_worker.sh"]
-    depends_on:
-      db: {condition: service_healthy}
-      redis: {condition: service_healthy}
+    depends_on: *after-migrate
 
+  # Not celery_beat.sh: upstream runs migrations there on every start.
   celery-beat:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE not set - .env is missing from this directory}
-    restart: unless-stopped
-    env_file: ./backend.env
-    entrypoint: ["bash", "celery_beat.sh"]
-    depends_on:
-      db: {condition: service_healthy}
-      redis: {condition: service_healthy}
+    <<: *backend
+    entrypoint:
+      - bash
+      - -c
+      - printf celery-beat > /tmp/container-role &&
+        ./wait_for_db.sh && ./wait_for_redis.sh && touch /tmp/healthy &&
+        exec celery --app=config.celery_app beat --loglevel=info
+    depends_on: *after-migrate
 
   frontend:
-    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE not set - .env is missing from this directory}
+    image: ${IMAGE_FRONTEND:?IMAGE_FRONTEND not set}
+    pull_policy: never
     restart: unless-stopped
     depends_on:
       - backend
 
   caddy:
-    image: ${CADDY_WAF_IMAGE:?CADDY_WAF_IMAGE not set - .env is missing from this directory}
+    image: ${IMAGE_CADDY:?IMAGE_CADDY not set}
+    pull_policy: never
     restart: unless-stopped
+    env_file: [./backend.env]
     environment:
-      CORAZA_MODE: ${CORAZA_MODE:-Off}
-      FILE_UPLOAD_BUCKET: ${FILE_UPLOAD_BUCKET:-patient-bucket}
-      FACILITY_S3_BUCKET: ${FACILITY_S3_BUCKET:-facility-bucket}
+      CARE_HOST: ${CARE_HOST:?CARE_HOST not set}
+    labels:
+      care.config: ${CADDY_CONFIG_SHA:-}
     command:
       - /bin/sh
       - -c
-      - printf 'SecRuleEngine %s\n' "$$CORAZA_MODE" > /etc/caddy/waf-mode.conf &&
+      - printf 'SecRuleEngine %s\n' "$${CORAZA_MODE:-Off}" > /etc/caddy/waf-mode.conf &&
         exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    # Guest loopback only: the engine relays the host's forwarded ports here.
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
       - "127.0.0.1:8480:8480"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./setup:/setup:ro
+      - ./setup.html:/setup/index.html:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
       - backend
       - frontend
       - minio
-
-  backup:
-    image: ${BACKUP_IMAGE:?BACKUP_IMAGE not set - .env is missing from this directory}   # postgres + openssl, built by `care setup`
-    restart: unless-stopped
-    env_file: ./backend.env
-    environment:
-      TZ: ${BACKUP_TZ:-UTC0}
-    volumes:
-      - ./scripts/backup.sh:/backup.sh:ro
-      - ${BACKUP_DIR:-./db-backups}:/backups
-      - ./keys:/keys:ro
-      - ./backup-state:/state
-      - minio-data:/minio-data:ro
-    entrypoint: ["/bin/sh", "/backup.sh"]
-    depends_on:
-      db: {condition: service_healthy}

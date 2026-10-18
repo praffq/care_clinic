@@ -33,7 +33,7 @@
   <h1>Connect your phone or tablet</h1>
   <p>Do this once on each device. For a Windows computer or Mac, use CARE Clinic and choose <strong>Connect to a clinic</strong>.</p>
   <p class="note">Connect to the clinic Wi-Fi. Only install this certificate if your clinic administrator gave you this address.</p>
-  <p>On your phone or tablet, open:<br><a href="http://example.local/setup">http://example.local/setup</a></p>
+  <p>On your phone or tablet, open:<br><a href="http://{{env "CARE_HOST"}}/setup">http://{{env "CARE_HOST"}}/setup</a></p>
 
   <section>
     <h2>1. Download the clinic certificate</h2>
@@ -69,7 +69,7 @@
   <section>
     <h2>3. Open CARE</h2>
     <p>After completing the Settings steps, open CARE. If the sign-in page opens without a security warning, setup is complete.</p>
-    <a class="button" id="clinic-address" href="https://example.local" target="_blank" rel="noopener">Open CARE (new tab)</a>
+    <a class="button" id="clinic-address" href="https://{{env "CARE_HOST"}}" target="_blank" rel="noopener">Open CARE (new tab)</a>
     <p class="hint">Still seeing a warning? Close and reopen your browser. Do not bypass the warning to enter patient information.</p>
   </section>
 

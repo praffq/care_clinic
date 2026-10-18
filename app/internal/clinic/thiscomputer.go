@@ -3,32 +3,11 @@ package clinic
 import (
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/hosts"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 )
-
-const gatewayReadyTimeout = 60 * time.Second
-
-func (e *Clinic) setUpThisComputerEarly() {
-	e.logln("Starting the secure gateway so this computer can be set up now...")
-	if err := e.dc("up", "-d", "--wait", "--wait-timeout", "120", "--no-deps", "caddy"); err != nil {
-		e.logln("Couldn't start the secure gateway yet (" + err.Error() + "); this computer will be set up once CARE starts.")
-		return
-	}
-	host := e.host()
-	deadline := time.Now().Add(gatewayReadyTimeout)
-	for e.caddyRootPEM() == "" || !trust.HostServed(host) {
-		if time.Now().After(deadline) {
-			e.logln("The secure gateway hasn't made its certificate yet; this computer will be set up once CARE starts.")
-			return
-		}
-		time.Sleep(time.Second)
-	}
-	e.setUpThisComputer()
-}
 
 func (e *Clinic) setUpThisComputer() {
 	e.localSetupOffered = true

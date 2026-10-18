@@ -8,19 +8,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/backup"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
-
-func (e *Clinic) migrate() error {
-	if err := e.dc("exec", "-T", "backend", "python", "manage.py", "migrate", "--noinput"); err != nil {
-		return fmt.Errorf("database migrations failed; workers and the scheduler remain stopped. Resolve the migration error and start CARE again: %w", err)
-	}
-	return nil
-}
 
 func (e *Clinic) stopWorkers() error {
 	if err := e.dc("stop", "celery-worker", "celery-beat"); err != nil {
@@ -110,29 +101,4 @@ func stagedDatabaseURL(env map[string]string, database string) (string, error) {
 	query.Del("database")
 	u.RawQuery = query.Encode()
 	return u.String(), nil
-}
-
-func (e *Clinic) createAdmin() error {
-	if e.AdminPassword == "" {
-		return nil
-	}
-	cmd := proc.Command("docker", "compose", "exec", "-T",
-		"-e", "DJANGO_SUPERUSER_PASSWORD",
-		"backend", "python", "manage.py", "createsuperuser", "--noinput",
-		"--username", "admin", "--email", "admin@care.local")
-	cmd.Env = append(e.baseEnv(), "DJANGO_SUPERUSER_PASSWORD="+e.AdminPassword)
-	cmd.Dir = e.workdir()
-	out, err := cmd.CombinedOutput()
-	message := strings.TrimSpace(string(out))
-	lastLine := message[strings.LastIndex(message, "\n")+1:]
-	switch {
-	case err == nil:
-		e.logln("Created admin login (username: admin).")
-	case lastLine == "CommandError: Error: That username is already taken." ||
-		lastLine == "CommandError: That username is already taken.":
-		e.logln("Admin login already exists (left unchanged).")
-	default:
-		return fmt.Errorf("admin login could not be created: %w: %s", err, message)
-	}
-	return nil
 }

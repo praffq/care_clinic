@@ -17,11 +17,15 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
-// Fixed compose layout inside the engine VM. Callers cannot influence these.
+// Fixed compose layout inside the engine VM: the host uploads the stack
+// files (flat names) to the config file area, and compose runs from there.
 const (
 	ComposeProject = "care"
-	ComposeDir     = "/var/lib/care/clinic"
-	ComposeFile    = ComposeDir + "/docker-compose.yml"
+	ComposeDir     = DefaultFilesRoot + "/" + string(protocol.FileAreaConfig)
+	ComposeFile    = ComposeDir + "/compose.yml"
+	// ComposeEnvFile holds the interpolation variables (digest-pinned image
+	// refs). It is not ".env" because file names may not start with a dot.
+	ComposeEnvFile = ComposeDir + "/stack.env"
 
 	dockerBin          = "docker"
 	defaultWaitTimeout = 300
@@ -111,6 +115,7 @@ func compose(args ...string) []string {
 		"--project-name", ComposeProject,
 		"--file", ComposeFile,
 		"--project-directory", ComposeDir,
+		"--env-file", ComposeEnvFile,
 	}, args...)
 }
 
@@ -233,7 +238,12 @@ func (d *DockerExecutor) Ping(ctx context.Context) error {
 	return err
 }
 
+var errNotInstalled = &protocol.OpError{Code: protocol.CodeNotInstalled, Message: "the clinic stack is not installed"}
+
 func (d *DockerExecutor) StackUp(ctx context.Context, op protocol.StackUp, em Emitter) error {
+	if d.noStack() {
+		return errNotInstalled
+	}
 	args := []string{"up", "--detach", "--remove-orphans"}
 	if op.Wait {
 		t := waitTimeout(op.TimeoutSec)
@@ -334,7 +344,7 @@ func parseComposePS(out []byte) ([]composePS, error) {
 
 func (d *DockerExecutor) StackLogs(ctx context.Context, op protocol.StackLogs, em Emitter) error {
 	if d.noStack() {
-		return &protocol.OpError{Code: protocol.CodeNotInstalled, Message: "the clinic stack is not installed"}
+		return errNotInstalled
 	}
 	args := []string{"logs", "--no-color", "--no-log-prefix", "--tail", strconv.Itoa(op.TailLines)}
 	if op.Since != nil {
