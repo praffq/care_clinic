@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/appremoval"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
@@ -32,44 +34,124 @@ func updateTarget() (string, error) {
 	return target, nil
 }
 
-// The helper acknowledges readiness before we quit, then waits for this exact
-// process to exit. Nothing replaces the application while Wails is still using it.
-func (a *App) handoffAppUpdate(download, version, digest string) (err error) {
-	work := filepath.Dir(download)
+// preparedUpdate is a downloaded, verified installer ready to hand off.
+type preparedUpdate struct {
+	Version   string
+	Installer string
+	Digest    string
+	Source    string
+	// Work is a private folder for the helper; on macOS it holds the
+	// staged bundle.
+	Work         string
+	Target       string
+	Staged       string
+	Verification string
+	// Unsigned: the new app is ad-hoc signed (macOS) or the release says it
+	// is unsigned (Windows).
+	Unsigned bool
+}
+
+// updateHandoff is a started helper waiting for the continue file.
+type updateHandoff struct {
+	cmd    *exec.Cmd
+	commit string
+	work   string
+}
+
+// prepareAppUpdate checks that installer can replace this app: on macOS it
+// unpacks the bundle and verifies its signature, version, bundle id and
+// signing team (macUpdateTrust).
+func prepareAppUpdate(installer, version, digest string) (p *preparedUpdate, err error) {
+	target, err := updateTarget()
+	if err != nil {
+		return nil, err
+	}
+	got, err := fileSHA256(installer)
+	if err != nil {
+		return nil, err
+	}
+	if got != digest {
+		return nil, fmt.Errorf("the downloaded installer's SHA-256 is %s, not the published %s", got, digest)
+	}
+	work, err := newUpdateWorkDir()
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		if err != nil {
 			_ = os.RemoveAll(work)
 		}
 	}()
-	target, err := updateTarget()
+	p = &preparedUpdate{Version: version, Installer: installer, Digest: digest, Work: work, Target: target}
+	switch runtime.GOOS {
+	case "darwin":
+		if p.Staged, err = stageMacBundle(installer, work, filepath.Base(target)); err != nil {
+			return nil, err
+		}
+		if p.Unsigned, err = verifyMacBundle(p.Staged, target, version); err != nil {
+			return nil, err
+		}
+		if p.Verification, err = macCopiedBundleVerification(p.Staged); err != nil {
+			return nil, err
+		}
+	case "windows":
+		// The helper runs the installer from its own folder, under the name
+		// NSIS expects.
+		p.Installer = filepath.Join(work, "CARE-Clinic-"+version+"-setup.exe")
+		if err := copyFile(installer, p.Installer); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("in-place updates are not supported on %s", runtime.GOOS)
+	}
+	return p, nil
+}
+
+func newUpdateWorkDir() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(cache, "CARE Clinic", "updates")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, "update-")
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	ready := filepath.Join(work, "ready")
-	commit := filepath.Join(work, "continue")
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// startHandoff starts the helper for p. The helper acknowledges readiness,
+// then waits for the continue file (commitHandoff) and for this exact
+// process to exit: nothing replaces the application while Wails is still
+// using it.
+func (a *App) startHandoff(p *preparedUpdate) error {
+	ready := filepath.Join(p.Work, "ready")
 	var script, name string
 	var cmd *exec.Cmd
-	a.updateProgress(phaseVerifying, 0, 0)
 	switch runtime.GOOS {
 	case "darwin":
-		a.logln("Unpacking CARE Clinic " + version + "...")
-		staged, err := stageMacBundle(download, work, filepath.Base(target))
+		elevated, err := macUpdateNeedsElevation(p.Target)
 		if err != nil {
 			return err
 		}
-		if err := verifyMacBundle(staged, target, version); err != nil {
-			return err
-		}
-		verification, err := macCopiedBundleVerification(staged)
-		if err != nil {
-			return err
-		}
-		elevated, err := macUpdateNeedsElevation(target)
-		if err != nil {
-			return err
-		}
-		script = macUpdateHelper(target, staged, work, os.Getpid(), elevated, verification)
-		name = filepath.Join(work, "install.sh")
+		script = macUpdateHelper(p.Target, p.Staged, p.Work, os.Getpid(), elevated, p.Verification)
+		name = filepath.Join(p.Work, "install.sh")
 		cmd = proc.Command("/bin/sh", name)
 	case "windows":
 		exe, err := os.Executable()
@@ -80,8 +162,8 @@ func (a *App) handoffAppUpdate(download, version, digest string) (err error) {
 		if err != nil {
 			return err
 		}
-		script = windowsUpdateHelper(exe, download, work, version, digest, os.Getpid())
-		name = filepath.Join(work, "install.ps1")
+		script = windowsUpdateHelper(exe, p.Installer, p.Work, p.Version, p.Digest, os.Getpid())
+		name = filepath.Join(p.Work, "install.ps1")
 		cmd = proc.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name)
 	default:
 		return fmt.Errorf("in-place updates are not supported on %s", runtime.GOOS)
@@ -90,12 +172,27 @@ func (a *App) handoffAppUpdate(download, version, digest string) (err error) {
 		return err
 	}
 	a.updateProgress(phaseInstalling, 0, 0)
-	a.logln("Preparing an in-place update of " + target + ". Helper log: " + filepath.Join(work, "helper.log"))
+	a.logln("Preparing an in-place update of " + p.Target + ". Helper log: " + filepath.Join(p.Work, "helper.log"))
 	if err := startUpdateHelper(cmd, ready); err != nil {
 		return err
 	}
-	if err := os.WriteFile(commit, []byte("continue"), 0o600); err != nil {
-		_ = cmd.Process.Kill()
+	a.appUpdateMu.Lock()
+	a.handoff = &updateHandoff{cmd: cmd, commit: filepath.Join(p.Work, "continue"), work: p.Work}
+	a.appUpdateMu.Unlock()
+	return nil
+}
+
+// commitHandoff lets the helper go ahead and quits once the job ends.
+func (a *App) commitHandoff() error {
+	a.appUpdateMu.Lock()
+	h := a.handoff
+	a.handoff = nil
+	a.appUpdateMu.Unlock()
+	if h == nil {
+		return errors.New("the update helper is not running")
+	}
+	if err := os.WriteFile(h.commit, []byte("continue"), 0o600); err != nil {
+		_ = h.cmd.Process.Kill()
 		return fmt.Errorf("couldn't authorize the update handoff: %w", err)
 	}
 	a.updateProgress(phaseRestarting, 0, 0)
@@ -103,6 +200,18 @@ func (a *App) handoffAppUpdate(download, version, digest string) (err error) {
 	a.closing = true
 	a.quitAfterJob()
 	return nil
+}
+
+// abortHandoff stops a helper that will not be committed; the running app
+// stays as it is.
+func (a *App) abortHandoff() {
+	a.appUpdateMu.Lock()
+	h := a.handoff
+	a.handoff = nil
+	a.appUpdateMu.Unlock()
+	if h != nil {
+		_ = h.cmd.Process.Kill()
+	}
 }
 
 func startUpdateHelper(cmd *exec.Cmd, ready string) error {
@@ -173,45 +282,64 @@ func stageMacBundle(dmg, work, name string) (staged string, err error) {
 	return staged, nil
 }
 
-func verifyMacBundle(staged, current, version string) error {
+// verifyMacBundle checks the staged bundle against the running one and
+// reports whether it is ad-hoc signed.
+func verifyMacBundle(staged, current, version string) (unsigned bool, err error) {
 	if err := macStep("/usr/bin/codesign", "--verify", "--deep", "--strict", staged); err != nil {
-		return fmt.Errorf("the new version's code signature is not intact: %w", err)
+		return false, fmt.Errorf("the new version's code signature is not intact: %w", err)
 	}
 	got, err := plistValue(staged, "CFBundleShortVersionString")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if got != version {
-		return fmt.Errorf("the downloaded app says it is version %s, not %s", got, version)
+		return false, fmt.Errorf("the downloaded app says it is version %s, not %s", got, version)
 	}
 	newID, err := plistValue(staged, "CFBundleIdentifier")
 	if err != nil {
-		return err
+		return false, err
 	}
 	oldID, err := plistValue(current, "CFBundleIdentifier")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if newID != oldID {
-		return fmt.Errorf("the downloaded app is %s, not %s", newID, oldID)
+		return false, fmt.Errorf("the downloaded app is %s, not %s", newID, oldID)
 	}
-	// Ad-hoc releases remain supported, but a Developer ID installation must
-	// never silently downgrade to an ad-hoc or differently signed application.
 	oldTeam, err := macSigningTeam(current)
 	if err != nil {
-		return err
+		return false, err
 	}
 	newTeam, err := macSigningTeam(staged)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if oldTeam != "" && oldTeam != newTeam {
-		return fmt.Errorf("the update's signing team does not match this installation")
+	if err := macUpdateTrust(oldTeam, newTeam, feed.UnsignedFeedAllowed()); err != nil {
+		return false, err
 	}
-	if oldTeam != "" {
+	if newTeam != "" {
 		if err := macStep("/usr/sbin/spctl", "--assess", "--type", "execute", staged); err != nil {
-			return fmt.Errorf("macOS did not approve the signed update: %w", err)
+			return false, fmt.Errorf("macOS did not approve the signed update: %w", err)
 		}
+	}
+	return newTeam == "", nil
+}
+
+// macUpdateTrust decides whether an app signed by newTeam may replace one
+// signed by oldTeam ("" is ad-hoc). The team must match; a Developer ID
+// installation never downgrades to an ad-hoc build, and ad-hoc builds
+// replace each other only where this build accepts an unsigned feed.
+func macUpdateTrust(oldTeam, newTeam string, unsignedAllowed bool) error {
+	switch {
+	case oldTeam != "" && newTeam == "":
+		return fmt.Errorf("the update is not signed, but this installation is signed by team %s; it was not installed", oldTeam)
+	case oldTeam != newTeam && oldTeam != "":
+		return fmt.Errorf("the update is signed by team %s, not this installation's team %s; it was not installed", newTeam, oldTeam)
+	case oldTeam == "" && newTeam != "":
+		return fmt.Errorf("the update is signed by team %s but this installation is not signed; "+
+			"install the signed release from its disk image once, then later updates install themselves", newTeam)
+	case oldTeam == "" && !unsignedAllowed:
+		return errors.New("the update is not signed, and this build only installs signed updates")
 	}
 	return nil
 }

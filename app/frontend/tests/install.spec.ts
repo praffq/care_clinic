@@ -468,11 +468,11 @@ for (const first of ["retry", "update"] as const) {
     }, first);
     if (first === "retry") {
       await expect.poll(() => calls(page, "RetrySetup")).toBe(1);
-      expect(await calls(page, "InstallAppUpdate")).toBe(0);
+      expect(await calls(page, "DownloadAppUpdate")).toBe(0);
       await page.evaluate(() => window.careTest.release("RetrySetup"));
       await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
     } else {
-      await expect.poll(() => calls(page, "InstallAppUpdate")).toBe(1);
+      await expect.poll(() => calls(page, "DownloadAppUpdate")).toBe(1);
       expect(await calls(page, "RetrySetup")).toBe(0);
       await expect(retry(page)).toBeDisabled();
       await page.evaluate(() => {
@@ -504,7 +504,7 @@ for (const failure of ["couldn't reach GitHub to check for updates: private tran
     await page.evaluate((update) => window.careTest.setUpdate(update), availableUpdate);
     await page.getByRole("button", { name: "Check again", exact: true }).click();
     await expect(page.getByRole("button", { name: "Update now", exact: true })).toBeEnabled();
-    expect(await calls(page, "InstallAppUpdate")).toBe(0);
+    expect(await calls(page, "DownloadAppUpdate")).toBe(0);
   });
 }
 
@@ -521,7 +521,7 @@ test("an update stays busy after job acceptance and failure offers a separate up
   await expect(retry(page)).toBeEnabled();
   await expect(page.locator(".install-screen")).not.toContainText("/private/failure");
   await page.getByRole("button", { name: "Retry update", exact: true }).click();
-  await expect.poll(() => calls(page, "InstallAppUpdate")).toBe(2);
+  await expect.poll(() => calls(page, "DownloadAppUpdate")).toBe(2);
   expect(await calls(page, "CleanupFailedInstall")).toBe(0);
   for (const [phase, heading] of [
     ["verifying", "Checking the CARE Clinic download…"],
@@ -553,13 +553,13 @@ for (const first of ["retry", "update"] as const) {
     }, first);
     if (first === "retry") {
       await expect.poll(() => calls(page, "CleanupFailedInstall")).toBe(1);
-      expect(await calls(page, "InstallAppUpdate")).toBe(0);
+      expect(await calls(page, "DownloadAppUpdate")).toBe(0);
       await expect(failedHeading(page)).toBeVisible();
       await page.evaluate(() => window.careTest.release("CleanupFailedInstall"));
       await continueServerChecks(page);
       await expect(page.getByRole("heading", { name: "Choosing the clinic address", exact: true })).toBeVisible();
     } else {
-      await expect.poll(() => calls(page, "InstallAppUpdate")).toBe(1);
+      await expect.poll(() => calls(page, "DownloadAppUpdate")).toBe(1);
       expect(await calls(page, "CleanupFailedInstall")).toBe(0);
       await expect(failedHeading(page)).toBeVisible();
       await expect(retry(page)).toBeDisabled();

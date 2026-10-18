@@ -18,6 +18,8 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 	for _, role := range []string{"", roleClient, roleServer} {
 		t.Run("role="+role, func(t *testing.T) {
 			a := roleApp(t)
+			// Never reach this computer's real service.
+			a.service = newFakeAPI(t)
 			a.cfg = Config{Role: role}
 			a.pins.AppVersion = "1.2.3"
 			before := a.loadConfig()
@@ -40,7 +42,7 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 			})}
 			t.Cleanup(func() { http.DefaultClient = original })
 
-			if err := a.InstallAppUpdate(); err != nil {
+			if err := a.DownloadAppUpdate(); err != nil {
 				t.Fatalf("update rejected before choosing/installing a server: %v", err)
 			}
 			deadline := time.Now().Add(3 * time.Second)
@@ -63,14 +65,40 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 
 func TestClinicAppUpdateStillHonorsJobAndClosingGuards(t *testing.T) {
 	a := roleApp(t)
-	a.jobMu.Lock()
-	err := a.InstallAppUpdate()
+	for name, call := range map[string]func() error{"download": a.DownloadAppUpdate, "restart": a.RestartToUpdate} {
+		a.closing = false
+		a.jobMu.Lock()
+		err := call()
+		a.jobMu.Unlock()
+		if err == nil || !strings.Contains(err.Error(), "still running") {
+			t.Fatalf("%s bypassed active-job guard: %v", name, err)
+		}
+		a.closing = true
+		if err := call(); err == nil || !strings.Contains(err.Error(), "closing") {
+			t.Fatalf("%s bypassed closing guard: %v", name, err)
+		}
+	}
+}
+
+func TestRestartToUpdateNeedsADownloadedUpdate(t *testing.T) {
+	a := roleApp(t)
+	if err := a.RestartToUpdate(); err != nil {
+		t.Fatal(err)
+	}
+	waitJob(t, a)
+	if a.handoff != nil || a.closing {
+		t.Fatal("restart without a download started a handoff")
+	}
+}
+
+func waitJob(t *testing.T, a *App) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !a.jobMu.TryLock() {
+		if time.Now().After(deadline) {
+			t.Fatal("update job did not finish and release its lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	a.jobMu.Unlock()
-	if err == nil || !strings.Contains(err.Error(), "still running") {
-		t.Fatalf("update bypassed active-job guard: %v", err)
-	}
-	a.closing = true
-	if err := a.InstallAppUpdate(); err == nil || !strings.Contains(err.Error(), "closing") {
-		t.Fatalf("update bypassed closing guard: %v", err)
-	}
 }

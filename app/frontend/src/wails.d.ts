@@ -4,6 +4,7 @@
 import type {
   AppState,
   AppUpdate,
+  AppUpdateOutcome,
   CareHealth,
   ClientPreflight,
   ClientReachability,
@@ -71,7 +72,10 @@ declare global {
           CanRemoveApp(): Promise<boolean>;
           RemoveApp(): Promise<void>;
           CheckAppUpdate(): Promise<AppUpdate>;
-          InstallAppUpdate(): Promise<void>;
+          DownloadAppUpdate(): Promise<void>;
+          RestartToUpdate(): Promise<void>;
+          GetAppUpdateOutcome(): Promise<AppUpdateOutcome>;
+          FinishAppUpdate(): Promise<void>;
           GetUpdateChecks(): Promise<UpdateChecks>;
           SetUpdateChecks(app: boolean, adminPassword: string): Promise<void>;
           SetQuitDialogReady(ready: boolean): Promise<QuitRequest | null>;

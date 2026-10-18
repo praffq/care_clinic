@@ -1,5 +1,5 @@
 import type {
-  AppState, AppUpdate, AppUpdateProgress, CareHealth, ClientPreflight, ClientReachability, ConfirmationRequest,
+  AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, CareHealth, ClientPreflight, ClientReachability, ConfirmationRequest,
   HomeAccess, HostCheck, HostReport, NetworkStatus, Plugin, PluginPreset, QuitRequest, Section, ServiceState, StorageState,
   UpdateChecks,
 } from "../../src/types";
@@ -54,6 +54,9 @@ declare global {
       release: (method: Method) => void;
       progress: (value: AppUpdateProgress) => void;
       finishUpdate: (error?: string) => void;
+      /** The download finished and verified: emits "ready" and ends the job. */
+      downloaded: () => void;
+      setOutcome: (value: AppUpdateOutcome) => void;
       setUpdate: (value: AppUpdate) => void;
       finishJob: (action: string, error?: string) => void;
       requestQuit: (action: string) => void;
@@ -202,7 +205,7 @@ export function installTestHost() {
     fixtures.network.applicable = true;
     fixtures.network.ok = false;
   }
-  const available = ["available", "downloading", "installing", "verifying", "restarting", "installer", "failed", "download-failed", "unavailable"].includes(scenario);
+  const available = ["available", "unsigned", "downloading", "installing", "verifying", "restarting", "installer", "failed", "download-failed", "unavailable"].includes(scenario);
   let update: AppUpdate = {
     current: "0.1.5",
     version: available ? "0.1.6" : "0.1.5",
@@ -210,8 +213,10 @@ export function installTestHost() {
     notes_url: "https://github.com/ohcnetwork/care_desktop/releases",
     asset: "CARE-Clinic-preview.dmg",
     size: 50_000_000,
+    unsigned: scenario === "unsigned",
   };
   let updateRunning = false;
+  let outcome: AppUpdateOutcome = { state: "", version: "" };
 
   const emit = (event: string, ...data: unknown[]) => {
     listeners.get(event)?.forEach((handler) => handler(...data));
@@ -519,7 +524,7 @@ export function installTestHost() {
       if (scenario === "unavailable") throw new Error("release 0.1.6 has no installer for this computer");
       return { ...update };
     },
-    InstallAppUpdate: async () => {
+    DownloadAppUpdate: async () => {
       if (!fixtures.updateChecks.app) throw new Error("CARE Clinic app update checks are turned off; an administrator can turn them back on in Advanced");
       if (updateRunning) throw new Error("something else is still running - wait for it to finish");
       updateRunning = true;
@@ -537,6 +542,27 @@ export function installTestHost() {
             ? scenario : "downloading";
         emit("app-update-progress", { phase, done: 31_000_000, total: 50_000_000 });
         if (phase === "installer" || phase === "restarting") finishUpdate();
+      });
+    },
+    RestartToUpdate: async () => {
+      if (updateRunning) throw new Error("something else is still running - wait for it to finish");
+      if (!update.ready) throw new Error("download the update first");
+      updateRunning = true;
+      queueMicrotask(() => {
+        emit("app-update-progress", { phase: "installing", done: 0, total: 0 });
+        emit("app-update-progress", { phase: "restarting", done: 0, total: 0 });
+        finishUpdate();
+      });
+    },
+    GetAppUpdateOutcome: async () => ({ ...outcome }),
+    FinishAppUpdate: async () => {
+      if (outcome.state !== "failed" || !outcome.can_retry) throw new Error("no unfinished CARE Clinic update");
+      outcome = { state: "finishing", version: outcome.version };
+      emit("app-update-outcome", { ...outcome });
+      queueMicrotask(() => {
+        outcome = { state: "done", version: outcome.version };
+        emit("app-update-outcome", { ...outcome });
+        emit("care-done", 0, "app-update");
       });
     },
     OpenURL: async () => { logs.push("Test only: release notes requested."); },
@@ -626,6 +652,12 @@ export function installTestHost() {
     },
     progress: (value) => emit("app-update-progress", value),
     finishUpdate,
+    downloaded: () => {
+      update = { ...update, ready: true };
+      emit("app-update-progress", { phase: "ready", done: 0, total: 0 });
+      finishUpdate();
+    },
+    setOutcome: (value) => { outcome = value; emit("app-update-outcome", { ...value }); },
     setUpdate: (value) => { update = value; },
   };
 }

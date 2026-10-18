@@ -1,4 +1,4 @@
-import { Check, Download, FileText } from "lucide-react";
+import { Check, Download, FileText, RotateCw } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
@@ -13,7 +13,7 @@ export function StartUpdateCard({ controller, context = "start" }: {
   controller: AppUpdateController;
   context?: "start" | "client" | "setup";
 }) {
-  const { update, version, checking, problem, progress, active, updating, disabled, check, install, dismiss } = controller;
+  const { update, version, checking, problem, progress, active, updating, disabled, check, install, dismiss, ready, unsigned } = controller;
   const { log } = useCare();
   const [actionError, setActionError] = useState("");
   const [opening, setOpening] = useState(false);
@@ -62,6 +62,7 @@ export function StartUpdateCard({ controller, context = "start" }: {
         detail = "Keep this window open. You can continue once the update has finished.";
         break;
       case "verifying":
+      case "ready":
         title = `Checking CARE Clinic ${releaseVersion}\u2026`;
         detail = "Keep this window open. You can continue once the update has finished.";
         break;
@@ -117,11 +118,18 @@ export function StartUpdateCard({ controller, context = "start" }: {
         title = "New version, but not for this computer yet";
         detail = `${problem.version} is out for other systems. Check again another day.`;
     }
+  } else if (update?.available && ready) {
+    eyebrow = "Ready to update";
+    title = `CARE Clinic ${releaseVersion}${unsigned ? " (unsigned)" : ""}`;
+    detail = "Downloaded and verified. Restart to install it: CARE Clinic closes briefly and reopens. Your computer may ask for permission. Clinic data is kept.";
   } else if (update?.available) {
     eyebrow = "Update available";
-    title = `CARE Clinic ${releaseVersion}`;
+    title = `CARE Clinic ${releaseVersion}${unsigned ? " (unsigned)" : ""}`;
     detail = context === "setup" ? "Best done before installing. CARE Clinic will close briefly and reopen."
       : "Updates this installed copy and reopens CARE Clinic. Your computer may ask for permission. Clinic data is kept and a running clinic is not stopped.";
+  }
+  if (!active && !problem && update?.available && unsigned) {
+    detail += " This version is not signed; it is offered only because this copy isn't signed either.";
   }
 
   return (
@@ -151,7 +159,7 @@ export function StartUpdateCard({ controller, context = "start" }: {
           {!active && update?.available && !problem ? (
             <div className="start-update-actions">
               <Button variant="white" size="sm" disabled={disabled || checking} onClick={() => void install()}>
-                <Download aria-hidden="true" />Update now
+                {ready ? <><RotateCw aria-hidden="true" />Restart to update</> : <><Download aria-hidden="true" />Update now</>}
               </Button>
               {context === "setup" ? (
                 <Button variant="glass" size="sm" disabled={disabled} onClick={dismiss}>Later</Button>

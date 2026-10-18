@@ -30,6 +30,11 @@ records `signing.macos` (`developer-id-notarized` or `ad-hoc`) and
 `signing.windows` (`signpath-foundation`, `signpath-test` or `unsigned`). Do
 not tell users to disable OS protection.
 
+Turning macOS signing on later does not reach existing ad-hoc installs
+through the in-app update: the self-update requires the same signing team and
+never moves ad-hoc to signed. Those clinics reinstall once from the signed
+DMG (see [moving to a signed build](updates.md#desktop-f8)).
+
 The update feed is signed separately with `FEED_SIGNING_KEY`; see
 [CI publishing](ci-publishing.md#feed-signing).
 
@@ -137,7 +142,10 @@ Before publishing:
 2. Add release notes describing visible changes, dependency changes, known
    limitations. Say so when the
    bundled service changed: machines that already have it need a service
-   reinstall (see [the care-clinic-service](development-and-release.md#the-care-clinic-service)).
+   reinstall. Servers updating in the app do this themselves after the
+   restart (one administrator prompt; the clinic restarts, its data is kept),
+   see [desktop updates](updates.md#desktop-f8). Otherwise see
+   [the care-clinic-service](development-and-release.md#the-care-clinic-service).
 3. An application upgrade must preserve the clinic's CA identity and persistent
    data; client devices should not need to reinstall certificate trust.
 4. Publish the draft with **Set as the latest release** ticked (the default
@@ -146,9 +154,10 @@ Before publishing:
 
 Publishing it as the latest release:
 
-- offers it to installed apps: the in-app updater reads
-  `praffq/care_clinic`'s latest release and accepts `desktop-v<version>`
-  tags;
+- offers it to installed apps: apps without the clinic service (and any
+  app while no feed is published) read `praffq/care_clinic`'s latest release,
+  accept `desktop-v<version>` tags, verify the installer against
+  `SHA256SUMS` and read `release-manifest.json` to label unsigned builds;
 - adds it to the update feed: `publish.yml` runs on the `released` event and,
   when the tag is a `desktop-v*` release that is the latest, dispatches itself
   on `main` with `desktop: true`. That run requires the latest release to be
@@ -194,8 +203,11 @@ with a message naming `ctl install`. Windows releases contain the app only:
 there is no Windows service yet, so a Windows computer cannot be set up as a
 server.
 
-CARE Clinic itself is offered from this release page under Advanced ->
-Updates, and is always operator-initiated. CARE backend and frontend updates
+CARE Clinic itself is offered under Updates, and is always
+operator-initiated: download, then **Restart to update**. macOS installs swap
+the app in place only between builds of the same signing team; ad-hoc
+(unsigned) builds update only ad-hoc installs, and a signed install never
+takes an unsigned build (see [desktop updates](updates.md#desktop-f8)). CARE backend and frontend updates
 were removed in v2 and return later via engine agent ops.
 
 ## macOS app bundle layout

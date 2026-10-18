@@ -72,6 +72,7 @@ export type CareEvent =
   | "uninstalled"
   | "service-status"
   | "app-update-progress"
+  | "app-update-outcome"
   | "client-connect-progress"
   | "quit-requested"
   | "confirmation-requested"

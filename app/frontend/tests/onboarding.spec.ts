@@ -144,7 +144,7 @@ for (const first of ["find", "update"] as const) {
     }, first);
     if (first === "find") {
       await expect.poll(() => calls(page, "FindClinic")).toBe(1);
-      expect(await calls(page, "InstallAppUpdate")).toBe(0);
+      expect(await calls(page, "DownloadAppUpdate")).toBe(0);
       await page.evaluate(() => window.careTest.release("FindClinic"));
       await expect(page.getByRole("heading", { name: "We found your clinic's server" })).toBeVisible();
     } else {
@@ -418,7 +418,7 @@ test("typing an address blocks an update even before the debounced check starts"
     update.click();
   });
   await expect(forward(page)).toBeEnabled();
-  expect(await calls(page, "InstallAppUpdate")).toBe(0);
+  expect(await calls(page, "DownloadAppUpdate")).toBe(0);
   expect(await page.evaluate(() => window.careTest.state.mdns_name)).toBe("care-hospital.local");
 });
 

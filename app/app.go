@@ -84,6 +84,13 @@ type App struct {
 
 	osUninstall  bool
 	removeTarget string
+
+	// Desktop self-update: the verified update waiting for RestartToUpdate,
+	// the helper it was handed to, and how the last update ended.
+	appUpdateMu sync.Mutex
+	prepared    *preparedUpdate
+	handoff     *updateHandoff
+	outcome     AppUpdateOutcome
 }
 
 func NewApp(installFS fs.FS, log *applog.Logger) (*App, error) {
