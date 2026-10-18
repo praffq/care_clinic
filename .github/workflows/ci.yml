@@ -207,7 +207,7 @@ jobs:
           mkdir -p "$dir"
           gh release download "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
             --pattern "care-engine-$version-$ARCH.tar.gz" --pattern SHA256SUMS
-          (cd "$dir" && grep -E "  \*?care-engine-$version-$ARCH\.tar\.gz$" SHA256SUMS | shasum -a 256 -c -)
+          (cd "$dir" && grep -E "  \*?care-engine-$version-$ARCH\.tar\.gz$" SHA256SUMS | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi)
           echo "CARE_CLINIC_ENGINE_BUNDLE=$dir/care-engine-$version-$ARCH.tar.gz" >>"$GITHUB_ENV"
       - name: Cache the QEMU download
         if: matrix.target == 'desktop-windows'
@@ -248,7 +248,7 @@ jobs:
               test -s "$payload/qemu/share/bios-256k.bin"
               if [ -n "${CARE_CLINIC_ENGINE_BUNDLE:-}" ]; then
                 test -s "$payload/engine/$(basename "$CARE_CLINIC_ENGINE_BUNDLE")"
-                (cd "$payload/engine" && shasum -a 256 -c SHA256SUMS)
+                (cd "$payload/engine" && sha256sum -c SHA256SUMS)
               fi
               mkdir -p ci-app ci-payload
               cp "$app" "$payload/care-clinic-service.exe" ci-app/
