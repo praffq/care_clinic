@@ -364,9 +364,18 @@ func TestRelayStreams(t *testing.T) {
 	if frames != 1 {
 		t.Fatalf("got %d progress frames", frames)
 	}
-	calls := e.factory.Last().Exec.Calls()
-	if got := calls[len(calls)-1]; got.Method != "ImageLoad" || !bytes.Equal(got.Body, body) {
-		t.Fatalf("agent got %s with %d bytes", got.Method, len(got.Body))
+	// The watchdog's health probes (Ping) interleave with the op.
+	loads := 0
+	for _, c := range e.factory.Last().Exec.Calls() {
+		if c.Method == "ImageLoad" {
+			loads++
+			if !bytes.Equal(c.Body, body) {
+				t.Fatalf("agent got ImageLoad with %d bytes, want %d", len(c.Body), len(body))
+			}
+		}
+	}
+	if loads != 1 {
+		t.Fatalf("agent got %d ImageLoad calls", loads)
 	}
 }
 

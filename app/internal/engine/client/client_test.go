@@ -508,3 +508,15 @@ func TestExportBackupMissingChecksum(t *testing.T) {
 		t.Fatalf("err = %v, want ErrMissingChecksum", err)
 	}
 }
+
+// TestOpBackToBack checks that the agent's op lock is released before the
+// result reaches the client, so the next mutating op is never refused busy.
+func TestOpBackToBack(t *testing.T) {
+	e := newEnv(t)
+	e.fake.Handle = func(context.Context, protocol.Op, agent.Emitter) (any, error) { return nil, nil }
+	for i := range 200 {
+		if err := e.c.Op(ctxT(t), &protocol.StackDown{}, nil, nil); err != nil {
+			t.Fatalf("op %d: %v", i, err)
+		}
+	}
+}
