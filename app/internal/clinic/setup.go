@@ -4,7 +4,6 @@ import (
 	"os"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/backup"
-	"github.com/ohcnetwork/care_desktop/app/internal/compose"
 	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
 )
 
@@ -18,12 +17,6 @@ func (e *Clinic) Setup() error {
 	if err := e.Backups().InstallCertificate([]byte(e.BackupCertificate)); err != nil {
 		return err
 	}
-	if err := e.genSecret(); err != nil {
-		return err
-	}
-	if err := e.ApplyDomain(); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(e.backupDir(), 0o755); err != nil {
 		return err
 	}
@@ -31,25 +24,16 @@ func (e *Clinic) Setup() error {
 	if err := e.Backups().EnsureKeysDir(); err != nil {
 		return err
 	}
-	e.logln("Building CARE's images - the backend and app build in the background while setup continues...")
-	b := e.Builder()
-	app := b.Start(compose.EnsureBackend, compose.EnsureFrontend)
-	if err := e.setupWhileBuilding(b); err != nil {
-		app.Cancel()
+	r, err := e.runtime()
+	if err != nil {
 		return err
 	}
-	e.logln("Waiting for the backend and app images to finish building...")
-	if err := app.Wait(); err != nil {
+	if err := r.Images(e.context(), e.StackImages); err != nil {
+		return err
+	}
+	if err := e.Configure(); err != nil {
 		return err
 	}
 	e.logln("Setup done.")
-	return nil
-}
-
-func (e *Clinic) setupWhileBuilding(b *compose.Builder) error {
-	if err := b.Parallel(compose.EnsureCaddy, compose.EnsureBackup); err != nil {
-		return err
-	}
-	e.setUpThisComputerEarly()
 	return nil
 }

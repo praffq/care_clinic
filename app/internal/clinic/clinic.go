@@ -12,6 +12,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/ohcnetwork/care_desktop/app/internal/compose"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
 
@@ -30,6 +31,10 @@ type Clinic struct {
 	Abandon func() bool
 
 	HoldUpdates bool
+
+	// Stack drives the CARE stack in the engine VM through the service.
+	Stack       *stack.Runtime
+	StackImages []stack.Image
 
 	localSetupOffered bool
 	ctx               context.Context

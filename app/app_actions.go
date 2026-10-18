@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
-	"github.com/ohcnetwork/care_desktop/app/internal/health"
 	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/autostart"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
@@ -388,9 +387,6 @@ func (a *App) RunSetup(mdnsName, adminPassword, backupDir string) (err error) {
 				e = a.engine()
 				e.AdminPassword = adminPassword
 				e.BackupCertificate = cfg.BackupCertificate
-				if err := health.EnsurePortFree(e.Runner(), e.Host()); err != nil {
-					return err
-				}
 				return e.Setup()
 			},
 			start: func() error {

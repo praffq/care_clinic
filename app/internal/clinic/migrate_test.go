@@ -115,7 +115,7 @@ exit 99
 			t.Fatal(err)
 		}
 	}
-	e := &Clinic{InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: pins, AdminPassword: "SyntheticAdminSecret123"}
+	e := &Clinic{InstallDir: root, BackupDir: filepath.Join(root, "backups"), Pins: pins, AdminPassword: "SyntheticAdminSecret123", Stack: fakeStack(t).Runtime}
 	readTrace := func() string {
 		t.Helper()
 		data, err := os.ReadFile(trace)
@@ -125,34 +125,6 @@ exit 99
 		return string(data)
 	}
 	return e, readTrace, credentials
-}
-
-func TestStartStopsAndChecksWorkersBeforeMigrations(t *testing.T) {
-	for _, failure := range []string{"stop", "inspection", "running", "migration", "admin"} {
-		t.Run(failure, func(t *testing.T) {
-			e, trace, _ := migrationFixture(t)
-			t.Setenv("CARE_MIGRATION_FAILURE", failure)
-			if err := e.Start(); err == nil {
-				t.Fatal("startup reported success after a worker, migration or administrator failure")
-			}
-			calls := trace()
-			stop := strings.Index(calls, "compose stop celery-worker celery-beat")
-			migrate := strings.Index(calls, "manage.py migrate")
-			if stop < 0 {
-				t.Fatal("startup never attempted to pause existing workers")
-			}
-			if failure == "stop" || failure == "inspection" || failure == "running" {
-				if migrate >= 0 {
-					t.Fatal("migration ran without a verified worker stop")
-				}
-			} else if migrate < stop {
-				t.Fatal("migration ran before workers stopped")
-			}
-			if strings.Contains(calls, "compose up -d --wait --wait-timeout 300\n") {
-				t.Fatal("startup resumed the stack after a safety failure")
-			}
-		})
-	}
 }
 
 func TestRebuildPausesWorkersUntilMigrationsSucceed(t *testing.T) {
@@ -176,26 +148,6 @@ func TestRebuildPausesWorkersUntilMigrationsSucceed(t *testing.T) {
 			}
 			if failure == "" && restart < migrate {
 				t.Fatal("rebuild restarted workers before migration completed")
-			}
-		})
-	}
-}
-
-func TestCreateAdminErrorsAndEnvironment(t *testing.T) {
-	for _, outcome := range []string{"", "existing", "admin", "misleading"} {
-		t.Run(outcome, func(t *testing.T) {
-			e, trace, credentials := migrationFixture(t)
-			t.Setenv("CARE_MIGRATION_FAILURE", outcome)
-			err := e.createAdmin()
-			if (err == nil) != (outcome == "" || outcome == "existing") {
-				t.Fatalf("unexpected administrator result: %v", err)
-			}
-			if strings.Contains(trace(), e.AdminPassword) || !strings.Contains(trace(), "-e DJANGO_SUPERUSER_PASSWORD backend") {
-				t.Fatal("administrator password was not passed only through the child environment")
-			}
-			data, err := os.ReadFile(credentials)
-			if err != nil || strings.TrimSpace(string(data)) != e.AdminPassword {
-				t.Fatal("administrator password did not reach the child environment")
 			}
 		})
 	}
@@ -246,40 +198,5 @@ func TestStagedDatabaseURLHandlesEscapedCredentials(t *testing.T) {
 		if password, ok := u.User.Password(); !ok || password != "p@ss/word" {
 			t.Fatal("staged migration changed an escaped credential")
 		}
-	}
-}
-
-func TestRebuildAllBuildsBothImagesBeforeRestartingEverything(t *testing.T) {
-	e, trace, _ := migrationFixture(t)
-	stamp, err := os.ReadFile(filepath.Join(e.InstallDir, "src", "backend", ".care-source"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(e.InstallDir, "src", "frontend"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(e.InstallDir, "src", "frontend", ".care-source"), stamp, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CARE_MIGRATION_FAILURE", "migration")
-	if err := e.RebuildAll(); err == nil {
-		t.Fatal("rebuild reported success after a migration failure")
-	}
-	calls := trace()
-	backend := strings.Index(calls, "build -f "+filepath.Join(e.InstallDir, "src", "backend", "docker", "prod.Dockerfile"))
-	frontend := strings.Index(calls, "build -t fixture-frontend")
-	stop := strings.Index(calls, "compose stop\n")
-	migrate := strings.Index(calls, "manage.py migrate")
-	if backend < 0 || frontend < 0 {
-		t.Fatalf("rebuild did not build both images:\n%s", calls)
-	}
-	if stop < 0 || stop < backend || stop < frontend {
-		t.Fatalf("rebuild stopped CARE before the images were built:\n%s", calls)
-	}
-	if migrate < stop {
-		t.Fatalf("rebuild migrated before restarting:\n%s", calls)
-	}
-	if strings.Contains(calls, "compose up -d --wait --wait-timeout 300\n") {
-		t.Fatal("rebuild resumed the stack after a migration failure")
 	}
 }

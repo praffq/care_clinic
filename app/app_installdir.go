@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
+	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 )
 
 func (a *App) installDir() string {
@@ -69,7 +71,13 @@ const backupStateDir = "backup-state"
 
 func (a *App) engine() *clinic.Clinic {
 	cfg := a.loadConfig()
+	images, err := devImages()
+	if err != nil {
+		a.logln("warning: " + err.Error())
+	}
 	return &clinic.Clinic{
+		Stack:       &stack.Runtime{Service: a.stackService(), Log: a.logln},
+		StackImages: images,
 		InstallDir:  a.installDir(),
 		MDNSName:    strings.TrimSuffix(strings.TrimSpace(cfg.MDNSName), ".local"),
 		BackupDir:   cfg.BackupDir,
@@ -84,4 +92,21 @@ func (a *App) engineForUpdate() *clinic.Clinic {
 	e := a.engine()
 	e.Abandon = func() bool { return !a.updatesAllowed() }
 	return e
+}
+
+func (a *App) stackService() stack.Service {
+	if a.service != nil {
+		return a.service
+	}
+	return control.NewClient(control.SystemSocket)
+}
+
+// devImages reads the image tarballs from scripts/dev-images.sh named by
+// CARE_CLINIC_DEV_IMAGES. Release images come from the update feed later.
+func devImages() ([]stack.Image, error) {
+	dir := os.Getenv("CARE_CLINIC_DEV_IMAGES")
+	if dir == "" {
+		return nil, nil
+	}
+	return stack.DevImages(dir, nil)
 }

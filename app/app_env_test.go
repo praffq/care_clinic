@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack/stacktest"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -26,6 +30,7 @@ func settingsApp(t *testing.T) *App {
 		configFile: filepath.Join(root, "care-clinic", "config.json"),
 		cfg:        Config{SetupDone: true, AdminPwHash: string(hash)},
 		pins:       &release.Pins{},
+		service:    fakeService(t),
 	}
 	if err := os.MkdirAll(a.installDir(), 0o700); err != nil {
 		t.Fatal(err)
@@ -155,4 +160,21 @@ func TestRetentionReadUsesSavedValue(t *testing.T) {
 			t.Fatalf("saved retention was not loaded: %q, %v", got, err)
 		}
 	}
+}
+
+// fakeService answers like a running clinic; CARE_FAKE_STATE=stopped
+// reports the backend exited.
+func fakeService(t *testing.T) *stacktest.Service {
+	svc := stacktest.New(t)
+	svc.Fake.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+		if _, ok := op.(*protocol.StackStatus); !ok {
+			return nil, nil
+		}
+		backend := "running"
+		if os.Getenv("CARE_FAKE_STATE") == "stopped" {
+			backend = "exited"
+		}
+		return protocol.StackStatusResult{Services: []protocol.ServiceState{{Name: protocol.ServiceBackend, State: backend}}}, nil
+	}
+	return svc
 }

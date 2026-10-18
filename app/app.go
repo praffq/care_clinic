@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/applog"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
@@ -24,6 +25,8 @@ type App struct {
 	installFS fs.FS
 	pins      *release.Pins
 	log       *applog.Logger
+	// service reaches the host service; nil means the installed one.
+	service stack.Service
 
 	cfgMu      sync.RWMutex
 	cfg        Config
