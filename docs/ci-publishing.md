@@ -15,6 +15,7 @@ flowchart LR
   track -->|then| publish
   images[images.yml] -->|"images" artifact: images.json| publish[publish.yml]
   engine[engine.yml] -->|"release engine-v&lt;ver&gt;: engine.json"| publish
+  release[release.yml] -->|"latest release desktop-v&lt;ver&gt;: desktop.json"| publish
   publish -->|"updates.json (+ .sig)"| pages[GitHub Pages]
 ```
 
@@ -78,13 +79,14 @@ On dispatch (input `release`, default on) it creates the GitHub Release
 `engine-v<ver>` with those files. An existing release is not overwritten unless
 dispatched with `replace: true`; normally bump the engine version instead.
 
-## publish.yml (manual, or called by track.yml)
+## publish.yml (manual, called by track.yml, or a published desktop release)
 
 1. Checks for the `FEED_SIGNING_KEY` secret. Without it the run warns and
    publishes the feed unsigned (see [feed signing](#feed-signing)).
 2. Downloads `images.json` from the latest successful `images.yml` run on
-   `main` (or `images_run_id`) and `engine.json` from release
-   `engine-v<engine/VERSION>`.
+   `main` (or `images_run_id`), `engine.json` from release
+   `engine-v<engine/VERSION>`, and `desktop.json` from the latest release,
+   which must be `desktop-v<versions.yml desktop.version>`.
 3. Fetches the current `https://praffq.github.io/care_clinic/updates.json` (if
    any) as `--previous`, and runs `release generate` with revision = previous
    + 1, then, with the key, `release sign` and `release verify`. It refuses
@@ -92,8 +94,15 @@ dispatched with `replace: true`; normally bump the engine version instead.
 4. Deploys `updates.json` to GitHub Pages, with `updates.json.sig` and
    `feed.pub` when signed.
 
-Inputs: `care`, `engine` (which sections to publish), `migrations`,
-`expires_days` (default 30), `block` (space-separated `component:version`).
+Inputs: `care`, `engine`, `desktop` (which sections to publish; `desktop`
+defaults to false), `migrations`, `expires_days` (default 30), `block`
+(space-separated `component:version`).
+
+Publishing a release (`released` event) runs only a small job: when the tag is
+`desktop-v*` and is the repository's latest release, it dispatches
+`publish.yml` on `main` with `desktop: true, care: false, engine: false`
+(GitHub Pages deploys only from `main`). Other releases, such as
+`engine-v*` (created with `--latest=false`), are ignored.
 
 ## track.yml (hourly + manual)
 
@@ -164,3 +173,6 @@ The app decides from its build ([`feed.UnsignedFeedAllowed`](../app/internal/fee
 2. Dispatch `engine.yml` on `main` to create `engine-v<ver>` (a new engine
    version only).
 3. Dispatch `publish.yml` on `main`.
+4. For a desktop version, merge the `desktop.version` bump, review the
+   `release.yml` draft and publish it as the latest release; the feed is
+   updated automatically.

@@ -3,12 +3,16 @@ name: Publish update feed
 # Builds the update feed from the latest images.yml digests and an
 # engine-v<version> release, signs it with the FEED_SIGNING_KEY secret, and
 # deploys updates.json + updates.json.sig to this repository's GitHub Pages
-# (merged with the feed already published there). Without FEED_SIGNING_KEY
+# (merged with the feed already published there). Publishing a desktop-v*
+# release as the latest release dispatches this workflow on main with
+# desktop: true, which adds that release's desktop.json to the feed. Without FEED_SIGNING_KEY
 # the feed is published unsigned (no updates.json.sig) with a warning; only
 # apps built without a production feed key accept it. Run manually, or called by
 # track.yml after it rebuilt the images for new upstream commits.
 # See docs/ci-publishing.md for the one-time key and Pages setup.
 on:
+  release:
+    types: [released]
   workflow_dispatch:
     inputs:
       images_run_id:
@@ -23,6 +27,10 @@ on:
         description: Publish the engine release engine-v<engine/VERSION>
         type: boolean
         default: true
+      desktop:
+        description: Publish the latest release's desktop installers (desktop-v<versions.yml desktop.version>)
+        type: boolean
+        default: false
       migrations:
         description: The CARE release carries database migrations
         type: boolean
@@ -46,6 +54,9 @@ on:
         type: boolean
         default: true
       engine:
+        type: boolean
+        default: false
+      desktop:
         type: boolean
         default: false
       migrations:
@@ -73,8 +84,38 @@ defaults:
     shell: bash
 
 jobs:
+  # Pages deploys only from main, so a release event (whose ref is the tag)
+  # starts a desktop-only run on main instead of publishing itself.
+  desktop-release:
+    name: Publish the latest desktop release
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch a desktop feed update on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          case "$TAG" in
+            desktop-v*) ;;
+            *) echo "$TAG is not a desktop release; nothing to publish."; exit 0 ;;
+          esac
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [ "$latest" != "$TAG" ]; then
+            echo "::notice::$TAG was published but is not the latest release ($latest); the feed is unchanged."
+            exit 0
+          fi
+          gh workflow run publish.yml -R "$GITHUB_REPOSITORY" --ref main \
+            -f desktop=true -f care=false -f engine=false
+          echo "Dispatched publish.yml on main for $TAG" >>"$GITHUB_STEP_SUMMARY"
+
   feed:
     name: Generate and sign updates.json
+    if: github.event_name != 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -138,6 +179,23 @@ jobs:
           gh release download "$tag" -R "$GITHUB_REPOSITORY" -p engine.json -D in/engine ||
             { echo "::error::Release $tag has no engine.json; run engine.yml via workflow_dispatch first."; exit 1; }
           cp in/engine/engine.json in/engine-section.json
+      - name: Collect desktop assets
+        if: inputs.desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(awk '/^desktop:/ { d = 1; next } /^[^ #]/ { d = 0 }
+                         d && /^  version:/ { gsub(/["\r ]/, "", $2); print $2; exit }' versions.yml)
+          tag="desktop-v$version"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [ "$latest" != "$tag" ]; then
+            echo "::error::The latest release is $latest, not $tag (versions.yml desktop.version). Publish $tag as the latest release first."
+            exit 1
+          fi
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p desktop.json -D in/desktop ||
+            { echo "::error::Release $tag has no desktop.json; it was not made by release.yml."; exit 1; }
+          cp in/desktop/desktop.json in/desktop-section.json
       - name: Generate updates.json
         env:
           EXPIRES_DAYS: ${{ inputs.expires_days }}
@@ -146,10 +204,10 @@ jobs:
           set -euo pipefail
           FEED_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           parts=()
-          for f in in/care.json in/engine-section.json; do
+          for f in in/care.json in/engine-section.json in/desktop-section.json; do
             if [ -f "$f" ]; then parts+=("$f"); fi
           done
-          [ ${#parts[@]} -gt 0 ] || { echo "::error::Nothing to publish: enable care and/or engine."; exit 1; }
+          [ ${#parts[@]} -gt 0 ] || { echo "::error::Nothing to publish: enable care, engine and/or desktop."; exit 1; }
           jq -s 'add' "${parts[@]}" >in/artifacts.json
           jq . in/artifacts.json
 

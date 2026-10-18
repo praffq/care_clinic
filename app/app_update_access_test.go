@@ -31,7 +31,7 @@ func TestClinicAppUpdateDoesNotRequireServerSetup(t *testing.T) {
 				// No newer version: exercise the asynchronous failure path without replacing the app.
 				return &http.Response{
 					StatusCode: http.StatusOK,
-					Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1.2.3","assets":[
+					Body: io.NopCloser(strings.NewReader(`{"tag_name":"desktop-v1.2.3","assets":[
 						{"name":"CARE.dmg","browser_download_url":"https://example.invalid/CARE.dmg"},
 						{"name":"CARE-setup.exe","browser_download_url":"https://example.invalid/CARE-setup.exe"}
 					]}`)),

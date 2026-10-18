@@ -239,7 +239,7 @@ The following methods are declared in [`wails.d.ts`](../app/frontend/src/wails.d
 
 | Method | Result | Execution and contract |
 | --- | --- | --- |
-| `CheckAppUpdate()` | `AppUpdate` | Checks GitHub releases unless app update checks are off. |
+| `CheckAppUpdate()` | `AppUpdate` | Checks the latest `praffq/care_clinic` GitHub release (`desktop-v<version>` tag) unless app update checks are off. |
 | `InstallAppUpdate()` | `void` | Job `app-update`; emits `app-update-progress`. |
 | `GetUpdateChecks()`, `SetUpdateChecks(app, password)` | `UpdateChecks {app}`, `void` | The app update-check switch. |
 | `OpenURL(url)`, `ChooseFolder(title)` | `void`, `string` | Native browser and folder dialog; empty string means cancelled. |

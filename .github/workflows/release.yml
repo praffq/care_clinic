@@ -464,6 +464,20 @@ jobs:
             run_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
           };
           fs.writeFileSync("release-assets/release-manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          // The desktop section of a feed artifacts file (docs/ci-publishing.md);
+          // publish.yml adds it to the feed once this release is published as latest.
+          const download = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/releases/download/desktop-v${process.env.VERSION}/`;
+          const asset = name => {
+            const data = fs.readFileSync("release-assets/" + name);
+            return {url: download + name, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length};
+          };
+          const dmg = asset(`CARE-Clinic-${process.env.VERSION}-macos.dmg`);
+          const desktop = {desktop: {assets: {
+            "darwin-arm64": dmg,
+            "darwin-amd64": dmg,
+            "windows-amd64": asset(`CARE-Clinic-${process.env.VERSION}-windows-amd64-setup.exe`),
+          }}};
+          fs.writeFileSync("release-assets/desktop.json", JSON.stringify(desktop, null, 2) + "\n");
           const files = fs.readdirSync("release-assets").sort();
           fs.writeFileSync("release-assets/SHA256SUMS",
             files.map(file => `${hash("release-assets/" + file)}  ${file}\n`).join(""));
@@ -499,8 +513,9 @@ jobs:
           test -s "CARE-Clinic-$VERSION-macos.dmg"
           test -s "CARE-Clinic-$VERSION-windows-amd64-setup.exe"
           test -s versions.yml
+          test -s desktop.json
           test -s release-manifest.json
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
           sha256sum --check --strict SHA256SUMS
       - name: Create tag and draft without replacing published versions
         run: |
@@ -541,7 +556,8 @@ jobs:
           cat > release-notes.md <<EOF
           ## CARE Clinic $VERSION
 
-          **Preview release.**
+          **Draft.** Publishing it as the latest release offers it to installed
+          apps and adds it to the update feed (publish.yml).
 
           ### Signing
 
@@ -573,5 +589,5 @@ jobs:
           Take a verified backup before upgrading an existing clinic.
           EOF
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --draft --prerelease --title "CARE Clinic $VERSION (preview)" \
+            --draft --latest --title "CARE Clinic $VERSION" \
             --notes-file release-notes.md release-assets/*

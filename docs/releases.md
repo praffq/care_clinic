@@ -7,8 +7,10 @@ A desktop release starts on its own when a change to `desktop.version` in
 started by hand from GitHub Actions. Do not create or push a tag to start a
 build. The workflow reads the selected commit's `versions.yml`, runs CI with
 the pinned engine bundled into the macOS app, packages the CI-built
-applications, creates the tag `desktop-v<version>`, and creates a **draft
-prerelease**. Nothing is published to clinic users automatically.
+applications, creates the tag `desktop-v<version>`, and creates a **draft**
+marked to become the latest release. Nothing reaches clinics until a
+maintainer publishes the draft; publishing it as the latest release offers it
+to installed apps and adds it to the update feed.
 
 ## Signing
 
@@ -85,19 +87,20 @@ For `desktop.version: "0.2.1"`, the tag is `desktop-v0.2.1`.
 | Windows signing | With the SignPath configuration, submit the CI-built `CARE Clinic.exe` and `uninstall.exe` for signing in one request, rebuild the NSIS installer around the signed files with the installer inputs CI produced, and submit the installer for signing. Each request waits for an approver. Without the configuration, these jobs are skipped and the CI installer is used unsigned. |
 | macOS signing | Check the bundled service and engine. With `MACOS_CERT_P12`, sign the nested `care-clinic-service` with hardened runtime and its virtualization entitlement, then the app, notarize/staple it, then sign and notarize/staple the DMG. Without it, ad-hoc sign the service (with the entitlement) and the app. Either way, fail if the service lost the entitlement. |
 | Package | Wrap the macOS app in a DMG and copy the signed (or CI-built unsigned) Windows installer. Verify macOS metadata matches the release version. |
-| Record | Save `versions.yml`, the source commit, engine version, workflow run URL, signing status, and SHA-256 file checksums. |
-| Draft | Verify the complete asset set, create/reuse the tag at the exact source commit, and create a draft prerelease whose notes state each platform's signing. Never replace an existing release. Runs after an unsigned package too: its condition allows the Windows signing jobs to be skipped, which GitHub's default job condition would not. |
+| Record | Save `versions.yml`, the source commit, engine version, workflow run URL, signing status, `desktop.json` (the feed's desktop section: installer URLs, sizes and SHA-256), and SHA-256 file checksums. |
+| Draft | Verify the complete asset set, create/reuse the tag at the exact source commit, and create a draft (not a prerelease, set to become latest when published) whose notes state each platform's signing. Never replace an existing release. Runs after an unsigned package too: its condition allows the Windows signing jobs to be skipped, which GitHub's default job condition would not. |
 
 Release runs are serialized and do not cancel an active release. CI invoked by
 a release has a separate concurrency group from ordinary PR/main CI.
 
-For version `0.2.1`, the draft has these five assets:
+For version `0.2.1`, the draft has these six assets:
 
 ```text
 CARE-Clinic-0.2.1-macos.dmg
 CARE-Clinic-0.2.1-windows-amd64-setup.exe
 versions.yml
 release-manifest.json
+desktop.json
 SHA256SUMS
 ```
 
@@ -137,16 +140,25 @@ Before publishing:
    reinstall (see [the care-clinic-service](development-and-release.md#the-care-clinic-service)).
 3. An application upgrade must preserve the clinic's CA identity and persistent
    data; client devices should not need to reinstall certificate trust.
-4. Decide how to publish. The draft is created as a prerelease. The in-app
-   updater only offers GitHub's **latest** release, which never includes
-   prereleases, so installed clinics are offered this version only if you
-   untick **Set as a pre-release** and publish it as the latest release. Leave
-   it ticked to share a build with testers without offering it to clinics.
-5. If distributing the current preview to testers, publish it **as a
-   prerelease**, retaining the unsigned-download warnings.
+4. Publish the draft with **Set as the latest release** ticked (the default
+   for these drafts). Keep the unsigned-download warnings in the notes when a
+   platform is unsigned.
 
-A draft is not public, and a prerelease is not the normal GitHub "latest stable"
-download. Publishing a stable release is a separate maintainer decision.
+Publishing it as the latest release:
+
+- offers it to installed apps: the in-app updater reads
+  `praffq/care_clinic`'s latest release and accepts `desktop-v<version>`
+  tags;
+- adds it to the update feed: `publish.yml` runs on the `released` event and,
+  when the tag is a `desktop-v*` release that is the latest, dispatches itself
+  on `main` with `desktop: true`. That run requires the latest release to be
+  `desktop-v<versions.yml desktop.version>` and adds its `desktop.json` to
+  `updates.json` (see [CI publishing](ci-publishing.md#publishyml-manual-called-by-trackyml-or-a-published-desktop-release)).
+  Later feed runs keep that entry.
+
+To share a build with testers without offering it to clinics, publish it as a
+**pre-release** instead: it does not become latest and the feed is unchanged.
+A draft is not public.
 
 Once published, do not move the tag or replace its files. Corrections require a
 new version and another `versions.yml` PR. A database downgrade is not guaranteed

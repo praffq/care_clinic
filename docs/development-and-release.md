@@ -455,8 +455,9 @@ The macOS `.app` contains the service and optionally an engine bundle; see
 [bundle layout](releases.md#macos-app-bundle-layout).
 
 The workflow packages a DMG and the Windows NSIS installer, adds the exact
-configuration, build identity, and checksums, creates `vX.Y.Z` at the selected
-source commit, and creates a **draft prerelease**. Published assets are never
+configuration, build identity, feed section (`desktop.json`) and checksums,
+creates `desktop-vX.Y.Z` at the selected source commit, and creates a **draft**
+that becomes the latest release when published. Published assets are never
 replaced. Only the draft job has write permission.
 
 macOS preserves the existing optional Developer ID signing/notarization flow and
@@ -465,7 +466,7 @@ entitlement) before the app; without credentials it retains the ad-hoc
 signatures from the bundle hook. Windows
 application, uninstaller and installer are signed through SignPath when its configuration is
 present, otherwise left unsigned. The release manifest records each platform's
-actual status; these remain preview releases.
+actual status, and the release notes flag unsigned platforms.
 
 The Windows installer definition lives in `app/build/windows/` (`info.json`,
 `wails.exe.manifest`, `installer/project.nsi`). Wails regenerates `icon.ico`,
