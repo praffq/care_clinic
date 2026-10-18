@@ -165,7 +165,7 @@ func TestPluginsDevBuilder(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHarness(t, func(o *updates.Options) {
-		o.DevBuilder = &stack.Image{Role: protocol.ImageRoleBackendBuilder, Repo: "care-clinic-dev/care-backend-builder", Digest: Digest("dev-builder"), Tarball: tar}
+		o.DevBuilders = []stack.Image{{Role: protocol.ImageRoleBackendBuilder, Repo: "care-clinic-dev/care-backend-builder", Digest: Digest("dev-builder"), Tarball: tar}}
 	})
 	h.installCare("A")
 	if err := h.c.SetPlugins(context.Background(), h.enable(custom)); err != nil {

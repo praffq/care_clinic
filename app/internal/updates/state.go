@@ -64,11 +64,23 @@ func StackImages(imgs []Image) []stack.Image {
 
 // Installed is installed.json: what the coordinator last committed.
 type Installed struct {
-	Desktop   string            `json:"desktop,omitempty"`
-	Engine    *InstalledEngine  `json:"engine,omitempty"`
-	Care      *InstalledCare    `json:"care,omitempty"`
-	Plugins   *InstalledPlugins `json:"plugins,omitempty"`
-	UpdatedAt time.Time         `json:"updated_at,omitzero"`
+	Desktop string            `json:"desktop,omitempty"`
+	Engine  *InstalledEngine  `json:"engine,omitempty"`
+	Care    *InstalledCare    `json:"care,omitempty"`
+	Plugins *InstalledPlugins `json:"plugins,omitempty"`
+	// Frontend, when set, holds the clinic's frontend settings.
+	Frontend  *InstalledFrontend `json:"frontend,omitempty"`
+	UpdatedAt time.Time          `json:"updated_at,omitzero"`
+}
+
+// InstalledFrontend is the clinic's frontend settings: REACT_* build
+// variables that differ from the CARE release's build_env. Base is the
+// published CARE frontend image; Image, when set, the image rebuilt from
+// Base's release with the settings.
+type InstalledFrontend struct {
+	Overrides map[string]string `json:"overrides"`
+	Base      Image             `json:"base"`
+	Image     *Image            `json:"image,omitempty"`
 }
 
 // InstalledEngine is the active engine slot.
@@ -167,6 +179,22 @@ type PluginsTarget struct {
 	Base    Image            `json:"base"`
 	Builder *Image           `json:"builder,omitempty"`
 	Image   *Image           `json:"image,omitempty"`
+	// Carried: the installed plugins, kept as they are (not rebuilt).
+	Carried bool `json:"carried,omitempty"`
+}
+
+// FrontendTarget is the frontend a CARE, plugins or frontend operation
+// installs: Base rebuilt with BaseEnv plus Overrides by Builder (the
+// build-frontend step records Image; nil when Overrides is empty, so Base
+// runs as published).
+type FrontendTarget struct {
+	Overrides map[string]string `json:"overrides,omitempty"`
+	BaseEnv   map[string]string `json:"base_env,omitempty"`
+	Base      Image             `json:"base"`
+	Builder   *Image            `json:"builder,omitempty"`
+	Image     *Image            `json:"image,omitempty"`
+	// Carried: the installed frontend, kept as it is (not rebuilt).
+	Carried bool `json:"carried,omitempty"`
 }
 
 // EngineTarget is the engine release being installed.
@@ -184,22 +212,23 @@ type EngineTarget struct {
 // Journal is journal.json, present only while an operation is in flight
 // (or its rollback failed).
 type Journal struct {
-	ID            string         `json:"id"`
-	Component     string         `json:"component"` // feed.ComponentCare, feed.ComponentEngine or ComponentPlugins
-	From          string         `json:"from,omitempty"`
-	To            string         `json:"to"`
-	Revision      uint64         `json:"revision"`
-	State         JournalState   `json:"state"`
-	StartedAt     time.Time      `json:"started_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	Steps         []StepRecord   `json:"steps"`
-	RollbackSteps []StepRecord   `json:"rollback_steps,omitempty"`
-	Rollback      Rollback       `json:"rollback"`
-	Error         string         `json:"error,omitempty"`
-	FailedStep    string         `json:"failed_step,omitempty"`
-	Care          *CareTarget    `json:"care,omitempty"`
-	Plugins       *PluginsTarget `json:"plugins,omitempty"`
-	Engine        *EngineTarget  `json:"engine,omitempty"`
+	ID            string          `json:"id"`
+	Component     string          `json:"component"` // feed.ComponentCare, feed.ComponentEngine, ComponentPlugins or ComponentFrontend
+	From          string          `json:"from,omitempty"`
+	To            string          `json:"to"`
+	Revision      uint64          `json:"revision"`
+	State         JournalState    `json:"state"`
+	StartedAt     time.Time       `json:"started_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	Steps         []StepRecord    `json:"steps"`
+	RollbackSteps []StepRecord    `json:"rollback_steps,omitempty"`
+	Rollback      Rollback        `json:"rollback"`
+	Error         string          `json:"error,omitempty"`
+	FailedStep    string          `json:"failed_step,omitempty"`
+	Care          *CareTarget     `json:"care,omitempty"`
+	Plugins       *PluginsTarget  `json:"plugins,omitempty"`
+	Frontend      *FrontendTarget `json:"frontend,omitempty"`
+	Engine        *EngineTarget   `json:"engine,omitempty"`
 }
 
 // Results recorded in history.

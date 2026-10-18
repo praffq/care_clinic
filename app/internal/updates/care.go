@@ -29,7 +29,7 @@ const (
 	StepRBHealth    = "rollback-health"
 )
 
-var careSteps = []string{StepPreflight, StepBackup, StepImages, StepBuild, StepStopApp, StepWriteEnv, StepMigrate, StepStartApp, StepHealth}
+var careSteps = []string{StepPreflight, StepBackup, StepImages, StepBuild, StepBuildFrontend, StepStopApp, StepWriteEnv, StepMigrate, StepStartApp, StepHealth}
 
 // appServices are stopped for a CARE update; db (and the rest) stay up.
 var appServices = []protocol.Service{protocol.ServiceBackend, protocol.ServiceCeleryWorker, protocol.ServiceCeleryBeat}
@@ -64,7 +64,8 @@ func (c *Coordinator) careForward() map[string]stepFunc {
 			}
 			return c.o.Stack.EnsureImages(ctx, StackImages(j.Care.Images))
 		},
-		StepBuild: c.build,
+		StepBuild:         c.build,
+		StepBuildFrontend: c.buildFrontend,
 		StepStopApp: func(ctx context.Context, j *Journal) error {
 			if j.Rollback.PreviousImages == nil {
 				return nil
@@ -109,10 +110,10 @@ func (c *Coordinator) flag(j *Journal, f *bool) error {
 	return c.saveJournal(j)
 }
 
-// carePreflight checks the clock (against the feed: not for plugin
-// changes), free disk and (for an update) that the running stack is healthy.
+// carePreflight checks the clock (against the feed: not for plugin or
+// frontend settings changes), free disk and (for an update) that the running stack is healthy.
 func (c *Coordinator) carePreflight(ctx context.Context, j *Journal) error {
-	if j.Component != ComponentPlugins {
+	if j.Component != ComponentPlugins && j.Component != ComponentFrontend {
 		if err := c.clockSane(); err != nil {
 			return err
 		}

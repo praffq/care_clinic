@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -78,13 +79,15 @@ func (f *coordFlags) open(ctx context.Context, c *control.Client) (*updates.Coor
 	if err != nil {
 		return nil, err
 	}
-	var devBuilder *stack.Image
+	var devBuilders []stack.Image
 	if *f.images != "" {
-		b, err := stack.DevBuilders(*f.images)
-		if err != nil {
+		if devBuilders, err = stack.DevBuilders(*f.images); err != nil {
 			return nil, err
 		}
-		devBuilder = updates.DevBuilder(b)
+	}
+	feEnv, err := kitFrontendEnv(os.DirFS(*f.kit))
+	if err != nil {
+		return nil, err
 	}
 	logf := func(s string) { fmt.Fprintln(os.Stderr, s) }
 	cfg, err := c.Config(ctx)
@@ -99,8 +102,23 @@ func (f *coordFlags) open(ctx context.Context, c *control.Client) (*updates.Coor
 			Runtime: &stack.Runtime{Service: c, StateDir: clinicState, Log: logf},
 			Kit:     os.DirFS(*f.kit), Host: cfg.MDNSName + ".local", Origins: f.origins,
 		},
-		DesktopVersion: *f.desktop, DevBuilder: devBuilder, Log: logf,
+		DesktopVersion: *f.desktop, DevBuilders: devBuilders, FrontendEnv: feEnv, Log: logf,
 	})
+}
+
+// kitFrontendEnv reads the kit's frontend.env (none: nil).
+func kitFrontendEnv(kit fs.FS) (map[string]string, error) {
+	data, err := fs.ReadFile(kit, "frontend.env")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	env, err := updates.ParseFrontendEnv(data)
+	if err != nil {
+		return nil, fmt.Errorf("frontend.env: %w", err)
+	}
+	return env, nil
 }
 
 // needKit fails unless the deployment kit is there (commands that write

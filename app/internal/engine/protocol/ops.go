@@ -168,10 +168,8 @@ func (o ImageLoad) Validate() error {
 	return v.err()
 }
 
-// PluginSpec is one plugin to bake into a derived image. For backend-plugins
-// it is a CARE Plug (name is the Django app, package plus version is what
-// pip installs). For frontend-rebuild, Name is the remote's slug, Package its
-// git+https URL and Version "@<ref>" (default "@main").
+// PluginSpec is one CARE Plug to bake into a backend-plugins image: name is
+// the Django app, package plus version is what pip installs.
 type PluginSpec struct {
 	Name    string `json:"name"`
 	Package string `json:"package"`
@@ -212,27 +210,26 @@ func (o ImageBuild) Validate() error {
 	v.check(o.Kind.Valid(), "kind", "unknown build kind %q", o.Kind)
 	checkPinnedRef(&v, "base", o.Base)
 	checkPinnedRef(&v, "builder", o.Builder)
+	if o.Kind == BuildFrontendRebuild {
+		v.check(len(o.Plugins) == 0, "plugins", "a frontend rebuild takes no plugins")
+		v.check(len(o.BuildEnv) >= 1 && len(o.BuildEnv) <= MaxBuildEnv, "build_env", "1 to %d entries", MaxBuildEnv)
+		for _, k := range slices.Sorted(maps.Keys(o.BuildEnv)) {
+			v.check(ValidFrontendBuildValue(k, o.BuildEnv[k]), "build_env."+k, "not an allowed frontend setting or value")
+		}
+		return v.err()
+	}
 	v.check(len(o.Plugins) >= 1 && len(o.Plugins) <= MaxPlugins, "plugins", "1 to %d plugins", MaxPlugins)
 	seen := map[string]bool{}
 	for i, p := range o.Plugins {
 		f := fmt.Sprintf("plugins[%d]", i)
-		nameRE, nameDesc := pluginNameRE, "^[a-z0-9_]+$"
-		if o.Kind == BuildFrontendRebuild {
-			nameRE, nameDesc = slugRE, "^[a-z0-9][a-z0-9_-]*$"
-		}
-		if !nameRE.MatchString(p.Name) || len(p.Name) > 64 {
-			v.add(f+".name", "must match %s (max 64)", nameDesc)
+		if !pluginNameRE.MatchString(p.Name) || len(p.Name) > 64 {
+			v.add(f+".name", "must match ^[a-z0-9_]+$ (max 64)")
 		} else if seen[p.Name] {
 			v.add(f+".name", "duplicate plugin %q", p.Name)
 		}
 		seen[p.Name] = true
-		if o.Kind == BuildFrontendRebuild {
-			v.check(pkgGitRE.MatchString(p.Package) && !strings.Contains(p.Package, ".."), f+".package", "must be a git+https URL")
-			v.check(p.Version == "" || gitRefVersionRE.MatchString(p.Version), f+".version", "must be @<git ref>")
-		} else {
-			v.check(validPackage(p.Package), f+".package", "must be a package name or git+https URL")
-			v.check(ValidPluginVersion(p.Version), f+".version", "must be @<git ref> or a pip specifier such as ==1.2")
-		}
+		v.check(validPackage(p.Package), f+".package", "must be a package name or git+https URL")
+		v.check(ValidPluginVersion(p.Version), f+".version", "must be @<git ref> or a pip specifier such as ==1.2")
 	}
 	v.check(len(o.BuildEnv) <= MaxBuildEnv, "build_env", "at most %d entries", MaxBuildEnv)
 	for _, k := range slices.Sorted(maps.Keys(o.BuildEnv)) {

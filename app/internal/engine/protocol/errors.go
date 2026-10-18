@@ -100,6 +100,10 @@ func (v *validator) err() error {
 const (
 	CodeNotImplemented = "not_implemented"
 	CodeCommandFailed  = "command_failed"
+	// CodeBuildFailed: image.build failed deterministically (a package or
+	// repository that does not exist, a resolver conflict, a compile error);
+	// retrying with the same inputs cannot help.
+	CodeBuildFailed    = "build_failed"
 	CodeDigestMismatch = "digest_mismatch"
 	CodeOpFailed       = "op_failed"
 	CodeCanceled       = "canceled"
