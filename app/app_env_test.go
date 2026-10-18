@@ -195,7 +195,7 @@ func TestApplySettingsChecksFrontendEnvFirst(t *testing.T) {
 	}
 	p := filepath.Join(a.installDir(), "frontend.env")
 	for content, want := range map[string]string{
-		"REACT_SENTRY_DSN=https://x\n":      "REACT_SENTRY_DSN: is not a supported",
+		"REACT_SENTRY_DSN=`id`\n":           "REACT_SENTRY_DSN: invalid value",
 		"REACT_APP_TITLE='<b>Clinic</b>'\n": "REACT_APP_TITLE: invalid value",
 	} {
 		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {

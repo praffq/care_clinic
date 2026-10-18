@@ -461,15 +461,22 @@ test("a screen settings rebuild that fails explains why and keeps the change to 
 });
 
 test("support can only add screen settings CARE can rebuild with", async ({ page }) => {
-  expect(validateExtraSetting("REACT_CARE_ENABLE_DASHBOARD", "false")).toContain("can't apply");
+  expect(validateExtraSetting("REACT_CARE_ENABLE_DASHBOARD", "false")).toBeNull();
+  expect(validateExtraSetting("REACT_SENTRY_DSN", "https://k@o.ingest.sentry.io/1")).toBeNull();
+  expect(validateExtraSetting("REACT_care", "1")).toContain("can't apply");
+  expect(validateExtraSetting(`REACT_${"A".repeat(61)}`, "1")).toContain("can't apply");
+  for (const bad of ['"', "'", "<", ">", "\\", "$", "`"]) {
+    expect(validateExtraSetting("REACT_SENTRY_DSN", `a${bad}b`), bad).toContain("200 characters");
+  }
+  expect(validateExtraSetting("REACT_SENTRY_DSN", "a".repeat(201))).toContain("200 characters");
   expect(validateExtraSetting("REACT_AUTO_REFRESH_INTERVAL", "60")).toBeNull();
   expect(validateExtraSetting("REACT_CUSTOM_DESCRIPTION", "<script>")).toContain("simple punctuation");
   expect(validateSetting(SETTING_BY_KEY.get("REACT_APP_TITLE")!, "Clinic $(id)")).toContain("simple punctuation");
   await openAdvanced(page);
   await unlock(page);
   await group(page, "Extra settings (for support)");
-  await addCustomSetting(page, "REACT_CARE_ENABLE_DASHBOARD", "false");
-  await expect(root(page)).toContainText("CARE can't apply this screen setting");
+  await addCustomSetting(page, "REACT_MAIN_LOGO", "$(id)");
+  await expect(root(page)).toContainText("without quotes");
   await expect(root(page).getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
   expect(await count(page, "WriteEnv")).toBe(0);
 });

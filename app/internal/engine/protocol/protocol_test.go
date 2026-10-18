@@ -67,7 +67,9 @@ func TestDecodeOp(t *testing.T) {
 		{"build frontend with plugins", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","plugins":[{"name":"a","package":"git+https://h/a"}],"build_env":{"REACT_APP_TITLE":"x"}}`, "invalid_params:plugins"},
 		{"build frontend no env", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `"}`, "invalid_params:build_env"},
 		{"build env key not allowed", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"PATH":"/tmp"}}`, "invalid_params:build_env.PATH"},
-		{"build env unknown react key", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_X":"1"}}`, "invalid_params:build_env.REACT_X"},
+		{"build env other react key", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_SENTRY_DSN":"https://k@o.ingest.sentry.io/1","REACT_ENABLE_MFA":"true"}}`, ""},
+		{"build env react key lowercase", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_x":"1"}}`, "invalid_params:build_env.REACT_x"},
+		{"build env other react key shell", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_X":"$(id)"}}`, "invalid_params:build_env.REACT_X"},
 		{"build env care key", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"CARE_FOO":"1"}}`, "invalid_params:build_env.CARE_FOO"},
 		{"build env newline", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_APP_TITLE":"a\nRUN evil"}}`, "invalid_params:build_env.REACT_APP_TITLE"},
 		{"build env title markup", OpImageBuild, `{"kind":"frontend-rebuild","base":"r/f@` + dgA + `","builder":"r/fb@` + dgB + `","build_env":{"REACT_APP_TITLE":"<script>"}}`, "invalid_params:build_env.REACT_APP_TITLE"},
@@ -278,5 +280,33 @@ func TestFrameRoundTrip(t *testing.T) {
 	b, _ := json.Marshal(frames[2])
 	if string(b) != `{"result":{"backup_id":"20260101T000000Z"}}` {
 		t.Fatalf("got %s", b)
+	}
+}
+
+func TestFrontendBuildValueGeneric(t *testing.T) {
+	for _, c := range []struct {
+		k, v string
+		ok   bool
+	}{
+		{"REACT_SENTRY_DSN", "https://k@o.ingest.sentry.io/1", true},
+		{"REACT_X", "", true},
+		{"REACT_X", strings.Repeat("a", 200), true},
+		{"REACT_X", strings.Repeat("a", 201), false},
+		{"REACT_" + strings.Repeat("A", 60), "1", true},
+		{"REACT_" + strings.Repeat("A", 61), "1", false},
+		{"REACT_", "1", false},
+		{"REACT_x", "1", false},
+		{"VITE_X", "1", false},
+		{"REACT_APP_TITLE", "a&b", false}, // known keys keep their strict pattern
+		{"REACT_DISABLE_PATIENT_LOGIN", "yes", false},
+	} {
+		if got := ValidFrontendBuildValue(c.k, c.v); got != c.ok {
+			t.Errorf("%s=%q: %v, want %v", c.k, c.v, got, c.ok)
+		}
+	}
+	for _, bad := range []string{`"`, "'", "<", ">", `\`, "$", "`", "\n", "\r", "\x00", "\t"} {
+		if ValidFrontendBuildValue("REACT_X", "a"+bad+"b") {
+			t.Errorf("REACT_X accepted %q", bad)
+		}
 	}
 }
