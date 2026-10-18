@@ -53,7 +53,7 @@ func TestDemoWithCoordinator(t *testing.T) {
 	}
 	for _, name := range demoImages {
 		p := filepath.Join(images, name+".tar")
-		if err := os.WriteFile(p, []byte("image "+name), 0o644); err != nil {
+		if err := os.WriteFile(p, updatestest.ImageTar("docker.io/care-clinic-dev/"+strings.ToLower(name)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(p+".digest", []byte(fakeDigest(name)), 0o644); err != nil {

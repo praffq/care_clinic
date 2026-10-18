@@ -40,7 +40,9 @@ written atomically (temp file, fsync, rename):
    reason; nothing newer yields "everything is up to date".
 4. Pre-fetch: download and verify the desktop installer, download the engine
    bundle and install it into an inactive slot, download CARE image tarballs
-   and load/pull them into the running engine. Failures are reported in
+   and load/pull them into the running engine. A tarball must have been saved
+   under the repository its `ref` names (docker resolves the stack's
+   `repo@digest` by repository), else `ErrImageRepo`. Failures are reported in
    `PrefetchError` and retried by `Apply`.
 
 ## Apply

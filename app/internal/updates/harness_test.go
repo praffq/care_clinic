@@ -186,7 +186,7 @@ func careReleased(name string) time.Time { return base.Add(time.Duration(name[0]
 func (h *harness) image(repo, name string, withTar bool) map[string]any {
 	img := map[string]any{"ref": "example.org/" + repo + "@" + string(Digest(name)), "digest": string(Digest(name))}
 	if withTar {
-		img["tar"] = h.serve("/images/"+name+".tar", []byte("tar of "+name))
+		img["tar"] = h.serve("/images/"+name+".tar", updatestest.ImageTar("example.org/"+repo))
 	}
 	return img
 }

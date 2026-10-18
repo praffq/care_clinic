@@ -211,7 +211,7 @@ func TestDemoRealArtifacts(t *testing.T) {
 	}
 
 	idxDigest := "sha256:" + strings.Repeat("cd", 32)
-	writeTar(t, filepath.Join(images, "redis.tar"), "index.json", `{"schemaVersion":2,"manifests":[{"digest":"`+idxDigest+`"}]}`)
+	writeTar(t, filepath.Join(images, "redis.tar"), "index.json", `{"schemaVersion":2,"manifests":[{"digest":"`+idxDigest+`","annotations":{"io.containerd.image.name":"example.org/mirror/redis:7"}}]}`)
 
 	out := t.TempDir()
 	if _, err := runDemo(demoOptions{Key: devKey(t), Out: out, EngineDist: dist, ImagesDist: images, BaseURL: "http://localhost:8787/"}); err != nil {
@@ -234,7 +234,7 @@ func TestDemoRealArtifacts(t *testing.T) {
 	if string(img.Digest) != dg || img.Ref != demoRegistry+"care-backend@"+dg || img.Tar != "http://localhost:8787/files/images/care-backend-A.tar" {
 		t.Fatalf("backend image = %+v", img)
 	}
-	if r := m.SupportImages[protocol.ImageRoleRedis]; string(r.Digest) != idxDigest || r.Ref != "docker.io/library/redis@"+idxDigest {
+	if r := m.SupportImages[protocol.ImageRoleRedis]; string(r.Digest) != idxDigest || r.Ref != "example.org/mirror/redis@"+idxDigest {
 		t.Fatalf("redis image = %+v", r)
 	}
 	if m.Care[0].Images[protocol.ImageRoleFrontend].Tar != "" {

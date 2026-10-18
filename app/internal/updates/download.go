@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
+	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 )
 
 // Feed size limits.
@@ -153,9 +154,15 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// ErrImageRepo means an image tarball was saved under a different repository
+// than the feed pins. Docker resolves the stack's repo@digest references by
+// repository, so the loaded image would be missing when the stack starts.
+var ErrImageRepo = errors.New("image tarball repository does not match the feed")
+
 // downloadImages fetches the tarball of every image that has a URL (dev
 // feeds) and sets its Tarball. The agent verifies the digest on load, so
-// there is no checksum to check here.
+// there is no checksum to check here, but the repository the tarball was
+// saved under must be the one the feed pins.
 func (c *Coordinator) downloadImages(ctx context.Context, imgs []Image) error {
 	dir := filepath.Join(c.o.Dir, downloadsDir, "images")
 	for i := range imgs {
@@ -173,9 +180,29 @@ func (c *Coordinator) downloadImages(ctx context.Context, imgs []Image) error {
 				return err
 			}
 		}
+		repo, err := stack.TarballRepo(dst)
+		if err != nil {
+			return fmt.Errorf("%s image %s: %w", img.Role, img.URL, err)
+		}
+		if normalizeRepo(repo) != normalizeRepo(img.Repo) {
+			return fmt.Errorf("%w: %s image %s is %s, the feed pins %s", ErrImageRepo, img.Role, img.URL, repo, img.Repo)
+		}
 		img.Tarball = dst
 	}
 	return nil
+}
+
+// normalizeRepo expands Docker Hub short names (postgres,
+// library/postgres) to docker.io/library/postgres.
+func normalizeRepo(r string) string {
+	first, _, ok := strings.Cut(r, "/")
+	if !ok {
+		return "docker.io/library/" + r
+	}
+	if !strings.ContainsAny(first, ".:") && first != "localhost" {
+		return "docker.io/" + r
+	}
+	return r
 }
 
 func (c *Coordinator) downloadDesktop(ctx context.Context, r *feed.DesktopRelease) (string, error) {

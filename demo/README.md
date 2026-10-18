@@ -78,8 +78,11 @@ URLs point at `<base-url>/files/...` (default `http://localhost:8787`).
   `postgres`, `redis` and `silo`. The digest is read from `<name>.tar.digest`
   (`sha256:<hex>`), else the tarball's OCI `index.json` (`docker save`). A
   tarball with neither is an error (a hash of the file would never match the
-  digest of the loaded image). Present tarballs get a `tar` URL in the feed;
-  placeholders are used only when a tarball is absent.
+  digest of the loaded image). Present tarballs get a `tar` URL in the feed
+  and keep the repository they were saved under in `ref` (e.g.
+  `docker.io/care-clinic-dev/care-backend-b`), since docker resolves
+  `repo@digest` by repository; placeholders are used only when a tarball is
+  absent and are named under `ghcr.io/praffq/care_clinic/`.
 - **Desktop** installers are always placeholders.
 
 Anything missing gets a deterministic placeholder digest (SHA-256 of a fixed

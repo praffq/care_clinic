@@ -14,6 +14,7 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 	"github.com/ohcnetwork/care_desktop/app/internal/updates"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates/updatestest"
 )
 
 var (
@@ -545,6 +546,24 @@ func TestDownloadRejectsBadChecksum(t *testing.T) {
 	if len(h.w.Slots) != 0 {
 		t.Fatal("a bad bundle was installed")
 	}
+}
+
+// An image tarball saved under another repository than the feed pins would
+// load fine but leave the stack's repo@digest reference missing; it is
+// rejected before anything changes.
+func TestImageTarballRepoMismatch(t *testing.T) {
+	h := newHarness(t)
+	h.installCare("A")
+	h.publish(revB)
+	h.serve("/images/backend-B.tar", updatestest.ImageTar("docker.io/someone/care-backend"))
+	r := h.check()
+	if r.Prefetched || !strings.Contains(r.PrefetchError, updates.ErrImageRepo.Error()) {
+		t.Fatalf("check = %+v", r)
+	}
+	if _, err := h.apply(); !errors.Is(err, updates.ErrImageRepo) {
+		t.Fatalf("apply = %v", err)
+	}
+	h.wantOn("0.1.0", "A")
 }
 
 // A clinic installed without the coordinator (installed.json absent) is

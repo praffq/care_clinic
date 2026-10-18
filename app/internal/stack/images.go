@@ -43,7 +43,7 @@ func DevImages(dir string, overrides map[protocol.ImageRole]string) ([]Image, er
 		if !dg.Valid() {
 			return nil, fmt.Errorf("%s.digest: invalid digest %q", tarball, dg)
 		}
-		repo, err := tarballRepo(tarball)
+		repo, err := TarballRepo(tarball)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", tarball, err)
 		}
@@ -52,9 +52,9 @@ func DevImages(dir string, overrides map[protocol.ImageRole]string) ([]Image, er
 	return out, nil
 }
 
-// tarballRepo returns the repository (no tag) an OCI image archive was saved
+// TarballRepo returns the repository (no tag) an OCI image archive was saved
 // under, from its index.json name annotation.
-func tarballRepo(path string) (string, error) {
+func TarballRepo(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err

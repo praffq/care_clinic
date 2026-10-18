@@ -622,13 +622,19 @@ func (c *Coordinator) runSteps(ctx context.Context, j *Journal, steps []StepReco
 		if fn == nil {
 			return fmt.Errorf("journal: unknown step %q", s.Name)
 		}
+		// last keeps the error's identity; after a crash only its text is
+		// left in the journal.
+		var last error
 		for {
 			if s.Attempts >= MaxAttempts {
 				s.Status = StepFailed
 				if err := c.saveJournal(j); err != nil {
 					return err
 				}
-				return &stepError{step: s.Name, err: errors.New(s.Error)}
+				if last == nil {
+					last = errors.New(s.Error)
+				}
+				return &stepError{step: s.Name, err: last}
 			}
 			s.Attempts++
 			s.Status, s.At = StepRunning, c.now()
@@ -649,7 +655,7 @@ func (c *Coordinator) runSteps(ctx context.Context, j *Journal, steps []StepReco
 				}
 				break
 			}
-			s.Error = err.Error()
+			last, s.Error = err, err.Error()
 			c.logf("%s: %s (attempt %d of %d)", s.Name, err, s.Attempts, MaxAttempts)
 			if ctx.Err() != nil {
 				_ = c.saveJournal(j)

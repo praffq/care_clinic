@@ -7,6 +7,8 @@
 package updatestest
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,6 +32,18 @@ import (
 // data_schema from it.
 func EngineBundle(version string, dataSchema int) []byte {
 	return fmt.Appendf(nil, "engine:%s:%d", version, dataSchema)
+}
+
+// ImageTar is a fake image tarball (docker save) whose index.json names
+// repo, the repository the coordinator checks it against the feed's ref.
+func ImageTar(repo string) []byte {
+	idx := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"annotations":{"io.containerd.image.name":%q}}]}`, repo+":latest")
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	_ = tw.WriteHeader(&tar.Header{Name: "index.json", Mode: 0o644, Size: int64(len(idx))})
+	_, _ = tw.Write([]byte(idx))
+	_ = tw.Close()
+	return b.Bytes()
 }
 
 // SHA256 is the hex SHA-256 of b.
