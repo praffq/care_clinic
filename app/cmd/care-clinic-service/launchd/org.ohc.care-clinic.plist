@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  CARE Clinic host service (root). Installed to /Library/LaunchDaemons by
+  scripts/service-macos.sh, so CARE comes up after a reboot without a login.
+
+  ProcessType Interactive: the VM serves clinic staff over the LAN, so the
+  service must not get background (Standard/Background) CPU and I/O
+  throttling, App Nap-style timer coalescing, or be first in line under
+  memory pressure.
+
+  Logs: the service writes its own size-rotated log (10 MiB x 5) via
+  --log-file, which also becomes its stderr so Go crash output is kept.
+  launchd's Standard{Out,Error}Path only catch output from before that file
+  is open (bad flags, an unwritable log dir); launchd itself never rotates.
+
+  ExitTimeOut 60: on SIGTERM the supervisor asks the guest to shut down
+  (up to 30 s) before killing the VM; launchd's default 20 s would SIGKILL
+  it mid-shutdown.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.ohc.care-clinic</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Library/Application Support/care-clinic/bin/care-clinic-service</string>
+		<string>--log-file</string>
+		<string>/Library/Logs/care-clinic/service.log</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>/Library/Logs/care-clinic/launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Logs/care-clinic/launchd.log</string>
+</dict>
+</plist>
