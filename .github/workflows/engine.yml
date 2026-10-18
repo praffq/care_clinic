@@ -1,0 +1,169 @@
+name: Engine
+
+# Builds the CARE engine VM bundle (engine/build.sh) for amd64 and arm64 on
+# native runners and uploads the tarballs, SHA256SUMS and engine.json (the
+# "engine" section of a `release generate` artifacts file) as the "engine"
+# artifact. On workflow_dispatch it also publishes them as the GitHub Release
+# engine-v<engine/VERSION> on this repository. See docs/ci-publishing.md.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish the bundles as the GitHub Release engine-v<version>
+        type: boolean
+        default: true
+      replace:
+        description: Replace the assets of an existing engine-v<version> release
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - engine/**
+      - app/go.mod
+      - app/go.sum
+      - app/internal/engine/**
+      - app/cmd/care-engine-agent/**
+      - .github/workflows/engine.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build engine (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check engine/VERSION matches versions.yml
+        run: |
+          file=$(tr -d '[:space:]' <engine/VERSION)
+          pinned=$(awk '/^engine:/ { e = 1; next } /^[^ #]/ { e = 0 } e && /^  version:/ { gsub(/[" ]/, "", $2); print $2; exit }' versions.yml)
+          if [ "$file" != "$pinned" ]; then
+            echo "::error::engine/VERSION is $file but versions.yml engine.version is $pinned"
+            exit 1
+          fi
+      - name: Build bundle
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: engine/build.sh "$ARCH"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-${{ matrix.arch }}
+          path: |
+            dist/care-engine-*.tar.gz
+            dist/care-engine-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  assemble:
+    name: Checksums and engine.json
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: engine-*
+          path: out
+          merge-multiple: true
+      - name: Write SHA256SUMS and engine.json
+        id: meta
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' <engine/VERSION)
+          tag="engine-v$version"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag"
+          cd out
+          cat care-engine-*.tar.gz.sha256 | sort -k2 >SHA256SUMS
+          rm care-engine-*.tar.gz.sha256
+          sha256sum -c SHA256SUMS
+          assets='{}'
+          for arch in amd64 arm64; do
+            f="care-engine-$version-$arch.tar.gz"
+            test -s "$f" || { echo "::error::missing $f"; exit 1; }
+            tar -xzOf "$f" "care-engine-$version-$arch/manifest.json" >"manifest-$arch.json"
+            jq -e --arg v "$version" --arg a "$arch" '.version == $v and .arch == $a' "manifest-$arch.json" >/dev/null
+            assets=$(jq -c --arg arch "$arch" --arg url "$base/$f" \
+              --arg sha "$(awk -v f="$f" '$2 == f { print $1 }' SHA256SUMS)" --argjson size "$(stat -c %s "$f")" \
+              '.[$arch] = {url: $url, sha256: $sha, size: $size}' <<<"$assets")
+          done
+          schema=$(jq -s 'map(.data_schema) | unique | if length == 1 then .[0] else error("data_schema differs between arches") end' manifest-*.json)
+          rm manifest-*.json
+          # engine.json: the "engine" section of a `release generate` artifacts file.
+          jq -n --argjson schema "$schema" --argjson assets "$assets" \
+            '{engine: {data_schema: $schema, assets: $assets}}' >engine.json
+          jq . engine.json
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Engine $version"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  release:
+    name: GitHub Release engine-v${{ needs.assemble.outputs.version }}
+    needs: assemble
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: engine
+          path: out
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.assemble.outputs.version }}
+          REPLACE: ${{ inputs.replace }}
+        run: |
+          set -euo pipefail
+          tag="engine-v$VERSION"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$REPLACE" != true ]; then
+              echo "::error::Release $tag already exists. Bump engine/VERSION (and versions.yml engine.version), or re-run with replace=true."
+              exit 1
+            fi
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber out/*
+          else
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+              --title "CARE engine $VERSION" \
+              --notes "CARE engine VM bundle $VERSION built from $GITHUB_SHA by run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID." \
+              out/*
+          fi
+          echo "Published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag" >>"$GITHUB_STEP_SUMMARY"

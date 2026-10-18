@@ -2,8 +2,10 @@
 
 `scripts/dev-images.sh` builds every image the engine VM runs with the local
 docker (Rancher Desktop or Docker Desktop) and writes `docker save` tarballs
-for the dev update path. Production will pull the same images from GHCR by
-digest; CI for that comes later.
+for the dev update path. Production pulls the same images from GHCR by
+digest: CI builds them with this same script in `--push` mode (see
+[CI publishing](ci-publishing.md)), so local and CI images share one
+definition.
 
 ```sh
 scripts/dev-images.sh                       # all images, host arch
@@ -37,6 +39,26 @@ dist/.cache/stamps/             skip re-saving when the local image is unchanged
 Built images are tagged `care-clinic-dev/<name>:<arch>` locally; that tag
 travels in the tarball but only the digest matters to the engine. Builds use
 `--provenance=false --sbom=false` so each is a single manifest.
+
+Built images carry `org.opencontainers.image.source` (this repository, which
+GHCR uses to link packages), `org.opencontainers.image.title` (the registry
+repo name) and, for CARE images, `network.ohc.care.upstream` and
+`network.ohc.care.upstream.revision` (the upstream repo and commit).
+
+## Push mode (CI)
+
+```sh
+scripts/dev-images.sh --push ghcr.io/praffq/care_clinic --tag sha-abc --arch arm64 --only care-caddy
+```
+
+Builds the images we own (default: `care-backend-A care-frontend-A care-caddy
+care-backup`; the demo images only via `--only`) with the same definitions,
+pushes `PREFIX/<repo>:<tag>-<arch>` instead of loading/saving, uses a registry
+cache at `PREFIX/<repo>:buildcache-<arch>`, and writes
+`dist/images/push/<repo>-<arch>.json` with the pushed digest. Repos:
+`care-backend`, `care-frontend`, `care-caddy`, `care-backup`,
+`care-backend-demo-b`, `care-backend-demo-c-broken`. It needs a
+`docker-container` buildx builder and `docker login` to the registry.
 
 ## What the digest is
 

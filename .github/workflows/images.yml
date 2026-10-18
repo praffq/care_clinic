@@ -1,0 +1,226 @@
+name: Images
+
+# Builds the images CARE Clinic owns (care-backend, care-frontend, care-caddy,
+# care-backup) for linux/amd64 and linux/arm64 on native runners with the same
+# definitions as local dev (scripts/dev-images.sh --push), pushes them to
+# ghcr.io/<this repo>/<name>, and uploads their digests as the "images"
+# artifact (images.json is the care + support_images part of a `release
+# generate` artifacts file). See docs/ci-publishing.md.
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Also build the demo-only backend images (care-backend-demo-b, care-backend-demo-c-broken)
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - versions.yml
+      - scripts/dev-images.sh
+      - deployments/.env
+      - deployments/caddy.Dockerfile
+      - deployments/backup.Dockerfile
+      - deployments/frontend.env
+      - demo/images/**
+      - .github/workflows/images.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      prefix: ${{ steps.plan.outputs.prefix }}
+      tag: ${{ steps.plan.outputs.tag }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Choose registry prefix, tag and build matrix
+        id: plan
+        env:
+          DEMO: ${{ inputs.demo || false }}
+        run: |
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA::12}"
+          jobs='[{"only":"care-backend-A"},{"only":"care-frontend-A"},{"only":"care-caddy"},{"only":"care-backup"}]'
+          if [ "$DEMO" = true ]; then
+            jobs=$(jq -c '. + [{"only":"care-backend-B --only care-backend-C-broken"}]' <<<"$jobs")
+          fi
+          arches='[{"arch":"amd64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]'
+          matrix=$(jq -nc --argjson j "$jobs" --argjson a "$arches" '{include: [$j[] as $x | $a[] as $y | $x + $y]}')
+          {
+            echo "prefix=$prefix"
+            echo "tag=$tag"
+            echo "matrix=$matrix"
+          } >>"$GITHUB_OUTPUT"
+          echo "Pushing $prefix/<name>:$tag"
+          jq . <<<"$matrix"
+
+  build:
+    name: Build ${{ matrix.only }} (${{ matrix.arch }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        env:
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+          ONLY: ${{ matrix.only }}
+        run: |
+          # ONLY may hold several "--only" values (the demo job).
+          # shellcheck disable=SC2086
+          scripts/dev-images.sh --push "$PREFIX" --tag "$TAG" --arch "$ARCH" --only $ONLY
+      - name: Name the digest artifact
+        id: name
+        env:
+          ONLY: ${{ matrix.only }}
+          ARCH: ${{ matrix.arch }}
+        run: echo "name=push-${ONLY%% *}-$ARCH" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: dist/images/push/*.json
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    name: Publish multi-arch images
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: push-*
+          path: push
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create the multi-arch indexes and write images.json
+        env:
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          pin() { awk -v s="$1" -v k="$2" '
+            /^[^ #]/ { sec = $0; sub(/:.*/, "", sec); next }
+            sec == s && $0 ~ "^  " k ":" { sub(/^[^:]*:[ ]*/, ""); sub(/[ ]+#.*$/, ""); gsub(/"/, ""); print; exit }' versions.yml; }
+          index_digest() {
+            local d
+            d=$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r .digest)
+            grep -Eqx 'sha256:[0-9a-f]{64}' <<<"$d" || { echo "::error::no index digest for $1" >&2; return 1; }
+            echo "$d"
+          }
+
+          mkdir -p out
+          echo '{}' >out/indexes.json
+          for repo in $(jq -r '.repo' push/*.json | sort -u); do
+            ref="$PREFIX/$repo"
+            mapfile -t sources < <(jq -r --arg r "$repo" 'select(.repo == $r) | .ref + "@" + .digest' push/*.json)
+            arches=$(jq -r --arg r "$repo" 'select(.repo == $r) | .arch' push/*.json | sort | xargs)
+            if [ "$arches" != "amd64 arm64" ]; then
+              echo "::error::$repo was built for [$arches], want amd64 and arm64"
+              exit 1
+            fi
+            tags=(-t "$ref:$TAG")
+            if [ "$ON_MAIN" = true ]; then tags+=(-t "$ref:main"); fi
+            docker buildx imagetools create "${tags[@]}" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+              "${sources[@]}"
+            digest=$(index_digest "$ref:$TAG")
+            revision=$(jq -r --arg r "$repo" 'select(.repo == $r) | .revision' push/*.json | sort -u | head -n 1)
+            jq --arg repo "$repo" --arg ref "$ref" --arg tag "$TAG" --arg digest "$digest" --arg rev "$revision" \
+              --slurpfile per <(jq -c --arg r "$repo" 'select(.repo == $r) | {(.arch): .digest}' push/*.json) \
+              '.[$repo] = {ref: $ref, tag: $tag, digest: $digest, revision: $rev, platforms: ($per | add)}' \
+              out/indexes.json >out/tmp.json && mv out/tmp.json out/indexes.json
+            echo "$ref:$TAG -> $digest"
+          done
+
+          # Support images are pulled, not built: record their index digests.
+          echo '{}' >out/support.json
+          for role in postgres redis silo; do
+            image=$(pin images "$role")
+            digest=$(index_digest "$image")
+            jq --arg role "$role" --arg ref "$image" --arg digest "$digest" \
+              '.[$role] = {ref: $ref, digest: $digest}' out/support.json >out/tmp.json && mv out/tmp.json out/support.json
+            echo "$image -> $digest"
+          done
+
+          # images.json: the care + support_images sections of a `release
+          # generate` artifacts file (docs/updates-feed.md).
+          jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json \
+            --arg released_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+            ($i[0]) as $i | ($s[0]) as $s |
+            def img($r): {ref: $i[$r].ref, digest: $i[$r].digest};
+            ( if ($i | has("care-backend") and has("care-frontend") and has("care-caddy") and has("care-backup")) then
+                {care: {
+                  backend_rev: $i["care-backend"].revision[0:12],
+                  frontend_rev: $i["care-frontend"].revision[0:12],
+                  released_at: $released_at,
+                  migrations: true,
+                  images: {backend: img("care-backend"), frontend: img("care-frontend"),
+                           caddy: img("care-caddy"), backup: img("care-backup")}}}
+              else {} end )
+            + {support_images: $s}' >out/images.json
+          # images-meta.json: everything, including demo images and per-arch digests.
+          jq -n --slurpfile i out/indexes.json --slurpfile s out/support.json \
+            --arg sha "$GITHUB_SHA" --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" \
+            '{commit: $sha, tag: $tag, run_id: $run, images: $i[0], support_images: $s[0]}' >out/images-meta.json
+          rm out/indexes.json out/support.json
+          jq . out/images.json
+      - name: Summarize
+        run: |
+          {
+            echo "### Images"
+            echo
+            echo "| Image | Digest | amd64 | arm64 |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '.images | to_entries[] | "| `\(.value.ref):\(.value.tag)` | `\(.value.digest)` | `\(.value.platforms.amd64)` | `\(.value.platforms.arm64)` |"' out/images-meta.json
+            jq -r '.support_images | to_entries[] | "| `\(.value.ref)` | `\(.value.digest)` | | |"' out/images-meta.json
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: images
+          path: out/
+          if-no-files-found: error
+          retention-days: 90
