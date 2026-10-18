@@ -102,7 +102,8 @@ Publishing a release (`released` event) runs only a small job: when the tag is
 `desktop-v*` and is the repository's latest release, it dispatches
 `publish.yml` on `main` with `desktop: true, care: false, engine: false`
 (GitHub Pages deploys only from `main`). Other releases, such as
-`engine-v*` (created with `--latest=false`), are ignored.
+`engine-v*` (created as prereleases with `--latest=false`, so GitHub never
+picks them as the latest release), are ignored.
 
 ## track.yml (hourly + manual)
 
