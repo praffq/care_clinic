@@ -32,6 +32,17 @@ loaded() {
 	launchctl print "system/$label" >/dev/null 2>&1
 }
 
+# bootout returns before the daemon has exited (it stops the VM first);
+# bootstrapping again before the old job is gone fails with error 5.
+stop_service() {
+	launchctl bootout "system/$label" || true
+	for _ in $(seq 180); do
+		loaded || return 0
+		sleep 0.5
+	done
+	die "$label is still running 90s after bootout; see $logdir/service.log"
+}
+
 install_root() {
 	built=$1
 	need_root install
@@ -52,7 +63,7 @@ install_root() {
 
 	if loaded; then
 		echo "stopping the running service"
-		launchctl bootout "system/$label" || true
+		stop_service
 	fi
 	install -o root -g wheel -m 0644 "$repo/app/cmd/care-clinic-service/launchd/$label.plist" "$plist"
 	launchctl bootstrap system "$plist"
@@ -108,7 +119,7 @@ uninstall_cmd() {
 		exec sudo "$0" uninstall "$@"
 	fi
 	if loaded; then
-		launchctl bootout "system/$label"
+		stop_service
 	fi
 	rm -f "$plist" "$bin"
 	rmdir "$root/bin" 2>/dev/null || true
