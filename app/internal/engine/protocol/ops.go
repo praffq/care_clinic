@@ -38,11 +38,15 @@ var (
 	pluginNameRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 	pkgNameRE    = regexp.MustCompile(`^@?[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?$`)
 	pkgGitRE     = regexp.MustCompile(`^git\+https://[A-Za-z0-9.-]+(?:/[A-Za-z0-9._-]+)+(?:@[A-Za-z0-9._/-]+)?$`)
-	versionRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$`)
-	labelRE      = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
-	backupIDRE   = regexp.MustCompile(`^[A-Za-z0-9T:_-]{1,64}$`)
-	usernameRE   = regexp.MustCompile(`^[A-Za-z0-9@.+_-]{1,150}$`)
-	fileNameRE   = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
+	slugRE       = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	// CARE Plug versions are appended to the package: "@<ref>" for git
+	// URLs, a pip specifier for index packages.
+	gitRefVersionRE = regexp.MustCompile(`^@[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
+	pipVersionRE    = regexp.MustCompile(`^(?:==|>=|<=|~=|!=|>|<)[0-9A-Za-z][0-9A-Za-z.*+!_-]{0,63}$`)
+	labelRE         = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	backupIDRE      = regexp.MustCompile(`^[A-Za-z0-9T:_-]{1,64}$`)
+	usernameRE      = regexp.MustCompile(`^[A-Za-z0-9@.+_-]{1,150}$`)
+	fileNameRE      = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,64}$`)
 )
 
 // StackUp starts services (all when Services is empty).
@@ -161,17 +165,39 @@ func (o ImageLoad) Validate() error {
 	return v.err()
 }
 
-// PluginSpec is one plugin to bake into a derived image.
+// PluginSpec is one plugin to bake into a derived image. For backend-plugins
+// it is a CARE Plug (name is the Django app, package plus version is what
+// pip installs). For frontend-rebuild, Name is the remote's slug, Package its
+// git+https URL and Version "@<ref>" (default "@main").
 type PluginSpec struct {
-	Name    string `json:"name"`              // ^[a-z0-9_]+$
-	Package string `json:"package"`           // package name or git+https URL
-	Version string `json:"version,omitempty"` // optional version/ref
+	Name    string `json:"name"`
+	Package string `json:"package"`
+	Version string `json:"version,omitempty"`
 }
 
-// ImageBuild builds a derived image of Kind from Base.
+// Derived images are tagged <BuildRepo>:<first 12 hex of the build key> and
+// labelled with the full key.
+const (
+	BuildRepoBackend  = "care-clinic/backend-plugins"
+	BuildRepoFrontend = "care-clinic/frontend-plugins"
+	BuildKeyLabel     = "network.ohc.care.plugins.key"
+)
+
+// Repo returns the local repository derived images of k are tagged in.
+func (k BuildKind) Repo() string {
+	if k == BuildFrontendRebuild {
+		return BuildRepoFrontend
+	}
+	return BuildRepoBackend
+}
+
+// ImageBuild builds a derived image of Kind: Builder (a CARE builder image)
+// installs or builds Plugins, and the result is layered onto Base. Base and
+// Builder are digest-pinned references to images already in the engine.
 type ImageBuild struct {
 	Kind     BuildKind         `json:"kind"`
-	Base     Digest            `json:"base"`
+	Base     string            `json:"base"`
+	Builder  string            `json:"builder"`
 	Plugins  []PluginSpec      `json:"plugins,omitempty"`
 	BuildEnv map[string]string `json:"build_env,omitempty"` // keys ^REACT_…$ or ^CARE_…$
 }
@@ -181,19 +207,29 @@ func (ImageBuild) OpName() string { return OpImageBuild }
 func (o ImageBuild) Validate() error {
 	var v validator
 	v.check(o.Kind.Valid(), "kind", "unknown build kind %q", o.Kind)
-	checkDigest(&v, "base", o.Base)
-	v.check(len(o.Plugins) <= MaxPlugins, "plugins", "at most %d plugins", MaxPlugins)
+	checkPinnedRef(&v, "base", o.Base)
+	checkPinnedRef(&v, "builder", o.Builder)
+	v.check(len(o.Plugins) >= 1 && len(o.Plugins) <= MaxPlugins, "plugins", "1 to %d plugins", MaxPlugins)
 	seen := map[string]bool{}
 	for i, p := range o.Plugins {
 		f := fmt.Sprintf("plugins[%d]", i)
-		if !pluginNameRE.MatchString(p.Name) || len(p.Name) > 64 {
-			v.add(f+".name", "must match ^[a-z0-9_]+$ (max 64)")
+		nameRE, nameDesc := pluginNameRE, "^[a-z0-9_]+$"
+		if o.Kind == BuildFrontendRebuild {
+			nameRE, nameDesc = slugRE, "^[a-z0-9][a-z0-9_-]*$"
+		}
+		if !nameRE.MatchString(p.Name) || len(p.Name) > 64 {
+			v.add(f+".name", "must match %s (max 64)", nameDesc)
 		} else if seen[p.Name] {
 			v.add(f+".name", "duplicate plugin %q", p.Name)
 		}
 		seen[p.Name] = true
-		v.check(validPackage(p.Package), f+".package", "must be a package name or git+https URL")
-		v.check(p.Version == "" || versionRE.MatchString(p.Version), f+".version", "invalid version")
+		if o.Kind == BuildFrontendRebuild {
+			v.check(pkgGitRE.MatchString(p.Package) && !strings.Contains(p.Package, ".."), f+".package", "must be a git+https URL")
+			v.check(p.Version == "" || gitRefVersionRE.MatchString(p.Version), f+".version", "must be @<git ref>")
+		} else {
+			v.check(validPackage(p.Package), f+".package", "must be a package name or git+https URL")
+			v.check(ValidPluginVersion(p.Version), f+".version", "must be @<git ref> or a pip specifier such as ==1.2")
+		}
 	}
 	v.check(len(o.BuildEnv) <= MaxBuildEnv, "build_env", "at most %d entries", MaxBuildEnv)
 	for _, k := range slices.Sorted(maps.Keys(o.BuildEnv)) {
@@ -203,6 +239,20 @@ func (o ImageBuild) Validate() error {
 		v.check(len(val) <= MaxEnvValue && !strings.ContainsAny(val, "\x00\r\n"), f, "value too long or contains control characters")
 	}
 	return v.err()
+}
+
+// ValidPluginVersion reports whether v is a CARE Plug version: empty,
+// "@<git ref>" or a pip version specifier.
+func ValidPluginVersion(v string) bool {
+	return v == "" || gitRefVersionRE.MatchString(v) || pipVersionRE.MatchString(v)
+}
+
+// ValidPluginPackage reports whether p is a pip package name or git+https URL.
+func ValidPluginPackage(p string) bool { return validPackage(p) }
+
+func checkPinnedRef(v *validator, field, ref string) {
+	m := imageRefRE.FindStringSubmatch(ref)
+	v.check(m != nil && m[1] != "" && len(ref) <= 255, field, "must be a lowercase image reference pinned with @sha256 digest")
 }
 
 // ImagePrune removes unused images except those in Keep.

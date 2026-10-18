@@ -1,6 +1,7 @@
 import type {
   AppState, AppUpdate, AppUpdateProgress, CareHealth, ClientPreflight, ClientReachability, ConfirmationRequest,
-  HomeAccess, HostCheck, HostReport, NetworkStatus, QuitRequest, Section, ServiceState, StorageState, UpdateChecks,
+  HomeAccess, HostCheck, HostReport, NetworkStatus, Plugin, PluginPreset, QuitRequest, Section, ServiceState, StorageState,
+  UpdateChecks,
 } from "../../src/types";
 
 type Host = Window["go"]["main"]["App"];
@@ -34,6 +35,8 @@ type Fixtures = {
   webUsers: Record<string, string>;
   storage: StorageState;
   health: CareHealth;
+  catalog: PluginPreset[];
+  plugins: Plugin[];
 };
 
 declare global {
@@ -134,6 +137,21 @@ export function installTestHost() {
       healthy: true, code: 200, detail: "CARE is answering", checkedAt: new Date(0).toISOString(),
       services: [{ name: "backend", state: "running" }, { name: "db", state: "running" }, { name: "frontend", state: "running" }],
     },
+    catalog: [
+      {
+        id: "care_multihost_files_be", package: "git+https://github.com/ohcnetwork/care_multihost_files_be.git", version: "@main",
+        configs: { ALLOWED_HOSTS: ["*.local", "*.ts.net"] }, bundled: true, default: true,
+        label: "Files on every address", description: "Lets files open from more than one address.",
+      },
+      {
+        id: "care_filly", package: "git+https://github.com/ohcnetwork/care_filly.git", version: "@main", bundled: true,
+        label: "Filly", description: "AI scribe.", required_configs: ["MEDISPEAK_API_KEY", "MEDISPEAK_BASE_URL"],
+      },
+    ],
+    plugins: [{
+      id: "care_multihost_files_be", package: "git+https://github.com/ohcnetwork/care_multihost_files_be.git", version: "@main",
+      configs: { ALLOWED_HOSTS: ["*.local", "*.ts.net"] }, bundled: true,
+    }],
   };
   const recoveryCodeCount = params.get("recoveryCodes");
   if (recoveryCodeCount !== null) {
@@ -340,6 +358,30 @@ export function installTestHost() {
     SetUpdateChecks: async (app: boolean, password: string) => {
       requireAdmin(password);
       fixtures.updateChecks = { app };
+    },
+    PluginCatalog: async () => fixtures.catalog.map((preset) => ({ ...preset })),
+    ListPlugins: async () => {
+      requireServer();
+      return fixtures.plugins.map((plugin) => ({
+        ...plugin,
+        configs: Object.fromEntries(Object.entries(plugin.configs ?? {}).map(([key, value]) =>
+          [key, /KEY|SECRET|TOKEN|PASSWORD/i.test(key) ? "********" : value])),
+      }));
+    },
+    EnablePlugin: async (plugin: Plugin, password: string) => {
+      requireAdmin(password);
+      const old = fixtures.plugins.find((current) => current.id === plugin.id);
+      const configs = Object.fromEntries(Object.entries(plugin.configs ?? {}).map(([key, value]) =>
+        [key, value === "********" ? old?.configs?.[key] : value]));
+      const next = { ...plugin, configs };
+      fixtures.plugins = old ? fixtures.plugins.map((current) => current.id === plugin.id ? next : current) : [...fixtures.plugins, next];
+      acceptJob("plugins");
+    },
+    DisablePlugin: async (id: string, password: string) => {
+      requireAdmin(password);
+      if (!fixtures.plugins.some((plugin) => plugin.id === id)) throw new Error(`plugin ${id} is not enabled`);
+      fixtures.plugins = fixtures.plugins.filter((plugin) => plugin.id !== id);
+      acceptJob("plugins");
     },
     ClinicAction: async (action: "start" | "stop" | "restart") => {
       requireServer();

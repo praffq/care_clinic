@@ -33,6 +33,7 @@ application's own user or API documentation.
 | [CI publishing](ci-publishing.md) | `images.yml`, `engine.yml` and `publish.yml`: multi-arch images on GHCR, engine releases, the signed feed on GitHub Pages, and the one-time key/Pages/package setup. |
 | [Update feed](updates-feed.md) | The signed `updates.json` feed clients read, its signature and trust model, and how it is verified. |
 | [Update coordinator](updates.md) | How updates are checked, applied, journaled, resumed and rolled back: CARE, engine slot swaps and desktop downloads. |
+| [Plugins](plugins.md) | CARE backend plugins: catalog presets, custom plugins built in the VM, the journaled change and rollback, frontend plugins via CARE admin. |
 | [Releasing CARE Clinic](releases.md) | Preparing a version, starting the release, the macOS app bundle layout, reviewing and publishing the draft, signing limitations, and retrying safely. |
 | [Home access](home-access.md) | Letting doctors open CARE from home through Tailscale, without exposing the clinic to the internet. |
 
@@ -94,7 +95,7 @@ An arrow in an architecture diagram means "calls or depends on" unless stated ot
 
 These guides describe the code in this checkout: the UI-only app, the
 `care-clinic-service`, the engine VM and the Silo-backed storage service.
-Backups and restore, plugins, storage monitoring, CARE software updates,
+Backups and restore, storage monitoring, CARE software updates,
 recovery codes, web password reset, start at login and residue cleanup were
 removed in v2; they return later via engine agent ops.
 

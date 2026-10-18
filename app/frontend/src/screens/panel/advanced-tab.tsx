@@ -18,6 +18,7 @@ import {
 } from "./advanced-ui";
 import { EnvEditor } from "./env-editor";
 import { PanelPageHeader } from "./panel-ui";
+import { PluginSettings } from "./plugin-settings";
 import { UpdateCheckSettings } from "./update-checks";
 import { WebPasswordReset } from "./web-password-reset";
 
@@ -95,6 +96,7 @@ function AdvancedContent() {
       <AdminPasswordSettings adminPassword={adminPassword} onPasswordChanged={unlock} />
       <WebPasswordReset adminPassword={adminPassword} />
       <UpdateCheckSettings adminPassword={adminPassword} />
+      <PluginSettings adminPassword={adminPassword} />
       <EnvEditor adminPassword={adminPassword} groupId={groupId} onGroupChange={setGroupId} onWorkingChange={setWorking}
         pendingFiles={pendingSettings} onPendingFilesChange={setPendingSettings} onApplicationAccepted={() => setApplyingSettings(true)} />
       <>

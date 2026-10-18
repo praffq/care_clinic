@@ -110,8 +110,9 @@ func isNotFound(err error) bool {
 
 // Configure renders kit for host and uploads it with the clinic secrets. It
 // also makes the service send PROXY headers, which the Caddyfile requires.
-// Running containers pick the change up on the next Up.
-func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins []string, images []Image) error {
+// Running containers pick the change up on the next Up. plugs is the
+// ADDITIONAL_PLUGS JSON; empty means the catalog defaults.
+func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins []string, images []Image, plugs string) error {
 	sec, err := r.Secrets(ctx)
 	if err != nil {
 		return err
@@ -122,7 +123,7 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 	}
 	files, err := Render(kit, Config{
 		Host: host, Origins: origins, Images: images, Secrets: sec,
-		BackupCert: cert, BackupTZ: PosixTZ(time.Now()),
+		BackupCert: cert, BackupTZ: PosixTZ(time.Now()), AdditionalPlugs: plugs,
 	})
 	if err != nil {
 		return err
@@ -209,12 +210,13 @@ func imageTitle(img Image) string {
 
 // Install loads the images, configures the clinic for host and brings the
 // stack up migrated. It is safe to run again: secrets are kept and only
-// changed containers are recreated.
+// changed containers are recreated. The images are the CARE release's, so
+// the backend plugins are reset to the catalog defaults.
 func (r *Runtime) Install(ctx context.Context, kit fs.FS, host string, origins []string, images []Image) error {
 	if err := r.Images(ctx, images); err != nil {
 		return err
 	}
-	if err := r.Configure(ctx, kit, host, origins, images); err != nil {
+	if err := r.Configure(ctx, kit, host, origins, images, ""); err != nil {
 		return err
 	}
 	if err := r.Migrate(ctx); err != nil {
@@ -263,7 +265,7 @@ func (r *Runtime) Down(ctx context.Context, purge bool) error {
 	}
 	ag := r.Service.Agent()
 	// The host keeps the backup recovery key: exported backups still need it.
-	names := []string{StackEnv, ClinicEnv, SecretsEnv, BackupCert}
+	names := []string{StackEnv, ClinicEnv, SecretsEnv, PluginsEnv, BackupCert}
 	for _, f := range kitFiles {
 		names = append(names, f.dst)
 	}
@@ -402,6 +404,24 @@ func (r *Runtime) InstalledImages(ctx context.Context) ([]Image, error) {
 		return nil, err
 	}
 	return ParseStackImages(data)
+}
+
+// InstalledPlugs returns the engine's ADDITIONAL_PLUGS, or "" when no
+// plugins.env is configured.
+func (r *Runtime) InstalledPlugs(ctx context.Context) (string, error) {
+	rc, err := r.Service.Agent().GetFile(ctx, protocol.FileAreaConfig, PluginsEnv)
+	if isNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
+	_ = rc.Close()
+	if err != nil {
+		return "", err
+	}
+	return ParsePluginsEnv(data)
 }
 
 // ParseStackImages reads the IMAGE_<ROLE>=repo@digest lines Render writes.

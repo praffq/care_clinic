@@ -422,7 +422,7 @@ func TestDockerManageKeepsPasswordOutOfArgv(t *testing.T) {
 func TestDockerNotImplemented(t *testing.T) {
 	d, r := newDocker(nil)
 	ctx, em := context.Background(), &recEmitter{}
-	_, e1 := d.ImageBuild(ctx, protocol.ImageBuild{}, em)
+	_, e1 := d.ImageBuild(ctx, protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild}, em)
 	_, e2 := d.DBDump(ctx, protocol.DBDump{}, em)
 	for _, err := range []error{e1, e2} {
 		var oe *protocol.OpError

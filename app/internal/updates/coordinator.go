@@ -62,7 +62,12 @@ type Stack interface {
 	// It is cheap when they are already present.
 	EnsureImages(ctx context.Context, images []stack.Image) error
 	// WriteEnv renders the compose kit pinned to images and uploads it.
-	WriteEnv(ctx context.Context, images []stack.Image) error
+	// WriteEnv renders the stack env for images and the ADDITIONAL_PLUGS
+	// JSON plugs.
+	WriteEnv(ctx context.Context, images []stack.Image, plugs string) error
+	// Configured returns the images and ADDITIONAL_PLUGS the engine's stack env
+	// pins; no images when no clinic is configured.
+	Configured(ctx context.Context) ([]stack.Image, string, error)
 	// Health returns nil when the running stack is healthy.
 	Health(ctx context.Context) error
 	// DBSize estimates the database size in bytes (0 when unknown).
@@ -117,6 +122,10 @@ type Options struct {
 	// PollInterval is the status poll period (0 means 2s).
 	BootTimeout  time.Duration
 	PollInterval time.Duration
+
+	// DevBuilder is the CARE backend builder image used for custom plugins
+	// when the feed has none for the installed CARE (dev images).
+	DevBuilder *stack.Image
 
 	Now func() time.Time
 	Log func(string)
@@ -311,7 +320,7 @@ func (c *Coordinator) Status() (Status, error) {
 	if n := len(s.History); n > 0 {
 		s.Last = &s.History[n-1]
 	}
-	return s, nil
+	return s.redact(), nil
 }
 
 // History returns history.json, oldest first.
@@ -535,7 +544,7 @@ func (c *Coordinator) Apply(ctx context.Context) (*ApplyResult, error) {
 		if in, err = c.installed(); err != nil {
 			return res, err
 		}
-		j, err := c.newJournal(m, ver.HighestRevision, in, s)
+		j, err := c.newJournal(ctx, m, ver.HighestRevision, in, s)
 		if err != nil {
 			return res, err
 		}
@@ -793,6 +802,9 @@ func (c *Coordinator) commit(j *Journal) error {
 	switch j.Component {
 	case feed.ComponentCare:
 		in.Care = &InstalledCare{Version: j.Care.Version, ReleasedAt: j.Care.ReleasedAt, Images: j.Care.Images}
+		in.Plugins = installedPlugins(j)
+	case ComponentPlugins:
+		in.Plugins = installedPlugins(j)
 	case feed.ComponentEngine:
 		in.Engine = &InstalledEngine{Version: j.Engine.Version, DataSchema: j.Engine.DataSchema, SHA256: j.Engine.SHA256}
 	}
@@ -819,7 +831,7 @@ func (c *Coordinator) finish(j *Journal, result string) error {
 	return c.st.appendHistory(e)
 }
 
-func (c *Coordinator) newJournal(m *feed.Manifest, rev uint64, in Installed, s feed.Step) (*Journal, error) {
+func (c *Coordinator) newJournal(ctx context.Context, m *feed.Manifest, rev uint64, in Installed, s feed.Step) (*Journal, error) {
 	now := c.now()
 	j := &Journal{
 		ID:        fmt.Sprintf("%s-%s-%d", s.Component, now.Format("20060102T150405Z"), now.Nanosecond()),
@@ -830,8 +842,15 @@ func (c *Coordinator) newJournal(m *feed.Manifest, rev uint64, in Installed, s f
 	switch s.Component {
 	case feed.ComponentCare:
 		j.Care = &CareTarget{Version: s.To, ReleasedAt: s.Care.ReleasedAt, Images: careImages(s.Care, m)}
+		// The clinic's plugins are rebuilt on the new backend.
+		cur, err := c.current(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		j.Plugins = &PluginsTarget{Set: cur.Set, Base: backendOf(j.Care.Images), Builder: builderOf(s.Care)}
 		if in.Care != nil {
-			j.Rollback.PreviousImages = in.Care.Images
+			j.Rollback.PreviousImages = cur.Images
+			j.Rollback.PreviousPlugs = cur.Plugs
 		}
 		names = careSteps
 	case feed.ComponentEngine:

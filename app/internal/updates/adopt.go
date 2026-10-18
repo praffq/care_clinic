@@ -56,6 +56,10 @@ func (c *Coordinator) adopt(ctx context.Context, m *feed.Manifest, in Installed)
 			}
 		}
 		be, fe := running[protocol.ImageRoleBackend], running[protocol.ImageRoleFrontend]
+		// A derived plugin image runs on top of the release's backend.
+		if p := in.Plugins; p != nil && p.Image != nil && be == p.Image.Digest {
+			be = p.Base.Digest
+		}
 		if be != "" || fe != "" {
 			var match *feed.CareRelease
 			for i := range m.Care {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/backups"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
@@ -124,8 +125,20 @@ func (s RuntimeStack) EnsureImages(ctx context.Context, images []stack.Image) er
 	return s.Runtime.Images(ctx, images)
 }
 
-func (s RuntimeStack) WriteEnv(ctx context.Context, images []stack.Image) error {
-	return s.Runtime.Configure(ctx, s.Kit, s.Host, s.Origins, images)
+func (s RuntimeStack) WriteEnv(ctx context.Context, images []stack.Image, plugs string) error {
+	return s.Runtime.Configure(ctx, s.Kit, s.Host, s.Origins, images, plugs)
+}
+
+func (s RuntimeStack) Configured(ctx context.Context) ([]stack.Image, string, error) {
+	images, err := s.Runtime.InstalledImages(ctx)
+	if errors.Is(err, client.ErrNotFound) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	plugs, err := s.Runtime.InstalledPlugs(ctx)
+	return images, plugs, err
 }
 
 // healthServices must be running and not unhealthy for the stack to count

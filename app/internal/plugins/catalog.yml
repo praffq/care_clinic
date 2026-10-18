@@ -1,0 +1,20 @@
+# Backend plugins offered as presets. "bundled" plugins are pip-installed in
+# the CARE backend image at the same commit (scripts/dev-images.sh and CI),
+# so enabling them needs no image build. Frontend plugins are registered by a
+# CARE admin in CARE's own plugin settings (see docs/plugins.md).
+- id: care_multihost_files_be
+  label: Files on every address
+  description: Lets files open and upload when CARE is reached from more than one address, such as the clinic network and home access.
+  default: true
+  bundled: true
+  package: git+https://github.com/ohcnetwork/care_multihost_files_be.git
+  version: "@main"
+  configs:
+    ALLOWED_HOSTS: ["*.local", "*.ts.net"]
+- id: care_filly
+  label: Filly
+  description: "AI scribe: Medispeak dictation that fills CARE forms. Needs a Medispeak API key and internet access; enable its frontend in CARE's plugin settings."
+  bundled: true
+  package: git+https://github.com/ohcnetwork/care_filly.git
+  version: "@main"
+  required_configs: [MEDISPEAK_API_KEY, MEDISPEAK_BASE_URL]

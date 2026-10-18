@@ -88,6 +88,8 @@ type CareStore = {
   platform: string;
   /** Resolves true when the native job is accepted; care-done reports completion. */
   runAction: (action: ClinicAction) => Promise<boolean>;
+  /** Starts a native job labelled label; like runAction, care-done reports completion. */
+  runJob: (label: string, busyLabel: string, start: () => Promise<void>) => Promise<boolean>;
   uninstall: (removeData: boolean, adminPassword: string, removeApp?: boolean) => Promise<boolean>;
   log: (line: string) => void;
 };
@@ -243,6 +245,27 @@ export function CareProvider({ children }: { children: ReactNode }) {
         activeActionRef.current = "";
         setBusy(false);
         return false;
+      }
+    },
+    [log, setBusy],
+  );
+
+  const runJob = useCallback(
+    async (label: string, jobBusyLabel: string, start: () => Promise<void>) => {
+      if (busyRef.current) throw new Error("something else is still running");
+      setBusy(true, jobBusyLabel);
+      activeActionRef.current = label;
+      lastErrorRef.current = "";
+      setOperationError(null);
+      log(`\n$ care ${label}`);
+      try {
+        await start();
+        return true;
+      } catch (e) {
+        log(`error: ${errorText(e)}`);
+        activeActionRef.current = "";
+        setBusy(false);
+        throw e;
       }
     },
     [log, setBusy],
@@ -670,6 +693,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       version,
       platform,
       runAction,
+      runJob,
       uninstall,
       log,
     }),
@@ -678,7 +702,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       run, setupReset, startInstall, resumeInstall, retryInstall, restartSetup, openPanel,
       tab, busy, busyLabel, operationError, clearOperationError, service, refreshService,
       updateChecks, reloadUpdateChecks, saveUpdateChecks, installAppUpdate, acknowledgeAppUpdate, version, platform,
-      runAction, uninstall, log,
+      runAction, runJob, uninstall, log,
     ],
   );
 

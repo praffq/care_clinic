@@ -60,6 +60,7 @@ as its own journaled operation. Each step of an operation runs at most 3 times
 | `preflight` | clock not behind the feed, free disk ≥ 2 × DB + image reserve, stack healthy (updates only) | |
 | `backup` | `backup.run`, then export the set to the host's `backup_dir` (skipped on a fresh install) | `backup_id` |
 | `images` | download tarballs, load/pull every image | |
+| `build` | rebuild the derived backend image with the installed plugin set on the new base when it has custom plugins ([plugins.md](plugins.md)) | `plugins.image` |
 | `stop-app` | `stack.stop` backend, celery-worker, celery-beat; db stays up | `stack_stopped` |
 | `write-env` | render the kit pinned to the new digests and upload it | `env_written` |
 | `migrate` | `migrations.run` | `db_migrated` (set before it starts) |

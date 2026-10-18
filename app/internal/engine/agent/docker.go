@@ -483,10 +483,6 @@ func (d *DockerExecutor) ImageLoad(ctx context.Context, op protocol.ImageLoad, t
 	return &protocol.OpError{Code: protocol.CodeDigestMismatch, Message: "loaded image does not match digest " + string(op.Digest)}
 }
 
-func (d *DockerExecutor) ImageBuild(context.Context, protocol.ImageBuild, Emitter) (protocol.ImageBuildResult, error) {
-	return protocol.ImageBuildResult{}, ErrNotImplemented
-}
-
 type imageRow struct {
 	ID         string `json:"ID"`
 	Repository string `json:"Repository"`

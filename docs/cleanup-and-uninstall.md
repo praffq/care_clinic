@@ -18,7 +18,7 @@ the engine.
 | Remove the desktop app | `RemoveApp()`, or the Windows uninstaller | The app. | Everything else. |
 | Remove the service and engine | `scripts/service-macos.sh uninstall [--purge]` | See [section 4](#4-removing-the-service-and-engine). | |
 
-Backups, plugins, residue scans and "Remove everything" were removed in v2;
+Backups, residue scans and "Remove everything" were removed in v2;
 they return later via engine agent ops.
 
 ## 2. Uninstall, phase by phase

@@ -74,8 +74,7 @@ deactivate their CARE account if they are leaving.
 ## Known limits
 
 - Files: CARE builds file links from `BUCKET_EXTERNAL_ENDPOINT`, which points at
-  `<clinic>.local`, so file links can fail from home. Plugins, including the
-  multihost files plugin that fixed this, were removed in v2 and return later
-  via engine agent ops.
+  `<clinic>.local`; the default `care_multihost_files_be` plugin
+  ([plugins.md](plugins.md)) lets them work from `*.ts.net` too.
 - The clinic computer must stay on and awake.
 - Server setup is macOS-only until the Windows service exists.

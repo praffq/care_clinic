@@ -29,7 +29,7 @@ const (
 	StepRBHealth    = "rollback-health"
 )
 
-var careSteps = []string{StepPreflight, StepBackup, StepImages, StepStopApp, StepWriteEnv, StepMigrate, StepStartApp, StepHealth}
+var careSteps = []string{StepPreflight, StepBackup, StepImages, StepBuild, StepStopApp, StepWriteEnv, StepMigrate, StepStartApp, StepHealth}
 
 // appServices are stopped for a CARE update; db (and the rest) stay up.
 var appServices = []protocol.Service{protocol.ServiceBackend, protocol.ServiceCeleryWorker, protocol.ServiceCeleryBeat}
@@ -64,6 +64,7 @@ func (c *Coordinator) careForward() map[string]stepFunc {
 			}
 			return c.o.Stack.EnsureImages(ctx, StackImages(j.Care.Images))
 		},
+		StepBuild: c.build,
 		StepStopApp: func(ctx context.Context, j *Journal) error {
 			if j.Rollback.PreviousImages == nil {
 				return nil
@@ -77,7 +78,11 @@ func (c *Coordinator) careForward() map[string]stepFunc {
 			if err := c.flag(j, &j.Rollback.EnvWritten); err != nil {
 				return err
 			}
-			return c.o.Stack.WriteEnv(ctx, StackImages(j.Care.Images))
+			plugs, err := targetPlugs(j)
+			if err != nil {
+				return err
+			}
+			return c.o.Stack.WriteEnv(ctx, StackImages(targetImages(j)), plugs)
 		},
 		// Migrations always run: they are idempotent, and the feed's
 		// migrations flag is informational. db_migrated is set first so a
@@ -104,11 +109,13 @@ func (c *Coordinator) flag(j *Journal, f *bool) error {
 	return c.saveJournal(j)
 }
 
-// carePreflight checks the clock, free disk and (for an update) that the
-// running stack is healthy.
+// carePreflight checks the clock (against the feed: not for plugin
+// changes), free disk and (for an update) that the running stack is healthy.
 func (c *Coordinator) carePreflight(ctx context.Context, j *Journal) error {
-	if err := c.clockSane(); err != nil {
-		return err
+	if j.Component != ComponentPlugins {
+		if err := c.clockSane(); err != nil {
+			return err
+		}
 	}
 	st, err := c.o.Agent.Status(ctx)
 	if err != nil {
@@ -187,7 +194,7 @@ func (c *Coordinator) careRollback() map[string]stepFunc {
 			return c.o.Agent.Restore(ctx, j.Rollback.BackupID)
 		},
 		StepRBEnv: func(ctx context.Context, j *Journal) error {
-			return c.o.Stack.WriteEnv(ctx, StackImages(j.Rollback.PreviousImages))
+			return c.o.Stack.WriteEnv(ctx, StackImages(j.Rollback.PreviousImages), j.Rollback.PreviousPlugs)
 		},
 		StepRBStart: func(ctx context.Context, j *Journal) error {
 			return c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil)

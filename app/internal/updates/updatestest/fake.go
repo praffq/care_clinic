@@ -78,6 +78,13 @@ type World struct {
 	Images  map[protocol.Digest]bool
 	Env     map[protocol.ImageRole]protocol.Digest
 	Running map[protocol.Service]bool
+	// EnvImages and Plugs are the env as written (ADDITIONAL_PLUGS JSON).
+	EnvImages []stack.Image
+	Plugs     string
+	// BadPlugins are plugin names that fail health while in Plugs.
+	BadPlugins map[string]bool
+	// Builds counts image.build runs that built (not cached) an image.
+	Builds int
 	// DBSchema is the backend digest the database was last migrated by;
 	// Backups maps backup ids to the DBSchema they captured.
 	DBSchema protocol.Digest
@@ -104,6 +111,7 @@ func New() *World {
 		Running:     map[protocol.Service]bool{},
 		Backups:     map[string]protocol.Digest{},
 		BadBackends: map[protocol.Digest]bool{},
+		BadPlugins:  map[string]bool{},
 	}
 }
 
@@ -359,6 +367,25 @@ func (w *World) Op(ctx context.Context, op protocol.Op, result any) error {
 		} {
 			w.Running[s] = true
 		}
+	case protocol.ImageBuild:
+		base, builder := digestOf(o.Base), digestOf(o.Builder)
+		if !w.Images[base] || !w.Images[builder] {
+			return fmt.Errorf("image.build: base %s or builder %s not in the engine", short(base), short(builder))
+		}
+		h := sha256.New()
+		_, _ = fmt.Fprintf(h, "%s|%s", base, builder)
+		for _, p := range o.Plugins {
+			_, _ = fmt.Fprintf(h, "|%s %s %s", p.Name, p.Package, p.Version)
+		}
+		dg := protocol.Digest("sha256:" + hex.EncodeToString(h.Sum(nil)))
+		if !w.Images[dg] {
+			w.Builds++
+		}
+		w.Images[dg] = true
+		if r, ok := result.(*protocol.ImageBuildResult); ok {
+			*r = protocol.ImageBuildResult{Ref: o.Kind.Repo(), Digest: dg}
+		}
+		w.Calls[len(w.Calls)-1] += " " + short(dg)
 	case protocol.RunMigrations:
 		be := w.Env[protocol.ImageRoleBackend]
 		if be == "" || !w.Images[be] {
@@ -395,19 +422,33 @@ func (w *World) EnsureImages(ctx context.Context, images []stack.Image) error {
 }
 
 // WriteEnv implements updates.Stack.
-func (w *World) WriteEnv(ctx context.Context, images []stack.Image) error {
+func (w *World) WriteEnv(ctx context.Context, images []stack.Image, plugs string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.call("WriteEnv", ""); err != nil {
 		return err
 	}
 	env := map[protocol.ImageRole]protocol.Digest{}
+	w.EnvImages = nil
 	for _, img := range images {
 		env[img.Role] = img.Digest
+		img.Tarball = ""
+		w.EnvImages = append(w.EnvImages, img)
 	}
 	w.Env = env
+	w.Plugs = plugs
 	w.Calls[len(w.Calls)-1] += " " + short(env[protocol.ImageRoleBackend])
 	return nil
+}
+
+// Configured implements updates.Stack.
+func (w *World) Configured(ctx context.Context) ([]stack.Image, string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.call("Configured", ""); err != nil {
+		return nil, "", err
+	}
+	return slices.Clone(w.EnvImages), w.Plugs, nil
 }
 
 // Health implements updates.Stack: every app service runs, the backend is
@@ -434,6 +475,11 @@ func (w *World) healthLocked() error {
 	if w.BadBackends[be] {
 		return errors.New("backend failing its health check")
 	}
+	for name := range w.BadPlugins {
+		if strings.Contains(w.Plugs, `"name":"`+name+`"`) {
+			return fmt.Errorf("backend crashing on plugin %s", name)
+		}
+	}
 	if w.DBSchema != be {
 		return fmt.Errorf("database schema %s does not match backend %s", short(w.DBSchema), short(be))
 	}
@@ -455,6 +501,11 @@ func (w *World) DBSize(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return w.DBBytes, nil
+}
+
+func digestOf(ref string) protocol.Digest {
+	_, dg, _ := strings.Cut(ref, "@")
+	return protocol.Digest(dg)
 }
 
 func short(d protocol.Digest) string {

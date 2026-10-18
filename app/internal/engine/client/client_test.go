@@ -142,7 +142,7 @@ func TestOpStreamsFramesAndResult(t *testing.T) {
 	}
 	var frames []protocol.Frame
 	var res protocol.ImageBuildResult
-	err := e.c.Op(ctxT(t), protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild, Base: digest("c")}, &res, func(f protocol.Frame) { frames = append(frames, f) })
+	err := e.c.Op(ctxT(t), protocol.ImageBuild{Kind: protocol.BuildFrontendRebuild, Base: "r/f@" + string(digest("c")), Builder: "r/fb@" + string(digest("b")), Plugins: []protocol.PluginSpec{{Name: "a", Package: "git+https://h/a"}}}, &res, func(f protocol.Frame) { frames = append(frames, f) })
 	if err != nil {
 		t.Fatal(err)
 	}

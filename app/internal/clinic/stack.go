@@ -44,7 +44,15 @@ func (e *Clinic) Configure() error {
 	if err != nil {
 		return err
 	}
-	return r.Configure(e.context(), os.DirFS(e.InstallDir), e.host(), nil, images)
+	// Supplied images are a CARE release's (catalog default plugins); the
+	// engine's own images keep the plugins they were configured with.
+	plugs := ""
+	if len(e.StackImages) == 0 {
+		if plugs, err = r.InstalledPlugs(e.context()); err != nil {
+			return err
+		}
+	}
+	return r.Configure(e.context(), os.DirFS(e.InstallDir), e.host(), nil, images, plugs)
 }
 
 // ErrNoImages means there is nothing to install the clinic from: no image

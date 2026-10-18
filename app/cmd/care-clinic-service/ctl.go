@@ -37,6 +37,8 @@ commands:
   clinic <command>          install and drive the CARE stack (ctl clinic for help)
   backup <command>          run | list | status | restore <id> (ctl backup for help)
   update <command>          check for and apply updates (ctl update for help)
+  plugins <command>         list, enable, add or disable CARE backend plugins
+                            (ctl plugins for help)
 `
 
 func ctl(args []string) int {
@@ -70,6 +72,10 @@ func ctl(args []string) int {
 		fmt.Fprint(os.Stderr, updateUsage)
 		return 2
 	}
+	if errors.Is(err, errPluginsUsage) {
+		fmt.Fprint(os.Stderr, pluginsUsage)
+		return 2
+	}
 	if errors.Is(err, errUsage) {
 		fs.Usage()
 		return 2
@@ -85,13 +91,15 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
-	if cmd == "clinic" || cmd == "backup" || cmd == "update" {
+	if cmd == "clinic" || cmd == "backup" || cmd == "update" || cmd == "plugins" {
 		sub := clinicCtl
 		switch cmd {
 		case "backup":
 			sub = backupCtl
 		case "update":
 			sub = updateCtl
+		case "plugins":
+			sub = pluginsCtl
 		}
 		v, err := sub(ctx, c, args)
 		if err != nil || v == nil {

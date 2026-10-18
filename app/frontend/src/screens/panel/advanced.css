@@ -170,3 +170,12 @@
 @media (prefers-reduced-motion: reduce) {
   .care-advanced *, .advanced-dialog * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.plugin-list { display: flex; flex-direction: column; margin: 16px 0 0; padding: 0; list-style: none; }
+.plugin-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid #ebf0ed; }
+.plugin-empty { padding: 12px 0; border-top: 1px solid #ebf0ed; color: #697f75; font-size: 13px; }
+.plugin-heading { margin: 18px 0 0; color: #697f75; font-size: 12px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.plugin-tag { padding: 1px 8px; border-radius: 999px; background: #eef4f0; color: #445c50; font-size: 11px; font-weight: 600; }
+.plugin-source { margin-top: 3px; color: #697f75; font-family: "IBM Plex Mono", monospace; font-size: 12px; overflow-wrap: anywhere; }
+.plugin-configs { width: 100%; min-height: 84px; padding: 9px 11px; border: 1px solid #dce5df; border-radius: 10px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; resize: vertical; }
+.plugin-configs:disabled { background: #f6f8f7; }
