@@ -13,7 +13,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,19 +21,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Code-Hex/vz/v3"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/vm"
 )
 
-const (
-	agentVsockPort  = 1024
-	defaultDataSize = 64 << 30
-	cmdline         = "console=hvc0 care.system=/dev/vda care.data=/dev/vdb"
-)
+const stopTimeout = 30 * time.Second
 
 type callFlags []string
 
@@ -65,139 +59,12 @@ func main() {
 	}
 }
 
-// ensureDataDisk creates a sparse, all-zero disk image; the engine formats a
-// blank disk on first boot.
-func ensureDataDisk(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err := f.Truncate(defaultDataSize); err != nil {
-		_ = f.Close()
-		return err
-	}
-	log.Printf("created sparse data disk %s (%d GiB)", path, defaultDataSize>>30)
-	return f.Close()
-}
-
-func newConfig(bundle, data string, mem uint64, cpus uint, console *os.File) (*vz.VirtualMachineConfiguration, error) {
-	boot, err := vz.NewLinuxBootLoader(filepath.Join(bundle, "vmlinuz"),
-		vz.WithInitrd(filepath.Join(bundle, "initramfs")),
-		vz.WithCommandLine(cmdline))
-	if err != nil {
-		return nil, fmt.Errorf("boot loader: %w", err)
-	}
-	cfg, err := vz.NewVirtualMachineConfiguration(boot, cpus, mem<<20)
-	if err != nil {
-		return nil, err
-	}
-
-	// The guest console is output-only; its input is an idle pipe.
-	in, _, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	serialAtt, err := vz.NewFileHandleSerialPortAttachment(in, console)
-	if err != nil {
-		return nil, err
-	}
-	serial, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(serialAtt)
-	if err != nil {
-		return nil, err
-	}
-	cfg.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{serial})
-
-	sysAtt, err := vz.NewDiskImageStorageDeviceAttachment(filepath.Join(bundle, "system.img"), true)
-	if err != nil {
-		return nil, fmt.Errorf("system.img: %w", err)
-	}
-	sysDev, err := vz.NewVirtioBlockDeviceConfiguration(sysAtt)
-	if err != nil {
-		return nil, err
-	}
-	dataAtt, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(data, false,
-		vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeFsync)
-	if err != nil {
-		return nil, fmt.Errorf("data disk: %w", err)
-	}
-	dataDev, err := vz.NewVirtioBlockDeviceConfiguration(dataAtt)
-	if err != nil {
-		return nil, err
-	}
-	// Order matters: system.img is /dev/vda, the data disk /dev/vdb.
-	cfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{sysDev, dataDev})
-
-	natAtt, err := vz.NewNATNetworkDeviceAttachment()
-	if err != nil {
-		return nil, err
-	}
-	net0, err := vz.NewVirtioNetworkDeviceConfiguration(natAtt)
-	if err != nil {
-		return nil, err
-	}
-	mac, err := vz.NewRandomLocallyAdministeredMACAddress()
-	if err != nil {
-		return nil, err
-	}
-	net0.SetMACAddress(mac)
-	cfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{net0})
-
-	entropy, err := vz.NewVirtioEntropyDeviceConfiguration()
-	if err != nil {
-		return nil, err
-	}
-	cfg.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
-
-	balloon, err := vz.NewVirtioTraditionalMemoryBalloonDeviceConfiguration()
-	if err != nil {
-		return nil, err
-	}
-	cfg.SetMemoryBalloonDevicesVirtualMachineConfiguration([]vz.MemoryBalloonDeviceConfiguration{balloon})
-
-	sock, err := vz.NewVirtioSocketDeviceConfiguration()
-	if err != nil {
-		return nil, err
-	}
-	cfg.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{sock})
-
-	if ok, err := cfg.Validate(); !ok || err != nil {
-		return nil, fmt.Errorf("invalid VM configuration: %w", err)
-	}
-	return cfg, nil
-}
-
 // agentClient returns an HTTP client whose connections are vsock streams to
 // the agent.
-func agentClient(dev *vz.VirtioSocketDevice) *http.Client {
-	type result struct {
-		c   net.Conn
-		err error
-	}
+func agentClient(m vm.Machine) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			ch := make(chan result, 1)
-			go func() {
-				c, err := dev.Connect(agentVsockPort)
-				if err != nil {
-					ch <- result{nil, err}
-					return
-				}
-				ch <- result{c, nil}
-			}()
-			select {
-			case r := <-ch:
-				return r.c, r.err
-			case <-ctx.Done():
-				go func() {
-					if r := <-ch; r.c != nil {
-						_ = r.c.Close()
-					}
-				}()
-				return nil, ctx.Err()
-			}
+			return m.DialVsock(ctx, vm.AgentVsockPort)
 		},
 		DisableKeepAlives: true,
 	}}
@@ -223,60 +90,43 @@ func do(ctx context.Context, c *http.Client, method, path string, body []byte) (
 }
 
 func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout time.Duration, calls []string, exit bool) error {
-	if err := ensureDataDisk(data); err != nil {
-		return fmt.Errorf("data disk: %w", err)
-	}
-	logf, err := os.Create(consoleLog)
+	created, err := vm.EnsureDataDisk(data, vm.DefaultDataDiskSize)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = logf.Close() }()
-	consoleR, consoleW, err := os.Pipe()
-	if err != nil {
-		return err
+	if created {
+		log.Printf("created sparse data disk %s (%d GiB)", data, vm.DefaultDataDiskSize>>30)
 	}
-	go func() { _, _ = io.Copy(io.MultiWriter(logf, os.Stdout), consoleR) }()
-
-	cfg, err := newConfig(bundle, data, mem, cpus, consoleW)
-	if err != nil {
-		return err
-	}
-	vm, err := vz.NewVirtualMachine(cfg)
+	m, err := vm.New(vm.Config{
+		BundleDir:     bundle,
+		DataDisk:      data,
+		MemoryMiB:     mem,
+		CPUs:          cpus,
+		ConsoleLog:    consoleLog,
+		ConsoleMirror: os.Stdout,
+	})
 	if err != nil {
 		return err
 	}
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	ctx := context.Background()
 	start := time.Now()
-	if err := vm.Start(); err != nil {
-		return fmt.Errorf("start VM: %w", err)
+	if err := m.Start(ctx); err != nil {
+		return err
 	}
 	log.Printf("VM started (%d vCPU, %d MiB); console log: %s", cpus, mem, consoleLog)
-	devs := vm.SocketDevices()
-	if len(devs) == 0 {
-		return errors.New("VM has no virtio socket device")
-	}
-	client := agentClient(devs[0])
-	ctx := context.Background()
-
-	stopped := make(chan struct{})
-	go func() {
-		for st := range vm.StateChangedNotify() {
-			if st == vz.VirtualMachineStateStopped || st == vz.VirtualMachineStateError {
-				close(stopped)
-				return
-			}
-		}
-	}()
+	client := agentClient(m)
+	stopped := m.Done()
 
 	deadline := time.Now().Add(readyTimeout)
 	for ready := false; !ready; {
 		select {
 		case <-stopped:
-			return fmt.Errorf("VM stopped before the agent was ready (state %s); see %s", vm.State(), consoleLog)
+			return fmt.Errorf("VM stopped before the agent was ready (state %s, err %v); see %s", m.State(), m.Err(), consoleLog)
 		case <-sigc:
-			return shutdown(ctx, vm, client, stopped)
+			return shutdown(ctx, m, client)
 		case <-time.After(time.Second):
 		}
 		code, body, err := do(ctx, client, http.MethodGet, "/v1/status", nil)
@@ -313,27 +163,26 @@ func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout ti
 		select {
 		case <-sigc:
 		case <-stopped:
-			return fmt.Errorf("VM stopped unexpectedly; see %s", consoleLog)
+			return fmt.Errorf("VM stopped unexpectedly (state %s, err %v); see %s", m.State(), m.Err(), consoleLog)
 		}
 	}
-	return shutdown(ctx, vm, client, stopped)
+	return shutdown(ctx, m, client)
 }
 
 // shutdown asks the agent to power the guest off and force-stops the VM if
 // it is still running 30s later.
-func shutdown(ctx context.Context, vm *vz.VirtualMachine, client *http.Client, stopped <-chan struct{}) error {
+func shutdown(ctx context.Context, m vm.Machine, client *http.Client) error {
 	start := time.Now()
 	code, body, err := do(ctx, client, http.MethodPost, "/v1/shutdown", nil)
 	log.Printf("POST /v1/shutdown -> %d %s (err=%v)", code, body, err)
-	select {
-	case <-stopped:
-		log.Printf("VM powered off after %s", time.Since(start).Round(time.Millisecond))
-		return nil
-	case <-time.After(30 * time.Second):
+	if err := m.Stop(ctx, stopTimeout); err != nil {
+		return err
 	}
-	log.Print("VM still running after 30s; force-stopping")
-	if vm.CanStop() {
-		return vm.Stop()
+	took := time.Since(start).Round(time.Millisecond)
+	if took >= stopTimeout {
+		log.Printf("VM force-stopped after %s", took)
+	} else {
+		log.Printf("VM powered off after %s", took)
 	}
-	return errors.New("VM cannot be stopped")
+	return m.Err()
 }

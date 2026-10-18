@@ -145,8 +145,27 @@ published-port forwarding proved unreliable.
 
 ## Booting with Virtualization.framework (macOS)
 
-`app/cmd/vzboot` is a development harness that boots a bundle the way the
-macOS host service will:
+`app/internal/engine/vm` is the host-side VM driver (`vm.New(cfg)` returns a
+`Machine`: `Start`, `DialVsock`, `State`/`Done`/`Err`, `Stop`, `ForceStop`);
+the macOS implementation uses Virtualization.framework via
+`github.com/Code-Hex/vz/v3`. It validates the bundle, creates a sparse
+(mode 0600) data disk if absent, boots with the Linux boot loader
+(`console=hvc0 care.system=/dev/vda care.data=/dev/vdb`), virtio-blk
+(system.img read-only, then the data disk), NAT networking, entropy, balloon
+and a virtio-socket device, and appends the console to a log file that is
+rotated to `<log>.1` at 8 MiB by default. Virtualization.framework holds an
+exclusive lock on the attached data disk; a second VM on the same disk fails
+with `ErrDataDiskInUse`.
+
+Graceful shutdown is `POST /v1/shutdown` to the agent followed by
+`Machine.Stop(ctx, timeout)`, which waits for the guest to power off and
+force-stops it on timeout. The hypervisor's own stop request
+(`VZVirtualMachine requestStop`) is accepted but ignored: the image has no
+ACPI/power-key handler, and the agent shuts OpenRC down in order and works the
+same under QEMU.
+
+Every binary using the driver needs the `com.apple.security.virtualization`
+entitlement. `app/cmd/vzboot` is a development harness built on the driver:
 
 ```sh
 engine/build.sh arm64
@@ -157,11 +176,19 @@ dist/vzboot --bundle dist/care-engine-0.1.0-arm64 --data /tmp/data.img \
   [--mem 4096 --cpus 2] [--call 'POST /v1/ops/stack.status [JSON body]'] [--exit]
 ```
 
-It creates a sparse 64 GiB data disk if absent, boots with the Linux boot
-loader (`console=hvc0 care.system=/dev/vda care.data=/dev/vdb`), virtio-blk
-(system.img read-only, then the data disk), NAT networking and a virtio-socket
-device, mirrors the console to stdout and `<data>.console.log`, then polls
-`GET /v1/status` over vsock port 1024 until `docker_ready` is true. Ctrl-C (or
-`--exit`) sends `POST /v1/shutdown` and waits for the VM to power off,
-force-stopping it after 30 s. On an M-series Mac the agent is ready ~7 s after
-start on a blank data disk and ~3 s on later boots.
+It creates a sparse 64 GiB data disk if absent, mirrors the console to stdout
+and `<data>.console.log`, then polls `GET /v1/status` over vsock port 1024
+until `docker_ready` is true. Ctrl-C (or `--exit`) sends `POST /v1/shutdown`
+and waits for the VM to power off, force-stopping it after 30 s. On an
+M-series Mac the agent is ready ~7 s after start on a blank data disk and ~3 s
+on later boots; the guest powers off ~5 s after `/v1/shutdown`.
+
+The driver's integration test boots a real bundle. `go test` binaries also
+need the entitlement, so build, sign and run the test binary directly (from
+`app/`):
+
+```sh
+go test -c -o /tmp/vm.test ./internal/engine/vm
+codesign -f -s - --entitlements cmd/vzboot/vzboot.entitlements /tmp/vm.test
+CARE_VZ_BUNDLE=$PWD/../dist/care-engine-0.1.0-arm64 /tmp/vm.test -test.run TestBootEngine -test.v
+```
