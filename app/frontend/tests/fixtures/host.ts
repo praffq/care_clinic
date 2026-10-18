@@ -1,6 +1,6 @@
 import type {
-  AppState, AppUpdate, AppUpdateProgress, ClientPreflight, ClientReachability, ConfirmationRequest,
-  HomeAccess, HostCheck, HostReport, NetworkStatus, QuitRequest, Section, ServiceState, UpdateChecks,
+  AppState, AppUpdate, AppUpdateProgress, CareHealth, ClientPreflight, ClientReachability, ConfirmationRequest,
+  HomeAccess, HostCheck, HostReport, NetworkStatus, QuitRequest, Section, ServiceState, StorageState, UpdateChecks,
 } from "../../src/types";
 
 type Host = Window["go"]["main"]["App"];
@@ -27,6 +27,13 @@ type Fixtures = {
   appRemoved: boolean;
   setupStarted: boolean;
   updateChecks: UpdateChecks;
+  recoveryCodes: string[];
+  recoveryGeneration: number;
+  recoveryFailures: number;
+  recoveryRetryAfter: number;
+  webUsers: Record<string, string>;
+  storage: StorageState;
+  health: CareHealth;
 };
 
 declare global {
@@ -79,6 +86,9 @@ export function installTestHost() {
   let quitSequence = 0;
   let confirmation: ConfirmationRequest | null = null;
   let confirmationSequence = 0;
+  const sampleCodes = (generation: number) => Array.from({ length: 6 }, (_, index) =>
+    `AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-${generation.toString(16).padStart(4, "0")}-${(index + 1).toString(16).padStart(4, "0")}`.toUpperCase());
+  const GB = 2 ** 30;
   const fixtures: Fixtures = {
     checks: [
       { id: "virtualization", title: "Virtualization", level: "ok", detail: "This computer can run the CARE engine." },
@@ -108,7 +118,41 @@ export function installTestHost() {
     appRemoved: false,
     setupStarted: false,
     updateChecks: { app: !(params.get("checksOff") ?? "").split(",").includes("app") },
+    recoveryCodes: sampleCodes(1),
+    recoveryGeneration: 1,
+    recoveryFailures: 0,
+    recoveryRetryAfter: 0,
+    webUsers: { admin: "ClinicTest123", nurse: "NurseTest123" },
+    storage: {
+      level: "ok", title: "Enough free space.",
+      disks: [
+        { kind: "engine", name: "Clinic data (engine disk)", free: 48 * GB, total: 64 * GB, level: "ok" },
+        { kind: "backups", name: "Backup folder", path: "/Library/Application Support/CARE Clinic/backups", free: 418 * GB, total: 500 * GB, level: "ok" },
+      ],
+    },
+    health: {
+      healthy: true, code: 200, detail: "CARE is answering", checkedAt: new Date(0).toISOString(),
+      services: [{ name: "backend", state: "running" }, { name: "db", state: "running" }, { name: "frontend", state: "running" }],
+    },
   };
+  const recoveryCodeCount = params.get("recoveryCodes");
+  if (recoveryCodeCount !== null) {
+    fixtures.recoveryCodes = fixtures.recoveryCodes.map((code, index) => index < Number(recoveryCodeCount) ? code : "");
+  }
+  if (scenario === "panel-disk-low") {
+    fixtures.storage = {
+      level: "critical",
+      title: "Clinic data (engine disk) is almost full (3.0 GB free). Free up space now: CARE stops saving records when it runs out.",
+      disks: [
+        { kind: "engine", name: "Clinic data (engine disk)", free: 3 * GB, total: 64 * GB, level: "critical" },
+        { kind: "backups", name: "Backup folder", path: "/Volumes/Backup/care", free: 8 * GB, total: 500 * GB, level: "low" },
+      ],
+    };
+    fixtures.health = {
+      healthy: false, code: 502, detail: "CARE answered HTTP 502 Bad Gateway", checkedAt: new Date(0).toISOString(),
+      services: [{ name: "backend", state: "restarting" }, { name: "db", state: "running" }],
+    };
+  }
   if (scenario.startsWith("setup-")) state.role = "server";
   if (scenario === "setup-service") fixtures.serviceInstalled = false;
   if (scenario === "setup-memory") fixtures.checks[1] = { ...fixtures.checks[1], level: "fail", detail: "CARE needs at least 8 GB of memory." };
@@ -320,6 +364,50 @@ export function installTestHost() {
       if (problem) throw new Error(problem);
       fixtures.adminPassword = next;
     },
+    GetAdminRecoveryCodeCount: async () => {
+      requireServer();
+      return fixtures.recoveryCodes.filter(Boolean).length;
+    },
+    SaveAdminRecoveryCodes: async (password: string) => {
+      requireAdmin(password);
+      fixtures.recoveryCodes = sampleCodes(++fixtures.recoveryGeneration);
+      fixtures.recoveryFailures = 0;
+      fixtures.recoveryRetryAfter = 0;
+      emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+      return "/Users/test/Desktop/CARE-Clinic-admin-recovery-codes.txt";
+    },
+    ResetAdminPassword: async (code: string, next: string) => {
+      requireServer();
+      const now = Math.floor(Date.now() / 1000);
+      if (fixtures.recoveryRetryAfter > now) throw new Error(`too many recovery attempts; try again in ${fixtures.recoveryRetryAfter - now} seconds`);
+      const problem = await methods.ValidatePassword(next);
+      if (problem) throw new Error(problem);
+      const normalize = (value: string) => value.replace(/[\s-]/g, "").toUpperCase();
+      const index = fixtures.recoveryCodes.findIndex((candidate) => candidate && normalize(candidate) === normalize(code));
+      if (index < 0) {
+        fixtures.recoveryFailures++;
+        if (fixtures.recoveryFailures >= 5) fixtures.recoveryRetryAfter = now + (fixtures.recoveryFailures - 4) * 60;
+        throw new Error("that recovery code is invalid or already used; use an unused code from the latest set");
+      }
+      fixtures.recoveryCodes[index] = "";
+      fixtures.adminPassword = next;
+      fixtures.recoveryFailures = 0;
+      fixtures.recoveryRetryAfter = 0;
+      emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+    },
+    ResetWebPassword: async (username: string, next: string, password: string) => {
+      requireAdmin(password);
+      if (!fixtures.running) throw new Error("CARE isn't running; start CARE from Overview, then try again");
+      if (!Object.prototype.hasOwnProperty.call(fixtures.webUsers, username)) throw new Error(`no CARE user named "${username}"; usernames are case-sensitive`);
+      const problems = [
+        ...(next.length < 8 ? ["This password is too short. It must contain at least 8 characters."] : []),
+        ...(/^\d+$/.test(next) ? ["This password is entirely numeric."] : []),
+      ];
+      if (problems.length) throw new Error(`CARE didn't accept that password: ${problems.join(" ")}`);
+      fixtures.webUsers[username] = next;
+    },
+    StorageStatus: async () => structuredClone(fixtures.storage),
+    CheckCareHealth: async () => structuredClone(fixtures.health),
     RunUninstall: async (_removeData: boolean, password: string) => {
       requireAdmin(password);
       acceptJob("uninstall");

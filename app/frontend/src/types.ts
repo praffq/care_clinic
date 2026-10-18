@@ -154,3 +154,28 @@ export type AppUpdate = {
   asset: string;
   size: number;
 };
+
+export type StorageLevel = "ok" | "low" | "critical" | "unknown";
+
+/** One disk the clinic depends on (StorageStatus). */
+export type DiskUsage = {
+  kind: "engine" | "backups";
+  name: string;
+  path?: string;
+  free: number;
+  total: number;
+  level: StorageLevel;
+  detail?: string;
+};
+
+export type StorageState = { level: StorageLevel; title: string; disks: DiskUsage[] };
+
+/** CheckCareHealth: CARE's ping and its containers. */
+export type CareHealth = {
+  healthy: boolean;
+  code: number;
+  detail: string;
+  services: { name: string; state: string }[] | null;
+  servicesError?: string;
+  checkedAt: string;
+};

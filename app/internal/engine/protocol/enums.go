@@ -86,6 +86,15 @@ var ManageCommands = []ManageCommand{
 
 func (c ManageCommand) Valid() bool { return contains(ManageCommands, c) }
 
+// Stdout marker lines (log frames) of ManageChangePassword. Engines before
+// 0.1.3 print none of them and fail with a DoesNotExist traceback for an
+// unknown user.
+const (
+	ManagePasswordNoUser  = "care-clinic:no-user"
+	ManagePasswordInvalid = "care-clinic:invalid:"
+	ManagePasswordSet     = "care-clinic:password-set"
+)
+
 // needsCredentials reports whether the command takes a username and password file.
 func (c ManageCommand) needsCredentials() bool {
 	return c == ManageCreateSuperuser || c == ManageChangePassword

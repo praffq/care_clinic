@@ -22,6 +22,10 @@ func (a *App) RunUninstall(removeData bool, adminPassword string) (err error) {
 		}); err != nil {
 			return err
 		}
+		// The codes belong to the admin password that is about to go.
+		if err := a.removeRecovery(); err != nil {
+			return err
+		}
 		if err := a.resetConfigAfterUninstall(); err != nil {
 			return err
 		}

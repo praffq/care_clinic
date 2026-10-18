@@ -38,13 +38,28 @@ const (
 	envManagePassword    = "CARE_MANAGE_PASSWORD"
 
 	// changePasswordCode is run with manage.py shell -c; the username and
-	// password reach it through the environment, never through argv.
-	changePasswordCode = `import os
+	// password reach it through the environment, never through argv. It
+	// validates the password with CARE's own validators and reports through
+	// the protocol.ManagePassword* marker lines on stdout.
+	changePasswordCode = `import os, sys
 from django.contrib.auth import get_user_model
-u = get_user_model().objects.get(username=os.environ["` + envManageUsername + `"])
-u.set_password(os.environ["` + envManagePassword + `"])
-u.save()
-print("password changed for " + u.username)`
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+User = get_user_model()
+user = User._default_manager.filter(**{User.USERNAME_FIELD: os.environ["` + envManageUsername + `"]}).first()
+if user is None:
+    print("` + protocol.ManagePasswordNoUser + `", flush=True)
+    sys.exit(3)
+password = os.environ["` + envManagePassword + `"]
+try:
+    validate_password(password, user)
+except ValidationError as error:
+    for message in error.messages:
+        print("` + protocol.ManagePasswordInvalid + `" + " ".join(str(message).split()), flush=True)
+    sys.exit(4)
+user.set_password(password)
+user.save()
+print("` + protocol.ManagePasswordSet + `", flush=True)`
 )
 
 // Command is one process invocation. Args[0] is the program; there is no
