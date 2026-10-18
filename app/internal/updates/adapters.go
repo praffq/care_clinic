@@ -2,14 +2,16 @@ package updates
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
-	"github.com/ohcnetwork/care_desktop/app/internal/health"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/backups"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
@@ -92,8 +94,30 @@ type RuntimeStack struct {
 	Kit     fs.FS
 	Host    string
 	Origins []string
-	// Ping checks the clinic over HTTPS; nil means health.Ping.
-	Ping func() health.Health
+	// Ping checks the clinic over HTTPS; nil means PingLocal.
+	Ping func(ctx context.Context) error
+}
+
+// PingLocal checks that CARE answers https://localhost/ping/ with 200. The
+// certificate is the clinic's own, so it is not verified.
+func PingLocal(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://localhost/ping/", nil)
+	if err != nil {
+		return err
+	}
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // the clinic's own local certificate
+	defer tr.CloseIdleConnections()
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return fmt.Errorf("nothing answering on :443: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %s", resp.Status)
+	}
+	return nil
 }
 
 func (s RuntimeStack) EnsureImages(ctx context.Context, images []stack.Image) error {
@@ -137,10 +161,10 @@ func (s RuntimeStack) Health(ctx context.Context) error {
 	}
 	ping := s.Ping
 	if ping == nil {
-		ping = health.Ping
+		ping = PingLocal
 	}
-	if h := ping(); !h.Active {
-		return fmt.Errorf("CARE is not answering: %s", h.Detail)
+	if err := ping(ctx); err != nil {
+		return fmt.Errorf("CARE is not answering: %w", err)
 	}
 	return nil
 }
