@@ -21,6 +21,9 @@ var (
 	ErrBadFrame         = errors.New("malformed op stream frame")
 	ErrChecksumMismatch = errors.New("checksum mismatch")
 	ErrMissingChecksum  = errors.New("agent sent no " + protocol.BackupSHA256Header + " checksum header")
+	// ErrUnavailable is a 503 from the host service relay: the engine is not
+	// running or its agent is not answering.
+	ErrUnavailable = errors.New("engine is unavailable")
 )
 
 // APIError is a non-success HTTP response from the agent other than a 400
@@ -56,6 +59,8 @@ func (e *APIError) Is(target error) bool {
 		return e.Status == http.StatusNotFound && e.Code != protocol.CodeUnknownOp
 	case ErrTooLarge:
 		return e.Status == http.StatusRequestEntityTooLarge
+	case ErrUnavailable:
+		return e.Status == http.StatusServiceUnavailable
 	}
 	return false
 }
