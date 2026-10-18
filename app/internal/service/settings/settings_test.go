@@ -101,3 +101,29 @@ func TestBackupDir(t *testing.T) {
 		t.Fatalf("reopen = %+v, %v", s2.Get(), err)
 	}
 }
+
+func TestBackupCopyDir(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "config.json"), defs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr("/Volumes/USB/care-copy/")})
+	if err != nil || got.BackupCopyDir != "/Volumes/USB/care-copy" {
+		t.Fatalf("set = %+v, %v", got, err)
+	}
+	for _, d := range []string{"relative", "/", defs.BackupDir, defs.BackupDir + "/copy", "/Library/Application Support/care-clinic"} {
+		if _, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr(d)}); !errors.Is(err, api.ErrInvalidConfig) {
+			t.Errorf("Update(%q) = %v", d, err)
+		}
+	}
+	// The backup folder may not move into the copy folder either.
+	if _, err := s.Update(api.ServiceConfigUpdate{BackupDir: ptr("/Volumes/USB/care-copy/b")}); !errors.Is(err, api.ErrInvalidConfig) {
+		t.Errorf("backup_dir inside the copy folder = %v", err)
+	}
+	if got, err := s.Update(api.ServiceConfigUpdate{BackupCopyDir: ptr("")}); err != nil || got.BackupCopyDir != "" {
+		t.Fatalf("clear = %+v, %v", got, err)
+	}
+	if s.Get().BackupCopyDir != "" {
+		t.Fatal("not cleared")
+	}
+}

@@ -43,3 +43,10 @@ export function normaliseHost(raw: string): string {
     .replace(/^\.+|\.+$/g, "");
   return `${label}.local`;
 }
+
+/** A status timestamp for people: "never" when unset. */
+export function when(at?: string): string {
+  if (!at) return "never";
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) || date.getTime() <= 0 ? "never" : date.toLocaleString();
+}

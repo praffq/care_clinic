@@ -131,8 +131,10 @@ func (f *FakeExecutor) ImageBuild(ctx context.Context, op protocol.ImageBuild, e
 	return r, err
 }
 
-func (f *FakeExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) error {
-	return f.none(ctx, "ImagePrune", &op, em)
+func (f *FakeExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) (protocol.ImagePruneResult, error) {
+	res, err := f.do(ctx, "ImagePrune", &op, em)
+	r, _ := res.(protocol.ImagePruneResult)
+	return r, err
 }
 
 func (f *FakeExecutor) DBDump(ctx context.Context, op protocol.DBDump, em Emitter) (protocol.DBDumpResult, error) {

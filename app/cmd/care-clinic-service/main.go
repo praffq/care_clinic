@@ -159,11 +159,14 @@ func serve(args []string) error {
 	var (
 		fw  *hostfwd.Forwarder
 		adv *advertise.Service
+		exp *backups.Exporter
 	)
 	defaults := api.ServiceConfig{BackupDir: filepath.Join(rootDir, "backups")}
 	cfg, err := settings.Open(filepath.Join(rootDir, "config.json"), defaults, func(c api.ServiceConfig) {
 		fw.SetProxyProtocol(c.ProxyProtocol)
 		adv.SetName(c.MDNSName)
+		// A new backup or copy folder is tried now, not at the next pass.
+		exp.Kick()
 	})
 	if err != nil {
 		// A broken config must not keep CARE down after a reboot; Open
@@ -173,11 +176,12 @@ func serve(args []string) error {
 	fw = hostfwd.New(hostfwd.Config{Rules: rules, Dial: sup.DialGuest, ProxyProtocol: cfg.Get().ProxyProtocol, Log: log})
 	adv = advertise.New(advertise.Config{Name: cfg.Get().MDNSName, Disabled: !*advertiseMDNS, Log: log})
 
-	exp := backups.New(backups.Config{
-		Agent: client.New(sup.DialAgent),
-		Ready: func() bool { return sup.Status().AgentReachable() },
-		Dir:   func() string { return cfg.Get().BackupDir },
-		Log:   log,
+	exp = backups.New(backups.Config{
+		Agent:   client.New(sup.DialAgent),
+		Ready:   func() bool { return sup.Status().AgentReachable() },
+		Dir:     func() string { return cfg.Get().BackupDir },
+		CopyDir: func() string { return cfg.Get().BackupCopyDir },
+		Log:     log,
 	})
 
 	ln, err := control.Listen(control.ListenConfig{Path: sock, Group: *group, Log: log})

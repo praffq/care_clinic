@@ -15,7 +15,15 @@
 //  6. deletes older host sets, so the host always keeps at least one set
 //     that was verified after it was copied.
 //
-// A failed export leaves the set in the engine; the next pass retries it.
+// A failed export leaves the set in the engine; the next pass retries it,
+// and Status reports "Backup not copied out since ...". The engine keeps at
+// most api.MaxPendingBackups sets (backup.sh rotates the oldest out); at
+// that many the status is critical.
+//
+// With a copy folder (a removable drive or network share), every pass also
+// copies the newest host set there the same way: <copy>/<id>.partial,
+// verify, rename, then delete older sets there. The folder is never
+// created; while it is missing the copy is retried every CopyRetry.
 package backups
 
 import (
@@ -35,8 +43,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/diskspace"
 )
 
 // StateFile records the last export in the backup directory.
@@ -47,12 +57,19 @@ const partialSuffix = ".partial"
 // DefaultInterval is how often the exporter looks for new sets.
 const DefaultInterval = 5 * time.Minute
 
+// DefaultCopyRetry is how often a copy folder that is missing or failed is
+// tried again.
+const DefaultCopyRetry = time.Minute
+
 // afterMidnight is when, after local midnight, an extra pass picks up the
 // nightly set.
 const afterMidnight = 2 * time.Minute
 
 // ErrEngineUnavailable is returned by Export when the agent is not reachable.
 var ErrEngineUnavailable = errors.New("the engine is not running")
+
+// ErrNotConnected is returned by Copy when the copy folder is missing.
+var ErrNotConnected = errors.New("isn't connected")
 
 // Agent is the part of the engine client the exporter uses.
 type Agent interface {
@@ -68,25 +85,46 @@ type Config struct {
 	Ready func() bool
 	// Dir returns the host backup directory (it may change at runtime).
 	Dir func() string
+	// CopyDir returns the extra copy folder; "" or nil means none.
+	CopyDir func() string
 	// Interval between passes; DefaultInterval when 0.
 	Interval time.Duration
-	Now      func() time.Time
-	Log      *slog.Logger
+	// CopyRetry is the pass interval while the copy is failing;
+	// DefaultCopyRetry when 0.
+	CopyRetry time.Duration
+	// FreeSpace reports the free bytes at a path; diskspace.Of when nil.
+	FreeSpace func(path string) (uint64, error)
+	Now       func() time.Time
+	Log       *slog.Logger
 }
 
 // State is export-state.json.
 type State struct {
-	LastExported string    `json:"last_exported,omitempty"`
-	VerifiedAt   time.Time `json:"verified_at,omitzero"`
-	LastError    string    `json:"last_error,omitempty"`
-	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
+	LastExported string     `json:"last_exported,omitempty"`
+	VerifiedAt   time.Time  `json:"verified_at,omitzero"`
+	LastError    string     `json:"last_error,omitempty"`
+	LastErrorAt  time.Time  `json:"last_error_at,omitzero"`
+	Copy         *CopyState `json:"copy,omitempty"`
+}
+
+// CopyState records the extra copy to Dir.
+type CopyState struct {
+	Dir         string    `json:"dir"`
+	LastCopied  string    `json:"last_copied,omitempty"`
+	CopiedAt    time.Time `json:"copied_at,omitzero"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+	// Missing is set while Dir is not there.
+	Missing bool `json:"missing,omitempty"`
 }
 
 // Exporter copies backup sets out of the engine; see the package doc.
 type Exporter struct {
 	cfg  Config
 	kick chan struct{}
-	run  sync.Mutex // one pass at a time
+	run  sync.Mutex // one export pass at a time
+	copy sync.Mutex // one copy pass at a time
+	save sync.Mutex // serializes export-state.json writes
 
 	mu        sync.Mutex
 	dir       string // dir the state below was loaded from
@@ -99,6 +137,18 @@ type Exporter struct {
 func New(cfg Config) *Exporter {
 	if cfg.Interval == 0 {
 		cfg.Interval = DefaultInterval
+	}
+	if cfg.CopyRetry == 0 {
+		cfg.CopyRetry = DefaultCopyRetry
+	}
+	if cfg.CopyDir == nil {
+		cfg.CopyDir = func() string { return "" }
+	}
+	if cfg.FreeSpace == nil {
+		cfg.FreeSpace = func(p string) (uint64, error) {
+			u, err := diskspace.Of(p)
+			return u.Free, err
+		}
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -113,7 +163,8 @@ func New(cfg Config) *Exporter {
 }
 
 // Run exports every Interval and shortly after local midnight until ctx is
-// done. Passes are skipped while the engine is down.
+// done, and then updates the extra copy. Exports are skipped while the
+// engine is down; a failing copy is retried every CopyRetry.
 func (e *Exporter) Run(ctx context.Context) {
 	for {
 		if e.cfg.Ready() {
@@ -121,7 +172,15 @@ func (e *Exporter) Run(ctx context.Context) {
 				e.cfg.Log.Warn("backup export failed", "err", err)
 			}
 		}
-		t := time.NewTimer(e.nextWait())
+		copyErr := e.Copy(ctx)
+		if copyErr != nil && ctx.Err() == nil && !errors.Is(copyErr, ErrNotConnected) {
+			e.cfg.Log.Warn("extra backup copy failed", "err", copyErr)
+		}
+		wait := e.nextWait()
+		if copyErr != nil {
+			wait = min(wait, e.cfg.CopyRetry)
+		}
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -133,7 +192,7 @@ func (e *Exporter) Run(ctx context.Context) {
 	}
 }
 
-// Kick asks Run for a pass now.
+// Kick asks Run for a pass now (e.g. after the folders changed).
 func (e *Exporter) Kick() {
 	select {
 	case e.kick <- struct{}{}:
@@ -159,11 +218,11 @@ func (e *Exporter) Export(ctx context.Context) error {
 	e.run.Lock()
 	defer e.run.Unlock()
 	dir := e.cfg.Dir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	e.loadState(dir)
+	if err := ensureDir(dir); err != nil {
 		e.fail(err)
 		return err
 	}
-	e.loadState(dir)
 	err := e.export(ctx, dir)
 	if err != nil {
 		e.fail(err)
@@ -172,12 +231,48 @@ func (e *Exporter) Export(ctx context.Context) error {
 	if err == nil {
 		e.state.LastError, e.state.LastErrorAt = "", time.Time{}
 	}
-	st := e.state
 	e.mu.Unlock()
-	if serr := writeJSONFile(filepath.Join(dir, StateFile), st); serr != nil && err == nil {
+	if serr := e.saveState(dir); serr != nil && err == nil {
 		err = serr
 	}
 	return err
+}
+
+// ensureDir creates the backup folder, but only below an existing parent:
+// a folder on a drive that is not connected must not be created on the
+// boot disk under its mount point.
+func ensureDir(dir string) error {
+	if fi, err := os.Stat(dir); err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("backup folder %s is not a folder", dir)
+		}
+		return nil
+	}
+	if fi, err := os.Stat(filepath.Dir(dir)); err != nil || !fi.IsDir() {
+		return fmt.Errorf("backup folder %s is not available (is its drive connected?)", dir)
+	}
+	return os.Mkdir(dir, 0o755)
+}
+
+// saveState writes the current state to dir/export-state.json.
+func (e *Exporter) saveState(dir string) error {
+	e.save.Lock()
+	defer e.save.Unlock()
+	e.mu.Lock()
+	st := e.state
+	if st.Copy != nil {
+		c := *st.Copy
+		st.Copy = &c
+	}
+	same := e.dir == dir
+	e.mu.Unlock()
+	if !same {
+		return nil
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(dir, StateFile), st)
 }
 
 func (e *Exporter) fail(err error) {
@@ -210,7 +305,14 @@ func (e *Exporter) export(ctx context.Context, dir string) error {
 
 	var errs []error
 	for _, s := range pending {
-		if err := e.exportSet(ctx, dir, s); err != nil {
+		err := e.exportSet(ctx, dir, s)
+		if errors.Is(err, client.ErrNotFound) {
+			// The engine rotated it out (backup.sh keeps a few) while this
+			// pass ran; a newer set replaced it.
+			e.cfg.Log.Warn("backup left the engine before it was copied out", "id", s.ID)
+			err = nil
+		}
+		if err != nil {
 			e.cfg.Log.Warn("backup export failed", "id", s.ID, "err", err)
 			errs = append(errs, fmt.Errorf("backup %s: %w", s.ID, err))
 			if ctx.Err() != nil {
@@ -256,15 +358,14 @@ func (e *Exporter) exportSet(ctx context.Context, dir string, s protocol.BackupS
 
 	e.mu.Lock()
 	e.state.LastExported, e.state.VerifiedAt = s.ID, e.cfg.Now()
-	st := e.state
 	e.mu.Unlock()
-	if err := writeJSONFile(filepath.Join(dir, StateFile), st); err != nil {
+	if err := e.saveState(dir); err != nil {
 		return err
 	}
 	e.cfg.Log.Info("backup copied out", "id", s.ID, "dir", final)
 
 	var delErr error
-	if err := e.cfg.Agent.DeleteBackup(ctx, s.ID); err != nil {
+	if err := e.cfg.Agent.DeleteBackup(ctx, s.ID); err != nil && !errors.Is(err, client.ErrNotFound) {
 		delErr = fmt.Errorf("copied, but deleting it in the engine failed: %w", err)
 	}
 	// Older host sets can go once this one is verified on the host, whether
@@ -275,6 +376,9 @@ func (e *Exporter) exportSet(ctx context.Context, dir string, s protocol.BackupS
 // download streams every file of s into dir/<id>.partial, verifies it from
 // disk and renames it to dir/<id>.
 func (e *Exporter) download(ctx context.Context, dir string, s protocol.BackupSet) error {
+	if err := e.checkSpace(dir, s.Files); err != nil {
+		return err
+	}
 	partial := filepath.Join(dir, s.ID+partialSuffix)
 	if err := os.RemoveAll(partial); err != nil {
 		return err
@@ -327,6 +431,27 @@ func (e *Exporter) downloadFile(ctx context.Context, dir, id string, bf protocol
 		err = cerr
 	}
 	return err
+}
+
+// checkSpace fails early, with a clear message, when dir has no room for
+// files.
+func (e *Exporter) checkSpace(dir string, files []protocol.BackupFile) error {
+	var need uint64
+	for _, f := range files {
+		need += uint64(max(f.Size, 0))
+	}
+	free, err := e.cfg.FreeSpace(dir)
+	if err != nil || free >= need {
+		return nil // the copy itself reports a full disk
+	}
+	return fmt.Errorf("not enough space in %s: the backup needs %s, %s free", dir, mib(need), mib(free))
+}
+
+func mib(n uint64) string {
+	if n >= 10<<30 {
+		return fmt.Sprintf("%d GB", n>>30)
+	}
+	return fmt.Sprintf("%d MB", (n+(1<<20)-1)>>20)
 }
 
 func validSet(s protocol.BackupSet) error {
@@ -487,14 +612,41 @@ func (e *Exporter) Status() api.BackupStatus {
 	if len(e.pending) > 0 {
 		st.OldestPendingAt = e.pending[0].CreatedAt
 	}
-	st.Critical = st.Pending > api.MaxPendingBackups
+	st.Critical = st.Pending >= api.MaxPendingBackups
 	switch {
 	case st.Critical:
-		st.Message = fmt.Sprintf("%d backups are waiting in the engine; not copied out since %s", st.Pending, since(st))
+		st.Message = fmt.Sprintf("Backup not copied out since %s. %d backups are waiting in the engine, which keeps no more: the next one replaces the oldest.", since(st), st.Pending)
 	case st.LastError != "":
-		st.Message = "not copied out since " + since(st)
+		st.Message = "Backup not copied out since " + since(st)
 	}
+	st.Copy = e.copyStatus()
 	return st
+}
+
+// copyStatus reports the extra copy; e.mu is held.
+func (e *Exporter) copyStatus() *api.BackupCopyStatus {
+	cdir := e.cfg.CopyDir()
+	if cdir == "" {
+		return nil
+	}
+	c := &api.BackupCopyStatus{Dir: cdir, Connected: true}
+	cs := e.state.Copy
+	if cs == nil || cs.Dir != cdir {
+		return c
+	}
+	c.LastCopied, c.CopiedAt = cs.LastCopied, cs.CopiedAt
+	c.LastError, c.LastErrorAt, c.Connected = cs.LastError, cs.LastErrorAt, !cs.Missing
+	last := "never"
+	if !cs.CopiedAt.IsZero() {
+		last = cs.CopiedAt.Local().Format(time.DateTime)
+	}
+	switch {
+	case cs.Missing:
+		c.Message = fmt.Sprintf("The backup copy folder %s isn't connected; last copied %s. It is copied when the folder is back.", cdir, last)
+	case cs.LastError != "":
+		c.Message = fmt.Sprintf("Copying the backup to %s failed; last copied %s.", cdir, last)
+	}
+	return c
 }
 
 func since(st api.BackupStatus) string {
@@ -567,4 +719,164 @@ func (e *Exporter) List(ctx context.Context) (api.BackupList, error) {
 	}
 	l.Engine = append(l.Engine, sets...)
 	return l, nil
+}
+
+// Copy copies the newest host set to the copy folder, if one is set: into
+// <copy>/<id>.partial, verified there, renamed to <copy>/<id>, and only then
+// are older sets there deleted. The folder is never created: while it is
+// missing, Copy returns ErrNotConnected and the state keeps the last copy.
+func (e *Exporter) Copy(ctx context.Context) error {
+	e.copy.Lock()
+	defer e.copy.Unlock()
+	dir, cdir := e.cfg.Dir(), e.cfg.CopyDir()
+	e.loadState(dir)
+	e.mu.Lock()
+	cs := e.state.Copy
+	switch {
+	case cdir == "" && cs == nil:
+		e.mu.Unlock()
+		return nil
+	case cdir == "":
+		e.state.Copy = nil
+	case cs == nil || cs.Dir != cdir:
+		cs = &CopyState{Dir: cdir}
+	default:
+		c := *cs
+		cs = &c
+	}
+	e.mu.Unlock()
+	if cdir == "" {
+		return e.saveState(dir)
+	}
+
+	id, err := e.copySet(ctx, dir, cs)
+	now := e.cfg.Now()
+	cs.Missing = errors.Is(err, ErrNotConnected)
+	if err != nil {
+		cs.LastError, cs.LastErrorAt = err.Error(), now
+	} else {
+		cs.LastError, cs.LastErrorAt = "", time.Time{}
+		if id != "" && id != cs.LastCopied {
+			cs.LastCopied, cs.CopiedAt = id, now
+		}
+	}
+	e.mu.Lock()
+	e.state.Copy = cs
+	e.mu.Unlock()
+	if serr := e.saveState(dir); serr != nil && err == nil && !errors.Is(serr, os.ErrNotExist) {
+		err = serr
+	}
+	return err
+}
+
+// copySet brings the copy folder up to the newest host set and returns its
+// id ("" when the host has none yet).
+func (e *Exporter) copySet(ctx context.Context, dir string, cs *CopyState) (string, error) {
+	cdir := cs.Dir
+	if fi, err := os.Stat(cdir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%s %w", cdir, ErrNotConnected)
+	}
+	sets, err := HostSets(dir)
+	if err != nil {
+		return "", err
+	}
+	if len(sets) == 0 {
+		return "", nil
+	}
+	newest := sets[0]
+	m, err := ReadManifest(newest.Path, newest.ID)
+	if err != nil {
+		return "", err
+	}
+	final := filepath.Join(cdir, m.ID)
+	cleanPartials(cdir, e.cfg.Log)
+	_, statErr := os.Stat(filepath.Join(final, protocol.BackupManifestName))
+	switch {
+	case statErr == nil && cs.LastCopied == m.ID:
+		// Verified when it was copied; re-reading a whole set from a slow
+		// drive every pass is not worth it.
+	case statErr == nil && VerifySet(final, m) == nil:
+	default:
+		if err := os.RemoveAll(final); err != nil {
+			return "", err
+		}
+		if err := e.copyFiles(ctx, newest.Path, cdir, m); err != nil {
+			return "", err
+		}
+		e.cfg.Log.Info("backup copied to the copy folder", "id", m.ID, "dir", final)
+	}
+	return m.ID, prune(cdir, m, e.cfg.Log)
+}
+
+// copyFiles copies set m from src into cdir/<id>.partial, verifies it from
+// disk and renames it to cdir/<id>.
+func (e *Exporter) copyFiles(ctx context.Context, src, cdir string, m protocol.BackupManifest) error {
+	if err := e.checkSpace(cdir, m.Files); err != nil {
+		return err
+	}
+	partial := filepath.Join(cdir, m.ID+partialSuffix)
+	if err := os.Mkdir(partial, 0o755); err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if !done {
+			_ = os.RemoveAll(partial)
+		}
+	}()
+	for _, f := range m.Files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := copyFile(ctx, filepath.Join(src, f.Name), filepath.Join(partial, f.Name)); err != nil {
+			return err
+		}
+	}
+	if err := writeJSONFile(filepath.Join(partial, protocol.BackupManifestName), m); err != nil {
+		return err
+	}
+	if err := VerifySet(partial, m); err != nil {
+		return err
+	}
+	if err := syncDir(partial); err != nil {
+		return err
+	}
+	if err := os.Rename(partial, filepath.Join(cdir, m.ID)); err != nil {
+		return err
+	}
+	done = true
+	return syncDir(cdir)
+}
+
+func copyFile(ctx context.Context, src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, ctxReader{ctx, in})
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// ctxReader stops a long copy when ctx is done.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }

@@ -928,10 +928,13 @@ func (c *Coordinator) commit(j *Journal) error {
 		in.Care = &InstalledCare{Version: j.Care.Version, ReleasedAt: j.Care.ReleasedAt, Images: j.Care.Images}
 		in.Plugins = installedPlugins(j)
 		in.Frontend = installedFrontend(j)
+		in.PreviousImages = j.Rollback.PreviousImages
 	case ComponentPlugins:
 		in.Plugins = installedPlugins(j)
+		in.PreviousImages = j.Rollback.PreviousImages
 	case ComponentFrontend:
 		in.Frontend = installedFrontend(j)
+		in.PreviousImages = j.Rollback.PreviousImages
 	case feed.ComponentEngine:
 		in.Engine = &InstalledEngine{Version: j.Engine.Version, DataSchema: j.Engine.DataSchema, SHA256: j.Engine.SHA256}
 	}

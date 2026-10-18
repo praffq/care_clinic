@@ -90,11 +90,48 @@ export type MDNSStatus = {
   last_error?: string;
 };
 
+/** The extra backup copy to a USB drive or network share. */
+export type BackupCopyStatus = {
+  dir: string;
+  last_copied?: string;
+  copied_at?: string;
+  connected: boolean;
+  last_error?: string;
+  last_error_at?: string;
+  message?: string;
+};
+
+/** The service's backup export: sets copied out of the engine into dir. */
+export type BackupStatus = {
+  dir: string;
+  last_exported?: string;
+  verified_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+  checked_at?: string;
+  /** Complete sets still in the engine; at 2 the status is critical. */
+  pending: number;
+  oldest_pending_at?: string;
+  critical?: boolean;
+  message?: string;
+  copy?: BackupCopyStatus;
+};
+
+/** A backup picked to restore (ChooseBackupToRestore). */
+export type RestoreChoice = {
+  set_dir: string;
+  id: string;
+  created_at: string;
+  /** The chosen recovery key file; absent means this computer's. */
+  key_path?: string;
+};
+
 export type ServiceStatus = {
   engine: EngineStatus;
   slots: { current: string; previous?: string };
   forward?: { proxy_protocol: boolean; listeners: ForwardListener[] };
   mdns?: MDNSStatus;
+  backups?: BackupStatus;
 };
 
 /** What ServiceStatus and the service-status event report. */

@@ -261,3 +261,11 @@ func (c *Client) ExportBackups(ctx context.Context) (api.BackupStatus, error) {
 	err := c.do(ctx, http.MethodPost, "/v1/backups/export", nil, &st)
 	return st, err
 }
+
+// CopyBackups copies the newest host set to the extra copy folder now and
+// returns the resulting state; a failed copy is in Copy.LastError.
+func (c *Client) CopyBackups(ctx context.Context) (api.BackupStatus, error) {
+	var st api.BackupStatus
+	err := c.do(ctx, http.MethodPost, "/v1/backups/copy", nil, &st)
+	return st, err
+}

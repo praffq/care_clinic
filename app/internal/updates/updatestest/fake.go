@@ -419,6 +419,25 @@ func (w *World) Op(ctx context.Context, op protocol.Op, result any) error {
 			return errors.New("backend image not present")
 		}
 		w.DBSchema = be
+	case protocol.ImagePrune:
+		// Like the agent: keep Keep and what the env pins.
+		keep := map[protocol.Digest]bool{}
+		for _, d := range o.Keep {
+			keep[d] = true
+		}
+		for _, d := range w.Env {
+			keep[d] = true
+		}
+		var res protocol.ImagePruneResult
+		for _, d := range slices.Sorted(maps.Keys(w.Images)) {
+			if !keep[d] {
+				delete(w.Images, d)
+				res.Removed++
+			}
+		}
+		if r, ok := result.(*protocol.ImagePruneResult); ok {
+			*r = res
+		}
 	default:
 		return fmt.Errorf("fake: op %s not supported", op.OpName())
 	}

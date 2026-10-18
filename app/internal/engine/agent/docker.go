@@ -129,6 +129,8 @@ type DockerExecutor struct {
 	// RestoreInputDir holds the uploaded restore inputs; empty uses
 	// DefaultRestoreInputDir.
 	RestoreInputDir string
+	// ReadFile reads files; nil uses os.ReadFile.
+	ReadFile func(name string) ([]byte, error)
 }
 
 var _ Executor = (*DockerExecutor)(nil)
@@ -528,17 +530,58 @@ type imageRow struct {
 	Digest     string `json:"Digest"`
 }
 
-// ImagePrune removes every image that is neither listed in op.Keep (by image
-// ID or repo digest) nor used by a container. Images in use make docker
-// refuse the removal; those are reported as skipped.
-func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) error {
-	out, err := d.capture(ctx, "image ls", Command{Args: []string{dockerBin, "image", "ls", "--digests", "--no-trunc", "--format", "{{json .}}"}})
+// pinnedDigests returns the digests of the IMAGE_<ROLE>=repo@sha256:...
+// lines of the stack env: what the stack runs now. A missing env pins
+// nothing.
+func (d *DockerExecutor) pinnedDigests() ([]string, error) {
+	read := d.ReadFile
+	if read == nil {
+		read = os.ReadFile
+	}
+	b, err := read(ComposeEnvFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || !strings.HasPrefix(k, "IMAGE_") {
+			continue
+		}
+		if _, dig, ok := strings.Cut(strings.Trim(v, `"'`), "@"); ok && strings.HasPrefix(dig, "sha256:") {
+			out = append(out, dig)
+		}
+	}
+	return out, nil
+}
+
+// ImagePrune removes every image that is neither listed in op.Keep (by image
+// ID or repo digest), nor pinned by the stack env, nor used by a container.
+// Images in use make docker refuse the removal; those are skipped. With
+// nothing to keep it refuses: that would delete the images a clinic install
+// is about to use.
+func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune, em Emitter) (protocol.ImagePruneResult, error) {
+	var res protocol.ImagePruneResult
+	pinned, err := d.pinnedDigests()
+	if err != nil {
+		return res, &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "read the stack env: " + err.Error()}
 	}
 	keep := map[string]bool{}
 	for _, k := range op.Keep {
 		keep[string(k)] = true
+	}
+	for _, k := range pinned {
+		keep[k] = true
+	}
+	if len(keep) == 0 {
+		return res, &protocol.OpError{Code: protocol.CodeOpFailed, Message: "no image to keep: the clinic is not configured, so nothing is pruned"}
+	}
+	out, err := d.capture(ctx, "image ls", Command{Args: []string{dockerBin, "image", "ls", "--digests", "--no-trunc", "--format", "{{json .}}"}})
+	if err != nil {
+		return res, err
 	}
 	type image struct {
 		refs []string
@@ -552,7 +595,7 @@ func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune,
 		if err := dec.Decode(&r); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "image ls: " + err.Error()}
+			return res, &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "image ls: " + err.Error()}
 		}
 		img := images[r.ID]
 		if img == nil {
@@ -568,7 +611,6 @@ func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune,
 			img.refs = append(img.refs, r.Repository+"@"+r.Digest)
 		}
 	}
-	removed := 0
 	for _, id := range order {
 		img := images[id]
 		if img.kept {
@@ -582,17 +624,18 @@ func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune,
 		err := d.run(ctx, Command{Args: append([]string{dockerBin, "image", "rm"}, refs...), Stdout: io.Discard, Stderr: errw})
 		errw.flush()
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return res, ctx.Err()
 		}
 		if err != nil {
+			res.Skipped++
 			em.Log(protocol.LogLine{Stream: "stderr", Line: "skipped " + id + ": " + errw.last})
 			continue
 		}
-		removed++
+		res.Removed++
 		em.Log(protocol.LogLine{Stream: "stdout", Line: "removed " + id})
 	}
-	em.Progress(protocol.Progress{State: "done", Message: fmt.Sprintf("removed %d images", removed)})
-	return nil
+	em.Progress(protocol.Progress{State: "done", Message: fmt.Sprintf("removed %d images", res.Removed)})
+	return res, nil
 }
 
 func (d *DockerExecutor) DBDump(context.Context, protocol.DBDump, Emitter) (protocol.DBDumpResult, error) {

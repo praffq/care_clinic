@@ -29,8 +29,11 @@ type faultAgent struct {
 	cut string
 	// flip makes ExportBackupFile of that file write a corrupted byte but
 	// report success, as a bad disk would.
-	flip      string
-	failDel   bool
+	flip    string
+	failDel bool
+	// vanish is deleted in the engine when its export starts, as backup.sh
+	// rotating it out would.
+	vanish    string
 	exports   int
 	deletions []string
 }
@@ -38,8 +41,13 @@ type faultAgent struct {
 func (f *faultAgent) ExportBackupFile(ctx context.Context, id, file string, w io.Writer) (int64, error) {
 	f.mu.Lock()
 	f.exports++
-	cut, flip := f.cut == file, f.flip == file
+	cut, flip, vanish := f.cut == file, f.flip == file, f.vanish == id
 	f.mu.Unlock()
+	if vanish {
+		if err := f.Agent.DeleteBackup(ctx, id); err != nil {
+			return 0, err
+		}
+	}
 	if !cut && !flip {
 		return f.Agent.ExportBackupFile(ctx, id, file, w)
 	}
@@ -70,20 +78,36 @@ func (f *faultAgent) DeleteBackup(ctx context.Context, id string) error {
 }
 
 type env struct {
-	svc   *stacktest.Service
-	ag    *faultAgent
-	dir   string
-	now   time.Time
-	ready bool
-	ex    *Exporter
+	svc     *stacktest.Service
+	ag      *faultAgent
+	dir     string
+	copyDir string
+	free    map[string]uint64 // free bytes by folder; unlimited when missing
+	now     time.Time
+	ready   bool
+	ex      *Exporter
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{svc: stacktest.New(t), dir: filepath.Join(t.TempDir(), "host"), now: t0.Add(time.Hour), ready: true}
 	e.ag = &faultAgent{Agent: e.svc.Agent()}
-	e.ex = New(Config{Agent: e.ag, Dir: func() string { return e.dir }, Ready: func() bool { return e.ready }, Now: func() time.Time { return e.now }})
+	e.free = map[string]uint64{}
+	e.ex = New(e.config())
 	return e
+}
+
+func (e *env) config() Config {
+	return Config{
+		Agent: e.ag, Dir: func() string { return e.dir }, CopyDir: func() string { return e.copyDir },
+		Ready: func() bool { return e.ready }, Now: func() time.Time { return e.now },
+		FreeSpace: func(p string) (uint64, error) {
+			if n, ok := e.free[p]; ok {
+				return n, nil
+			}
+			return 1 << 40, nil
+		},
+	}
 }
 
 func sum(b string) string {
@@ -212,7 +236,7 @@ func TestExportPartialDownload(t *testing.T) {
 		t.Fatalf("engine sets = %v, deletions %v", ids, e.ag.deletions)
 	}
 	st := e.ex.Status()
-	if st.Pending != 1 || st.LastError == "" || !strings.HasPrefix(st.Message, "not copied out since ") || st.Critical {
+	if st.Pending != 1 || st.LastError == "" || !strings.HasPrefix(st.Message, "Backup not copied out since ") || st.Critical {
 		t.Fatalf("status = %+v", st)
 	}
 	if e.state(t).LastError == "" {
@@ -355,7 +379,7 @@ func TestExportCritical(t *testing.T) {
 		t.Fatal("no error")
 	}
 	st := e.ex.Status()
-	if st.Pending != 3 || !st.Critical || !strings.Contains(st.Message, "3 backups are waiting") || !st.OldestPendingAt.Equal(t0.Add(-72*time.Hour)) {
+	if st.Pending != 3 || !st.Critical || !strings.Contains(st.Message, "3 backups are waiting") || !strings.HasPrefix(st.Message, "Backup not copied out since ") || !st.OldestPendingAt.Equal(t0.Add(-72*time.Hour)) {
 		t.Fatalf("status = %+v", st)
 	}
 	// The host keeps exactly one verified set even while deletes fail.
@@ -370,7 +394,7 @@ func TestExportEngineDown(t *testing.T) {
 	if err := e.ex.Export(t.Context()); !errors.Is(err, ErrEngineUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
-	if st := e.ex.Status(); st.Message != "not copied out since the service started" {
+	if st := e.ex.Status(); st.Message != "Backup not copied out since the service started" {
 		t.Fatalf("status = %+v", st)
 	}
 }

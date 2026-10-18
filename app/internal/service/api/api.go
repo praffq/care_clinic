@@ -91,15 +91,34 @@ type BackupStatus struct {
 	// OldestPendingAt.
 	Pending         int       `json:"pending"`
 	OldestPendingAt time.Time `json:"oldest_pending_at,omitzero"`
-	// Critical is set when more than MaxPendingBackups sets are waiting.
+	// Critical is set when MaxPendingBackups sets are waiting: the engine
+	// keeps no more, so the next set replaces the oldest one there.
 	Critical bool `json:"critical,omitempty"`
-	// Message explains a problem, e.g. "not copied out since ...".
+	// Message explains a problem, e.g. "Backup not copied out since ...".
 	Message string `json:"message,omitempty"`
+	// Copy is the extra copy to BackupCopyDir; nil when none is set.
+	Copy *BackupCopyStatus `json:"copy,omitempty"`
 }
 
-// MaxPendingBackups is how many sets may wait in the engine before the
-// backup status turns critical.
+// MaxPendingBackups is how many complete sets the engine keeps while the
+// host cannot copy them out (backup.sh KEEP_SETS); at this many the backup
+// status is critical.
 const MaxPendingBackups = 2
+
+// BackupCopyStatus is the extra copy of the newest host set to a removable
+// drive or network share (ServiceConfig.BackupCopyDir).
+type BackupCopyStatus struct {
+	Dir string `json:"dir"`
+	// LastCopied is the newest set copied there and verified, at CopiedAt.
+	LastCopied string    `json:"last_copied,omitempty"`
+	CopiedAt   time.Time `json:"copied_at,omitzero"`
+	// Connected reports whether Dir was there at the last attempt.
+	Connected   bool      `json:"connected"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+	// Message explains a problem, e.g. "... isn't connected; last copied ...".
+	Message string `json:"message,omitempty"`
+}
 
 // HostBackup is an exported set in the host backup directory.
 type HostBackup struct {
@@ -161,6 +180,10 @@ type ServiceConfig struct {
 	ProxyProtocol bool `json:"proxy_protocol"`
 	// BackupDir is the host directory backups are exported to.
 	BackupDir string `json:"backup_dir"`
+	// BackupCopyDir, when set, gets an extra copy of the newest set: a
+	// folder on a removable drive or network share. It is never created;
+	// while it is missing the copy waits for it.
+	BackupCopyDir string `json:"backup_copy_dir,omitempty"`
 }
 
 // ServiceConfigUpdate is the body of POST /v1/service/config; omitted
@@ -169,6 +192,8 @@ type ServiceConfigUpdate struct {
 	MDNSName      *string `json:"mdns_name,omitempty"`
 	ProxyProtocol *bool   `json:"proxy_protocol,omitempty"`
 	BackupDir     *string `json:"backup_dir,omitempty"`
+	// BackupCopyDir "" turns the extra copy off.
+	BackupCopyDir *string `json:"backup_copy_dir,omitempty"`
 }
 
 // SlotList is GET /v1/engine/slots.

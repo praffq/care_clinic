@@ -10,14 +10,20 @@
 # certificate, and manifest.json listing each file's size and SHA-256. Sets are
 # built in /backups/.partial-<id>/ and renamed into place once complete, so the
 # agent never lists a half-written set. The host service copies complete sets
-# out and deletes them here; there is no retention in the VM.
+# out and deletes them here. If it can't (the host backup folder is full or
+# missing), at most KEEP_SETS complete sets wait here: a new set that succeeds
+# rotates the oldest out, and a set that has no room makes room by deleting
+# the oldest, but never the newest complete set. The host service reports the
+# backlog as critical.
 set -eu
 
-BACKUP_DIR=/backups
-MINIO_DIR=/minio-data
-CERT=/keys/backup-cert.pem
+# The CARE_BACKUP_* overrides are for tests.
+BACKUP_DIR=${CARE_BACKUP_ROOT:-/backups}
+MINIO_DIR=${CARE_BACKUP_MINIO:-/minio-data}
+CERT=${CARE_BACKUP_CERT:-/keys/backup-cert.pem}
 INPUT_DIR=/restore-input
 NEXT_FILE="$BACKUP_DIR/.next-backup"
+KEEP_SETS=2
 
 DB_HOST="${POSTGRES_HOST:-db}"
 DB_PORT="${POSTGRES_PORT:-5432}"
@@ -52,6 +58,30 @@ wait_for_database() {
 
 mb() { echo "$(( $1 / 1024 )) MB"; }
 free_kb() { df -Pk "$BACKUP_DIR" | awk 'NR == 2 { print $4 }'; }
+
+# complete_sets: the complete sets, oldest first.
+complete_sets() {
+	# shellcheck disable=SC2012
+	ls -1tr "$BACKUP_DIR"/*/manifest.json 2>/dev/null | while IFS= read -r m; do
+		d=${m%/manifest.json}
+		echo "${d##*/}"
+	done
+}
+
+# drop_oldest <keep>: delete the oldest complete sets until <keep> are left
+# (never fewer than one).
+drop_oldest() {
+	keep=$1
+	[ "$keep" -ge 1 ] || keep=1
+	n=$(complete_sets | wc -l | tr -d ' ')
+	for old in $(complete_sets); do
+		[ "$n" -gt "$keep" ] || break
+		valid_id "$old" || continue
+		log "the host has not copied $n sets out; deleting the oldest, $old"
+		rm -rf "${BACKUP_DIR:?}/$old"
+		n=$((n - 1))
+	done
+}
 
 # The set needs room for the plain and sealed copy of the dump and the archive.
 check_space() {
@@ -104,7 +134,13 @@ make_set() {
 	log "===== backup set $id ====="
 	clean_scratch
 	wait_for_database || return 1
-	check_space || return 1
+	if ! check_space; then
+		# Sets the host has not copied out may be what fills the disk; keep
+		# the newest and try again.
+		[ "$(complete_sets | wc -l | tr -d ' ')" -gt 1 ] || return 1
+		drop_oldest 1
+		check_space || return 1
+	fi
 
 	work="$BACKUP_DIR/.partial-$id"
 	mkdir -p "$work"
@@ -134,6 +170,7 @@ make_set() {
 	fi
 	sync
 	log "backup set $id: SUCCESS ($(du -sh "$final" | cut -f1))"
+	drop_oldest "$KEEP_SETS"
 }
 
 with_lock() (

@@ -69,8 +69,12 @@ type Installed struct {
 	Care    *InstalledCare    `json:"care,omitempty"`
 	Plugins *InstalledPlugins `json:"plugins,omitempty"`
 	// Frontend, when set, holds the clinic's frontend settings.
-	Frontend  *InstalledFrontend `json:"frontend,omitempty"`
-	UpdatedAt time.Time          `json:"updated_at,omitzero"`
+	Frontend *InstalledFrontend `json:"frontend,omitempty"`
+	// PreviousImages is what the stack env pinned before the last CARE,
+	// plugins or frontend update: PruneImages keeps them so a rollback
+	// needs no download.
+	PreviousImages []Image   `json:"previous_images,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitzero"`
 }
 
 // InstalledFrontend is the clinic's frontend settings: REACT_* build
