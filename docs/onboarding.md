@@ -62,11 +62,12 @@ administrator privileges`) whose script:
 4. runs `launchctl bootstrap system`.
 
 The app then waits up to a minute for the control socket
-`/var/run/care-clinic/control.sock` to answer. The socket belongs to the
-`care-clinic` group, and group membership only applies to new logins: if the
-socket says "permission denied", the app asks the user to **log out of the
-Mac and back in**, then open CARE Clinic again. Declining the prompt installs
-nothing.
+`/var/run/care-clinic/control.sock` to answer. Group membership normally
+applies only to new logins, so the socket is not group-restricted on disk
+(`0666`): the service checks each caller's uid itself and admits root and
+members of `care-clinic`, reading membership from the user database as well as
+the caller's login groups. The installing user can use the app straight away,
+with no log out. Declining the prompt installs nothing.
 
 Developers can install the same service with `scripts/service-macos.sh
 install` or `install-built` (needs sudo); see

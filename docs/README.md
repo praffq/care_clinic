@@ -46,7 +46,7 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | "When do I enter my computer password, and what does Cancel do?" | [Permission prompts](desktop-workflows.md#permission-prompts) and [the confirmation protocol](wails-application.md#in-window-permission-confirmations). |
 | "Does Advanced really lock after 15 minutes?" | [Advanced's unlock window](desktop-workflows.md#advanced). |
 | "Why are actions still locked after the CARE Clinic installer opens?" | [App update handoff](desktop-workflows.md#app-updates). |
-| "Why does setup ask for my Mac password, or to log out?" | [Installing the service](onboarding.md#installing-the-service). |
+| "Why does setup ask for my Mac password?" | [Installing the service](onboarding.md#installing-the-service). |
 | "Who keeps the clinic running when the app is closed?" | [The care-clinic-service](../app/cmd/care-clinic-service/README.md). |
 | "Why does an operation say something else is running?" | [Concurrency and job protocol](wails-application.md#concurrency-and-job-protocol). |
 | "Which `backend.env` does the editor read?" | [Configuration and settings](configuration-and-settings.md). |

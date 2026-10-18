@@ -32,8 +32,7 @@ yet. The full sequence is in [server onboarding](onboarding.md).
 1. **Computer checks.** CARE checks virtualization, memory, free disk space
    and the CARE Clinic service. Each row shows its result and detail; warnings
    don't block. If the service is missing, **Install service** shows one macOS
-   administrator prompt, then the checks run again. If CARE then asks you to
-   log out and back in, do so and reopen CARE Clinic. **Continue** is enabled
+   administrator prompt, then the checks run again. **Continue** is enabled
    once nothing fails.
 2. **Clinic address.** Choose the local clinic name. CARE validates it and
    checks for another visible server using it. Keep other clinic servers awake

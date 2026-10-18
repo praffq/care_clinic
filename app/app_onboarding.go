@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os/user"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/progress"
@@ -89,10 +88,6 @@ func (a *App) waitServiceReachable(timeout time.Duration) error {
 		}
 		select {
 		case <-ctx.Done():
-			if strings.Contains(err.Error(), "permission denied") {
-				return errors.New("the service is installed, but this session can't reach it yet; " +
-					"log out of this Mac and back in (so it picks up the care-clinic group), then open CARE Clinic again")
-			}
 			return fmt.Errorf("the service was installed but isn't answering: %w", err)
 		case <-time.After(pollInterval(timeout)):
 		}
