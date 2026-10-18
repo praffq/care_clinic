@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
-import { continueServerChecks } from "./helpers/setup";
+import { continueServerChecks, saveRecoveryCodes } from "./helpers/setup";
 
 const dialog = (page: Page) => page.getByRole("alertdialog");
 const calls = (page: Page, method: string) => page.evaluate((name) =>
@@ -427,6 +427,7 @@ async function installDemo(page: Page, fail = false) {
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByLabel("Password", { exact: true }).fill("TestChosen789");
   await page.getByLabel("Confirm password", { exact: true }).fill("TestChosen789");
+  await saveRecoveryCodes(page);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Install", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();

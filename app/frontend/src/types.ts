@@ -47,6 +47,7 @@ export type HostCheck = {
   action?: "install-service";
 };
 export type HostReport = { checks: HostCheck[]; ready: boolean };
+export type SetupRecoveryStatus = { codes_saved: boolean; codes_path: string; codes_problem: "" | "missing" | "unreadable" | "mismatch" };
 
 export type SummaryLevel = "ok" | "busy" | "warn" | "error";
 export type Summary = {

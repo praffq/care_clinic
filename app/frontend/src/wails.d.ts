@@ -22,6 +22,7 @@ import type {
   QuitRequest,
   RestoreChoice,
   ServiceState,
+  SetupRecoveryStatus,
   StorageState,
   SystemInfo,
   UpdateChecks,
@@ -91,6 +92,10 @@ declare global {
           /** Resolves to the saved sheet's path, or "" when the save dialog was cancelled. */
           SaveAdminRecoveryCodes(adminPassword: string): Promise<string>;
           ResetAdminPassword(code: string, newPassword: string): Promise<void>;
+          GetSetupRecoveryStatus(): Promise<SetupRecoveryStatus>;
+          SaveSetupRecoveryCodes(): Promise<string>;
+          OpenSetupRecoveryCodes(): Promise<void>;
+          OpenSetupRecoveryFolder(): Promise<void>;
           StorageStatus(): Promise<StorageState>;
           CheckCareHealth(): Promise<CareHealth>;
           /** Resolves to the saved key's path, or "" when the save dialog was cancelled. */

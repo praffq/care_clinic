@@ -1,7 +1,7 @@
 import type {
   AppState, AppUpdate, AppUpdateOutcome, AppUpdateProgress, BackupSet, BackupStatus, CareHealth, CheckResult, ClientPreflight,
   ClientReachability, ClinicUpdates, ConfirmationRequest, HistoryEntry, HomeAccess, HostCheck, HostReport, Journal, NetworkStatus,
-  Plugin, PluginPreset, QuitRequest, RestoreChoice, Section, ServiceState, StepRecord, StorageState, SystemInfo,
+  Plugin, PluginPreset, QuitRequest, RestoreChoice, Section, ServiceState, SetupRecoveryStatus, StepRecord, StorageState, SystemInfo,
   UpdateChecks,
 } from "../../src/types";
 
@@ -33,6 +33,9 @@ type Fixtures = {
   recoveryGeneration: number;
   recoveryFailures: number;
   recoveryRetryAfter: number;
+  setupCodesPath: string;
+  setupCodesProblem: SetupRecoveryStatus["codes_problem"];
+  setupCodesTarget: string;
   webUsers: Record<string, string>;
   storage: StorageState;
   health: CareHealth;
@@ -173,6 +176,9 @@ export function installTestHost() {
     recoveryGeneration: 1,
     recoveryFailures: 0,
     recoveryRetryAfter: 0,
+    setupCodesPath: "",
+    setupCodesProblem: "",
+    setupCodesTarget: "/Users/test/Documents/CARE-care-clinic-admin-codes.txt",
     webUsers: { admin: "ClinicTest123", nurse: "NurseTest123" },
     storage: {
       level: "ok", title: "Enough free space.",
@@ -610,6 +616,32 @@ export function installTestHost() {
       fixtures.recoveryFailures = 0;
       fixtures.recoveryRetryAfter = 0;
       emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+    },
+    GetSetupRecoveryStatus: async () => {
+      requireServer();
+      return { codes_saved: !!fixtures.setupCodesPath, codes_path: fixtures.setupCodesPath, codes_problem: fixtures.setupCodesPath ? fixtures.setupCodesProblem : "" };
+    },
+    SaveSetupRecoveryCodes: async () => {
+      requireServer();
+      if (state.setup_done || fixtures.setupStarted) throw new Error("recovery setup is locked after installation starts; retry installation with the recovery codes already saved");
+      const target = fixtures.setupCodesTarget;
+      if (!target) return "";
+      fixtures.recoveryCodes = sampleCodes(++fixtures.recoveryGeneration);
+      fixtures.setupCodesPath = target;
+      fixtures.setupCodesProblem = "";
+      emit("admin-recovery-codes-changed", fixtures.recoveryCodes.filter(Boolean).length);
+      return target;
+    },
+    OpenSetupRecoveryCodes: async () => {
+      requireServer();
+      if (!fixtures.setupCodesPath || fixtures.setupCodesProblem) throw new Error("the recovery codes file is unavailable; save a fresh set before continuing");
+      logs.push(`Test only: ${fixtures.setupCodesPath} would open.`);
+    },
+    OpenSetupRecoveryFolder: async () => {
+      requireServer();
+      if (state.platform !== "windows") throw new Error("opening the recovery codes folder is available only on Windows");
+      if (!fixtures.setupCodesPath || fixtures.setupCodesProblem) throw new Error("the recovery codes file is unavailable; save a fresh set before continuing");
+      logs.push(`Test only: the folder of ${fixtures.setupCodesPath} would open.`);
     },
     ResetWebPassword: async (username: string, next: string, password: string) => {
       requireAdmin(password);
