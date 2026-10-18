@@ -32,7 +32,15 @@ func TestResolve(t *testing.T) {
 	root := t.TempDir()
 	fallback := filepath.Join(root, "logs")
 
-	d, notes, err := Resolve(root, fallback)
+	resolve := func() (*logdir.Dir, []string, error) {
+		d, notes, err := Resolve(root, fallback)
+		if d != nil {
+			t.Cleanup(func() { d.Close() })
+		}
+		return d, notes, err
+	}
+
+	d, notes, err := resolve()
 	if err != nil || d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], UserFile) {
 		t.Fatalf("no log-user: %v %v %q", d, err, notes)
 	}
@@ -40,7 +48,7 @@ func TestResolve(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, UserFile), []byte("../../etc\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if d, notes, _ := Resolve(root, fallback); d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], "not a valid user") {
+	if d, notes, _ := resolve(); d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], "not a valid user") {
 		t.Fatalf("invalid log-user: %v %q", d.Path(), notes)
 	}
 
@@ -55,12 +63,12 @@ func TestResolve(t *testing.T) {
 		}
 		return userDir, nil, os.MkdirAll(userDir, 0o755)
 	}
-	if d, notes, err := Resolve(root, fallback); err != nil || d.Path() != userDir || len(notes) != 0 {
+	if d, notes, err := resolve(); err != nil || d.Path() != userDir || len(notes) != 0 {
 		t.Fatalf("user folder: %v %v %q", d.Path(), err, notes)
 	}
 
 	forUser = func(string) (string, *logdir.Owner, error) { return "", nil, errors.New("no such user") }
-	if d, notes, _ := Resolve(root, fallback); d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], "no such user") {
+	if d, notes, _ := resolve(); d.Path() != fallback || len(notes) != 1 || !strings.Contains(notes[0], "no such user") {
 		t.Fatalf("unknown user: %v %q", d.Path(), notes)
 	}
 }

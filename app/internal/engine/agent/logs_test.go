@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -73,6 +74,9 @@ func startSystem(t *testing.T, files map[string]string, op protocol.LogsSystem) 
 }
 
 func TestLogsSystemFollowsRotationAndTruncation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the guest is Linux; Windows can't rename a file another handle has open")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "messages")
 	appendFile(t, path, "one\ntwo\n")
@@ -117,6 +121,9 @@ func TestLogsSystemFollowsRotationAndTruncation(t *testing.T) {
 }
 
 func TestLogsSystemResumesFromRotatedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the guest is Linux; Windows can't rename a file another handle has open")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "messages")
 	appendFile(t, path, "copied\nnot yet copied\n")
