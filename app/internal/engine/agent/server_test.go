@@ -215,9 +215,9 @@ func TestOpErrorFrames(t *testing.T) {
 		wantCode string
 		wantMsg  string
 	}{
-		{"plain", errors.New("boom token=abc123"), CodeOpFailed, "boom token=***"},
-		{"typed", &protocol.OpError{Code: CodeCommandFailed, Message: "x: Authorization: Bearer abc.def"}, CodeCommandFailed, "x: Authorization: Bearer ***"},
-		{"not implemented", ErrNotImplemented, CodeNotImplemented, ErrNotImplemented.Message},
+		{"plain", errors.New("boom token=abc123"), protocol.CodeOpFailed, "boom token=***"},
+		{"typed", &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "x: Authorization: Bearer abc.def"}, protocol.CodeCommandFailed, "x: Authorization: Bearer ***"},
+		{"not implemented", ErrNotImplemented, protocol.CodeNotImplemented, ErrNotImplemented.Message},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t)
@@ -505,7 +505,7 @@ func TestBackups(t *testing.T) {
 
 	resp = e.do(t, "GET", "/v1/backups/nightly-1/db.dump", nil)
 	expectStatus(t, resp, 200)
-	if resp.Header.Get("X-Care-SHA256") != sha || readAll(t, resp.Body) != "DUMP" {
+	if resp.Header.Get(protocol.BackupSHA256Header) != sha || readAll(t, resp.Body) != "DUMP" {
 		t.Fatal("export mismatch")
 	}
 	for _, p := range []string{
@@ -550,7 +550,7 @@ func TestDiagnosticsRedacted(t *testing.T) {
 	if strings.Contains(raw, "topsecret") || strings.Contains(raw, ":pw@") {
 		t.Fatalf("diagnostics leaked secrets: %s", raw)
 	}
-	var rep DiagnosticsReport
+	var rep protocol.DiagnosticsReport
 	if err := json.Unmarshal([]byte(raw), &rep); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +717,7 @@ func TestMutatingOpMaxDuration(t *testing.T) {
 	resp := e.do(t, "POST", "/v1/ops/stack.up", nil)
 	expectStatus(t, resp, 200)
 	frames := readFrames(t, resp.Body)
-	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != CodeCanceled {
+	if len(frames) != 1 || frames[0].Error == nil || frames[0].Error.Code != protocol.CodeCanceled {
 		t.Fatalf("frames = %+v", frames)
 	}
 }

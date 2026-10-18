@@ -168,7 +168,7 @@ func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	w.Header().Set("X-Care-SHA256", m.Files[i].SHA256)
+	w.Header().Set(protocol.BackupSHA256Header, m.Files[i].SHA256)
 	serveFile(w, f)
 }
 

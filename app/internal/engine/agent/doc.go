@@ -16,7 +16,7 @@
 //	GET    /v1/backups                []protocol.BackupSet
 //	GET    /v1/backups/{id}/{file}    stream a file listed in the set's manifest
 //	DELETE /v1/backups/{id}           remove a backup set
-//	GET    /v1/diagnostics            DiagnosticsReport (redacted)
+//	GET    /v1/diagnostics            protocol.DiagnosticsReport (redacted)
 //	POST   /v1/time                   protocol.TimeSync, sets the VM clock
 //	POST   /v1/shutdown               202, then powers the VM off
 //

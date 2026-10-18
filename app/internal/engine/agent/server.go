@@ -28,9 +28,6 @@ const (
 	DefaultMaxImageBytes        = 32 << 30
 	DefaultMaxOpDuration        = 30 * time.Minute
 
-	// ParamsQuery carries image.load params, URL-encoded JSON.
-	ParamsQuery = "params"
-
 	pingTimeout = 5 * time.Second
 )
 
@@ -186,12 +183,12 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 	)
 	q := r.URL.Query()
 	if name == protocol.OpImageLoad {
-		op, err = protocol.DecodeOp(name, strings.NewReader(q.Get(ParamsQuery)))
+		op, err = protocol.DecodeOp(name, strings.NewReader(q.Get(protocol.ParamsQuery)))
 		body = http.MaxBytesReader(w, r.Body, s.cfg.MaxImageBytes)
 		// Frames are streamed while the tarball is still being read.
 		_ = http.NewResponseController(w).EnableFullDuplex()
 	} else {
-		if q.Has(ParamsQuery) {
+		if q.Has(protocol.ParamsQuery) {
 			writeJSON(w, http.StatusBadRequest, &protocol.DecodeError{Msg: "the params query parameter is only accepted for " + protocol.OpImageLoad})
 			return
 		}
@@ -249,7 +246,7 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
-		fw.finish(protocol.Frame{Error: &protocol.OpError{Code: CodeOpFailed, Message: "encode result: " + err.Error()}})
+		fw.finish(protocol.Frame{Error: &protocol.OpError{Code: protocol.CodeOpFailed, Message: "encode result: " + err.Error()}})
 		return
 	}
 	s.logf("op %s: done in %s", name, time.Since(start).Round(time.Millisecond))
@@ -304,21 +301,8 @@ func (f *frameWriter) Log(l protocol.LogLine) {
 
 func (f *frameWriter) finish(fr protocol.Frame) { f.write(fr, true) }
 
-// DiagnosticsReport is returned by GET /v1/diagnostics. Every string is
-// redacted.
-type DiagnosticsReport struct {
-	EngineVersion   string   `json:"engine_version"`
-	Busy            string   `json:"busy,omitempty"`
-	Containers      []string `json:"containers"`
-	ContainersError string   `json:"containers_error,omitempty"`
-	DiskFreeBytes   uint64   `json:"disk_free_bytes"`
-	DiskTotalBytes  uint64   `json:"disk_total_bytes"`
-	DiskError       string   `json:"disk_error,omitempty"`
-	AgentLog        []string `json:"agent_log"`
-}
-
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	rep := DiagnosticsReport{EngineVersion: s.cfg.EngineVersion, Containers: []string{}}
+	rep := protocol.DiagnosticsReport{EngineVersion: s.cfg.EngineVersion, Containers: []string{}}
 	s.mu.Lock()
 	rep.Busy = s.busy
 	s.mu.Unlock()
@@ -357,7 +341,7 @@ func (s *Server) handleTime(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.exec.SetTime(r.Context(), ts.Now); err != nil {
 		s.logf("time: %v", err)
-		writeError(w, http.StatusInternalServerError, CodeOpFailed, err.Error())
+		writeError(w, http.StatusInternalServerError, protocol.CodeOpFailed, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

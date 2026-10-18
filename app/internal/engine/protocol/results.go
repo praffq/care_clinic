@@ -94,3 +94,16 @@ type Frame struct {
 
 // Terminal reports whether the frame ends the stream.
 func (f Frame) Terminal() bool { return f.Result != nil || f.Error != nil }
+
+// DiagnosticsReport is returned by the agent's diagnostics endpoint. Every
+// string is redacted.
+type DiagnosticsReport struct {
+	EngineVersion   string   `json:"engine_version"`
+	Busy            string   `json:"busy,omitempty"`
+	Containers      []string `json:"containers"`
+	ContainersError string   `json:"containers_error,omitempty"`
+	DiskFreeBytes   uint64   `json:"disk_free_bytes"`
+	DiskTotalBytes  uint64   `json:"disk_total_bytes"`
+	DiskError       string   `json:"disk_error,omitempty"`
+	AgentLog        []string `json:"agent_log"`
+}
