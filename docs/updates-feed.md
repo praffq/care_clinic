@@ -116,8 +116,8 @@ feed is rejected.
 `feed.ResolvePlan(installed, manifest)` turns a verified manifest and the
 installed versions into a `Plan`: an ordered list of `Step`s (component, from,
 to, and the feed entry), at most one per component. It only decides; applying
-a plan, one healthy step at a time, belongs to the update coordinator. Updates
-are never automatic.
+a plan, one healthy step at a time, belongs to the update coordinator
+([updates.md](updates.md)). Updates are never automatic.
 
 Rules:
 

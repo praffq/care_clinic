@@ -36,6 +36,7 @@ commands:
   agent-op <name> [json]    run an agent op through the relay (frames on stderr)
   clinic <command>          install and drive the CARE stack (ctl clinic for help)
   backup <command>          run | list | status | restore <id> (ctl backup for help)
+  update <command>          check for and apply updates (ctl update for help)
 `
 
 func ctl(args []string) int {
@@ -65,6 +66,10 @@ func ctl(args []string) int {
 		fmt.Fprint(os.Stderr, backupUsage)
 		return 2
 	}
+	if errors.Is(err, errUpdateUsage) {
+		fmt.Fprint(os.Stderr, updateUsage)
+		return 2
+	}
 	if errors.Is(err, errUsage) {
 		fs.Usage()
 		return 2
@@ -80,10 +85,13 @@ var errUsage = errors.New("usage")
 
 func runCtl(ctx context.Context, c *control.Client, args []string) error {
 	cmd, args := args[0], args[1:]
-	if cmd == "clinic" || cmd == "backup" {
+	if cmd == "clinic" || cmd == "backup" || cmd == "update" {
 		sub := clinicCtl
-		if cmd == "backup" {
+		switch cmd {
+		case "backup":
 			sub = backupCtl
+		case "update":
+			sub = updateCtl
 		}
 		v, err := sub(ctx, c, args)
 		if err != nil || v == nil {

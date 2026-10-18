@@ -44,13 +44,16 @@ cd app && go run ./cmd/release verify --pub internal/feed/devkeys/dev.pub \
 | 1 | desktop 0.2.0, engine 0.1.0, CARE `3.1.0+be.A.fe.A` (1) | fresh install: engine 0.1.0, then CARE be.A |
 | 2 | + CARE `be.B` (newer `released_at`) (2) | CARE update be.A → be.B offered |
 | 3 | + engine 0.1.1 (3) | engine update 0.1.0 → 0.1.1 offered |
-| 4 | + CARE `be.C`, backend image intentionally broken (4) | update offered; fails its health check once applied |
+| 4 | + CARE `be.C`, backend image intentionally broken (4) | update offered; fails its health check once applied and is rolled back (database restored from the pre-update backup) |
 | 5 | rev 3 content republished later, still revision 3 | rejected as a rollback after seeing revision 4 |
 | 6 | rev 4 with one signature byte flipped | rejected: bad signature |
-| 7 | + engine 0.2.0 requiring desktop `>=0.3.0`, not published (7) | engine 0.2.0 held back; no path when otherwise up to date |
+| 7 | + engine 0.2.0 requiring desktop `>=0.3.0`, not published; `be.C` blocked (7) | engine 0.2.0 held back; a client rolled back to `be.B` gets "update not available" with that reason |
 
 `TestDemo` in `app/cmd/release` generates the feed and asserts every row with
-`feed.Verify` and `feed.ResolvePlan`.
+`feed.Verify` and `feed.ResolvePlan`. `TestDemoWithCoordinator` walks the
+update coordinator (`app/internal/updates`, see
+[docs/updates.md](../docs/updates.md)) through revisions 1–7 in order against
+a fake engine, with the feed served over HTTP.
 
 ## Output layout
 

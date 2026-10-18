@@ -189,7 +189,9 @@ func runDemo(o demoOptions) (*demo, error) {
 		return nil, fmt.Errorf("rev-5: %w", err)
 	}
 
-	// rev-7: + engine 0.2.0 requiring a desktop 0.3.0 that is not published.
+	// rev-7: + engine 0.2.0 requiring a desktop 0.3.0 that is not published,
+	// and be.C blocked (a client rolled back from it stays on be.B, and is
+	// told why nothing is available).
 	p7 := pins
 	p7.EngineVersion = "0.2.0"
 	p7.EngineRequiresDesktop = ">=0.3.0"
@@ -197,7 +199,15 @@ func runDemo(o demoOptions) (*demo, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, data7, err := build(m4, 7, 7, p7, Artifacts{Engine: &EngineArtifacts{DataSchema: 2, Assets: engine020}})
+	m7, err := Build(BuildOptions{
+		Pins: p7, Artifacts: Artifacts{Engine: &EngineArtifacts{DataSchema: 2, Assets: engine020}},
+		Previous: m4, Revision: 7, PublishedAt: demoPublished(7), Expires: demoExpires,
+		Block: []string{"care:" + demoCareCore + "+be.C.fe." + demoFrontend},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rev-7: %w", err)
+	}
+	data7, err := marshalValidated(m7, d.insecure)
 	if err != nil {
 		return nil, err
 	}
