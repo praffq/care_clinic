@@ -5,6 +5,11 @@
 //   - AF_VSOCK port 1024 (Virtualization.framework on macOS), always;
 //   - TCP :47377 with mutual TLS, only when QEMU passes a TLS bundle through
 //     fw_cfg (see DefaultTLSBundle). There is never a plain TCP listener.
+//
+// With vsock enabled the agent also relays the fixed vsock ports in
+// forward.StandardPorts to the clinic's Caddy on guest loopback (80, 443,
+// 8480), so the macOS host can expose them without a host-visible VM IP.
+// QEMU forwards those ports itself (hostfwd), so the relay is vsock-only.
 package main
 
 import (
@@ -25,6 +30,7 @@ import (
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/forward"
 )
 
 var version = "dev"
@@ -142,6 +148,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go logImageStore(ctx)
+	waitRelays := func() {}
+	if *vsockPort != 0 {
+		waitRelays = startRelays(ctx, listenVsock, forward.StandardPorts())
+	}
 	errc := make(chan error, len(listeners))
 	var wg sync.WaitGroup
 	for _, l := range listeners {
@@ -160,6 +170,8 @@ func main() {
 		log.Print(err)
 		_ = srv.Close()
 		wg.Wait()
+		stop()
+		waitRelays()
 		os.Exit(1)
 	case <-ctx.Done():
 		log.Print("stopping")
@@ -167,5 +179,6 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 		wg.Wait()
+		waitRelays()
 	}
 }
