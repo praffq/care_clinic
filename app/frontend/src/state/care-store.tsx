@@ -18,7 +18,7 @@ import { bridge, logToHost, onCareEvent } from "@/lib/bridge";
 import { errorText } from "@/lib/format";
 import { operationError as describeOperationError, type OperationError } from "@/lib/operation-errors";
 import { applyProgress, failActiveStep, type SetupProgress, type SetupSteps, stepsForRetry } from "@/lib/run-steps";
-import type { AppUpdateProgress, ServiceState, SetupFailure, SetupPage, UpdateChecks } from "@/types";
+import type { AppUpdateOutcome, AppUpdateProgress, ServiceState, SetupFailure, SetupPage, UpdateChecks } from "@/types";
 
 export type Flow = "role" | "client" | "setup" | "installing" | "failed" | "panel" | "remove";
 export type PanelTab = "overview" | "home-access" | "updates" | "advanced";
@@ -82,7 +82,8 @@ type CareStore = {
   updateChecks: UpdateChecks | null;
   reloadUpdateChecks: () => Promise<void>;
   saveUpdateChecks: (next: UpdateChecks, adminPassword: string) => Promise<void>;
-  installAppUpdate: () => Promise<void>;
+  /** Downloads and verifies the update ("download"), or installs the downloaded one and restarts ("restart"). */
+  runAppUpdate: (step: "download" | "restart") => Promise<void>;
   acknowledgeAppUpdate: () => boolean;
   version: string;
   platform: string;
@@ -139,6 +140,8 @@ export function CareProvider({ children }: { children: ReactNode }) {
   const serviceEpochRef = useRef(0);
   const appUpdatePhaseRef = useRef<AppUpdateProgress["phase"] | null>(null);
   const appUpdateHandoffRef = useRef(false);
+  // The relaunched app is finishing a self-update (service, clinic health).
+  const appUpdateFinishingRef = useRef(false);
 
   const setFlow = useCallback((next: Flow) => {
     flowRef.current = next;
@@ -271,16 +274,16 @@ export function CareProvider({ children }: { children: ReactNode }) {
     [log, setBusy],
   );
 
-  const installAppUpdate = useCallback(async () => {
+  const runAppUpdate = useCallback(async (step: "download" | "restart") => {
     if (busyRef.current) throw new Error("Something else is still running.");
     appUpdatePhaseRef.current = null;
     appUpdateHandoffRef.current = false;
     lastErrorRef.current = "";
     setBusy(true, "Updating CARE Clinic");
     activeActionRef.current = "app-update";
-    log("\n$ care-clinic update");
+    log(step === "download" ? "\n$ care-clinic update --download" : "\n$ care-clinic update --restart");
     try {
-      await bridge.InstallAppUpdate();
+      await (step === "download" ? bridge.DownloadAppUpdate() : bridge.RestartToUpdate());
     } catch (e) {
       log(`error: ${errorText(e)}`);
       if (flowRef.current !== "role") {
@@ -542,9 +545,24 @@ export function CareProvider({ children }: { children: ReactNode }) {
           setBusy(true, "Updating CARE Clinic");
         }
       }),
+      onCareEvent("app-update-outcome", (outcome: AppUpdateOutcome) => {
+        if (outcome.state !== "finishing" || (activeActionRef.current && activeActionRef.current !== "app-update")) return;
+        appUpdateFinishingRef.current = true;
+        activeActionRef.current = "app-update";
+        setBusy(true, "Finishing the CARE Clinic update");
+      }),
       onCareEvent("care-done", (code: number, label?: string) => {
         if (label === "app-update") {
           if (activeActionRef.current && activeActionRef.current !== label) return;
+          if (appUpdateFinishingRef.current && appUpdatePhaseRef.current !== "restarting") {
+            // The outcome notice reports the result; the old version was already replaced.
+            appUpdateFinishingRef.current = false;
+            appUpdatePhaseRef.current = null;
+            activeActionRef.current = "";
+            setBusy(false);
+            return;
+          }
+          appUpdateFinishingRef.current = false;
           if (code === 0 && (appUpdatePhaseRef.current === "installer" || appUpdatePhaseRef.current === "restarting")) {
             appUpdateHandoffRef.current = true;
             activeActionRef.current = "app-update";
@@ -688,7 +706,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       updateChecks,
       reloadUpdateChecks,
       saveUpdateChecks,
-      installAppUpdate,
+      runAppUpdate,
       acknowledgeAppUpdate,
       version,
       platform,
@@ -701,7 +719,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
       ready, flow, mdnsName, clientURL, selectRole, clearRole,
       run, setupReset, startInstall, resumeInstall, retryInstall, restartSetup, openPanel,
       tab, busy, busyLabel, operationError, clearOperationError, service, refreshService,
-      updateChecks, reloadUpdateChecks, saveUpdateChecks, installAppUpdate, acknowledgeAppUpdate, version, platform,
+      updateChecks, reloadUpdateChecks, saveUpdateChecks, runAppUpdate, acknowledgeAppUpdate, version, platform,
       runAction, runJob, uninstall, log,
     ],
   );

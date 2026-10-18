@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, onCareEvent } from "@/lib/bridge";
 import { errorText } from "@/lib/format";
 import { useCare } from "@/state/care-store";
-import type { AppUpdate, AppUpdateProgress } from "@/types";
+import type { AppUpdate, AppUpdateOutcome, AppUpdateProgress } from "@/types";
 
 type UpdateProblem =
   | { kind: "offline" | "check" | "download" | "install" | "location" }
@@ -18,14 +18,14 @@ function updateProblem(error: unknown, checking: boolean): UpdateProblem {
     return { kind: /^couldn't reach GitHub to check for updates:/i.test(text) ? "offline" : "check" };
   }
   return {
-    kind: /update didn't download properly and was deleted without being installed/i.test(text)
+    kind: /update didn't download properly/i.test(text)
       ? "download"
       : "install",
   };
 }
 
 export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () => boolean) {
-  const { busy, busyLabel, version, installAppUpdate, acknowledgeAppUpdate, log, updateChecks, reloadUpdateChecks } = useCare();
+  const { busy, busyLabel, version, runAppUpdate, acknowledgeAppUpdate, log, updateChecks, reloadUpdateChecks } = useCare();
   const checksLoaded = updateChecks !== null;
   const off = updateChecks?.app === false;
   const offRef = useRef(off);
@@ -35,11 +35,15 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
   const [problem, setProblem] = useState<UpdateProblem | null>(null);
   const [progress, setProgress] = useState<AppUpdateProgress | null>(null);
   const [starting, setStarting] = useState(false);
+  // Downloaded and verified this session: the next step is "Restart to update".
+  const [downloaded, setDownloaded] = useState(false);
+  const [outcome, setOutcome] = useState<AppUpdateOutcome | null>(null);
   const mounted = useRef(false);
   const checkPending = useRef(false);
   const installPending = useRef(false);
   const progressRef = useRef<AppUpdateProgress | null>(null);
   const failure = useRef<unknown>(null);
+  const finishing = useRef(false);
   const updating = busy && busyLabel === "Updating CARE Clinic";
   const active = starting || updating || progress !== null;
   const isActive = () => installPending.current || progressRef.current !== null || updating;
@@ -52,7 +56,10 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     setUpdate(null);
     try {
       const result = await bridge.CheckAppUpdate();
-      if (mounted.current && !offRef.current) setUpdate(result);
+      if (mounted.current && !offRef.current) {
+        setUpdate(result);
+        setDownloaded(result.ready === true);
+      }
     } catch (error) {
       log(`check CARE Clinic update: ${errorText(error)}`);
       if (/update checks are turned off/i.test(errorText(error))) void reloadUpdateChecks();
@@ -79,10 +86,29 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     const offError = onCareEvent("care-error", (label: string, detail: string) => {
       if (label === "The CARE Clinic update didn't finish") failure.current = detail;
     });
+    const offOutcome = onCareEvent("app-update-outcome", (next: AppUpdateOutcome) => {
+      // Stays set until that job's care-done, which follows its final outcome.
+      if (next.state === "finishing") finishing.current = true;
+      if (mounted.current) setOutcome(next);
+    });
+    void bridge.GetAppUpdateOutcome().then((next) => {
+      if (mounted.current && next.state) setOutcome((seen) => seen ?? next);
+    }).catch(() => {});
     const offDone = onCareEvent("care-done", (code: number, label?: string) => {
       if (label !== "app-update") return;
+      // A resumed update reports through its outcome, not as a failed install.
+      if (finishing.current && !installPending.current) {
+        finishing.current = false;
+        return;
+      }
       installPending.current = false;
       setStarting(false);
+      if (code === 0 && progressRef.current?.phase === "ready") {
+        progressRef.current = null;
+        setProgress(null);
+        setDownloaded(true);
+        return;
+      }
       if (code !== 0) {
         progressRef.current = null;
         setProgress(null);
@@ -92,6 +118,7 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     return () => {
       offProgress();
       offError();
+      offOutcome();
       offDone();
     };
   }, []);
@@ -115,7 +142,7 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     setProblem(null);
     setStarting(true);
     try {
-      await installAppUpdate();
+      await runAppUpdate(ready ? "restart" : "download");
       // The promise only accepts the job. Events, not its resolution, finish it.
     } catch (error) {
       installPending.current = false;
@@ -136,6 +163,17 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     setUpdate(null);
   };
 
+  const ready = downloaded && update?.available === true;
+
+  /** Retries the steps the relaunched app could not finish (service, clinic health). */
+  const finish = async () => {
+    try {
+      await bridge.FinishAppUpdate();
+    } catch (error) {
+      log(`finish CARE Clinic update: ${errorText(error)}`);
+    }
+  };
+
   return {
     update,
     version: update?.current || version,
@@ -147,9 +185,14 @@ export function useAppUpdate(disabled = false, enabled = true, isBlocked?: () =>
     updating,
     off,
     disabled: disabled || busy,
+    ready,
+    unsigned: update?.unsigned === true,
+    outcome,
     check,
     install,
+    finish,
     dismiss,
+    dismissOutcome: () => setOutcome(null),
   };
 }
 

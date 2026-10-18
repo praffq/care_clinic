@@ -1,4 +1,4 @@
-import { Download, Monitor, ScrollText } from "lucide-react";
+import { Download, Monitor, RotateCw, ScrollText } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -42,7 +42,7 @@ function UpdateChecksNotice() {
 function ClinicApplicationCard({ controller }: { controller: AppUpdateController }) {
   const { service } = useCare();
   const running = service?.summary.running === true;
-  const { update, version, checking, problem, progress, active, disabled, check, install, off } = controller;
+  const { update, version, checking, problem, progress, active, disabled, check, install, off, ready, unsigned, outcome } = controller;
   const action = usePanelTask();
   const [checkedAt, setCheckedAt] = useState(0);
   useEffect(() => { if (update) setCheckedAt(Date.now()); }, [update]);
@@ -52,7 +52,7 @@ function ClinicApplicationCard({ controller }: { controller: AppUpdateController
     ? Math.max(0, Math.min(100, Math.round(downloading.done / downloading.total * 100))) : undefined;
   const target = update?.version ? ` ${update.version}` : "";
   const phaseTitle = phase === "downloading" ? `Downloading CARE Clinic${target}…`
-    : phase === "verifying" ? "Checking the downloaded update…"
+    : phase === "verifying" || phase === "ready" ? "Checking the downloaded update…"
       : phase === "installing" ? `Installing CARE Clinic${target}…`
         : phase === "restarting" ? "Installed — restarting CARE Clinic…"
           : phase === "installer" ? "The installer has opened"
@@ -78,10 +78,12 @@ function ClinicApplicationCard({ controller }: { controller: AppUpdateController
       {off && !active ? <PanelBadge>Checks off</PanelBadge>
         : <PanelBadge tone={problem ? "warning" : update ? "ok" : "neutral"} working={checking || active}>
           {active ? "Updating" : checking ? "Checking…" : problem ? "Needs attention"
-            : update?.available ? `${update.version} available` : update ? "Up to date" : "Not checked yet"}
+            : update?.available ? `${update.version} ${ready ? "ready" : "available"}` : update ? "Up to date" : "Not checked yet"}
         </PanelBadge>}
+      {update?.available && unsigned ? <PanelBadge tone="warning">Unsigned</PanelBadge> : null}
       {!active && !off ? <Button aria-label="Check CARE Clinic updates" disabled={checking || disabled} onClick={() => void check()}>Check now</Button> : null}
     </div>
+    {outcome?.state ? <AppUpdateOutcomeNotice controller={controller} /> : null}
     {active ? <div className="panel-update-progress" role="status" aria-live="polite">
       <h3>{phaseTitle}</h3>
       {phase !== "installer" && phase !== "restarting" ? <Progress value={percent} aria-label="CARE Clinic update download" /> : null}
@@ -102,19 +104,49 @@ function ClinicApplicationCard({ controller }: { controller: AppUpdateController
         <PanelLogButton />
       </>}>
       {problemDetail}
-    </PanelNotice> : update?.available ? <PanelNotice tone="ok" title={`CARE Clinic ${update.version} is available`}>
-      Downloads and installs the new version. Your computer may ask for permission.
-      {running ? " Your clinic keeps running." : ""}
+    </PanelNotice> : update?.available ? <PanelNotice tone="ok" title={ready ? `CARE Clinic ${update.version} is ready to install` : `CARE Clinic ${update.version} is available`}>
+      {ready ? "Downloaded and verified. CARE Clinic closes briefly, installs it and reopens. Your computer may ask for permission."
+        : "Downloads and verifies the new version, then asks you to restart CARE Clinic to install it."}
+      {running ? " Clinic data is kept; if the update includes a new CARE Clinic service, the clinic restarts once." : ""}
+      {unsigned ? " This version is not signed; it is offered only because this copy isn't signed either." : ""}
       <div className="panel-actions">
         {update.notes_url ? <Button disabled={action.working} onClick={() => void action.run(() => bridge.OpenURL(update.notes_url),
           "Couldn't open what's new. Try again when this computer is connected to the internet.")}>
           <ScrollText aria-hidden="true" />What&apos;s new
         </Button> : null}
         <Button variant="primary" disabled={disabled || checking} onClick={() => void install()}>
-          <Download aria-hidden="true" />Update CARE Clinic
+          {ready ? <><RotateCw aria-hidden="true" />Restart to update</> : <><Download aria-hidden="true" />Update CARE Clinic</>}
         </Button>
       </div>
     </PanelNotice> : null}
     {action.error ? <p className="panel-inline-error" role="alert">{action.error}</p> : null}
   </section>;
+}
+
+/** What the relaunched app reports about the self-update it just finished. */
+function AppUpdateOutcomeNotice({ controller }: { controller: AppUpdateController }) {
+  const { outcome, finish, dismissOutcome, disabled } = controller;
+  if (!outcome?.state) return null;
+  if (outcome.state === "finishing") {
+    return <div className="panel-update-progress" role="status" aria-live="polite">
+      <h3>Finishing the update to CARE Clinic {outcome.version}…</h3>
+      <Progress aria-label="Finishing the CARE Clinic update" />
+      <p className="panel-small">Checking the CARE Clinic service and bringing the clinic back. Clinic data is not changed.</p>
+    </div>;
+  }
+  if (outcome.state === "done") {
+    return <PanelNotice tone="ok" title={`CARE Clinic ${outcome.version} is installed`}
+      actions={<Button onClick={dismissOutcome}>Dismiss</Button>}>
+      The update finished and the clinic is running.
+    </PanelNotice>;
+  }
+  return <PanelNotice tone="danger" title={`The update to CARE Clinic ${outcome.version} didn't finish`}
+    actions={<>
+      {outcome.can_retry ? <Button disabled={disabled} onClick={() => void finish()}>Try again</Button> : null}
+      <Button onClick={dismissOutcome}>Dismiss</Button>
+      <PanelLogButton />
+    </>}>
+    {outcome.error || "See the log file for details."}
+    {outcome.can_retry ? " The new version is installed; trying again finishes the remaining steps." : " The previous version was kept."}
+  </PanelNotice>;
 }

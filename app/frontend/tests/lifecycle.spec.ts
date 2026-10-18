@@ -482,7 +482,7 @@ test("installer acknowledgement releases the guard only after native completion"
   await acknowledge.click();
   await expect(page.getByRole("button", { name: "Start setup", exact: true })).toBeEnabled();
   await expect(page.getByText("Up to date", { exact: true })).toHaveCount(0);
-  expect(await calls(page, "InstallAppUpdate")).toHaveLength(1);
+  expect(await calls(page, "DownloadAppUpdate")).toHaveLength(1);
 });
 
 test("failed optional app removal leaves Start usable and explains what remains", async ({ page }) => {

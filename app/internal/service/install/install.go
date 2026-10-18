@@ -6,8 +6,13 @@
 package install
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
@@ -79,6 +84,42 @@ func Script(p Plan, plistTmp string) (string, error) {
 		"launchctl bootstrap system " + q(PlistPath),
 	}
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// Current reports whether the installed service is already p: the same
+// binary and LaunchDaemon plist. A missing file means it is not.
+func Current(p Plan) (bool, error) { return current(p, Binary, PlistPath) }
+
+func current(p Plan, binary, plist string) (bool, error) {
+	want, err := fileSum(p.Binary)
+	if err != nil {
+		return false, err
+	}
+	got, err := fileSum(binary)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || got != want {
+		return false, err
+	}
+	b, err := os.ReadFile(plist)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil && bytes.Equal(b, p.Plist), err
+}
+
+func fileSum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Installed reports whether the LaunchDaemon plist is in place.

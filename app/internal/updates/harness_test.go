@@ -1,6 +1,7 @@
 package updates_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -41,7 +42,10 @@ type spec struct {
 	published time.Time // zero: published(rev)
 	expires   time.Time // zero: a year later
 	careNeeds string    // care requires.desktop (default ">=1.0.0")
-	builders  bool      // CARE releases publish builders
+	// engineNeeds is requires.desktop of engines after the first (default
+	// ">=1.0.0").
+	engineNeeds string
+	builders    bool // CARE releases publish builders
 }
 
 type eng struct {
@@ -64,7 +68,9 @@ type harness struct {
 	hook  hookFn
 	c     *updates.Coordinator
 	files map[string][]byte
-	mu    sync.Mutex
+	// requests is every asset request: "path range".
+	requests []string
+	mu       sync.Mutex
 }
 
 type hookFn struct {
@@ -132,7 +138,10 @@ func newHarness(t *testing.T, opts ...func(*updates.Options)) *harness {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write(b)
+		h.mu.Lock()
+		h.requests = append(h.requests, r.URL.Path+" "+r.Header.Get("Range"))
+		h.mu.Unlock()
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(b))
 	}))
 	t.Cleanup(h.srv.Close)
 	h.c = h.open()
@@ -229,11 +238,15 @@ func (h *harness) build(s spec) []byte {
 			"assets":   map[string]any{feed.PlatformDarwinARM64: map[string]any{"url": h.serve("/desktop/"+v, b), "sha256": updatestest.SHA256(b), "size": len(b)}},
 		})
 	}
-	for _, e := range s.engines {
+	for i, e := range s.engines {
 		b := updatestest.EngineBundle(e.version, e.schema)
+		needs := ">=1.0.0"
+		if i > 0 && s.engineNeeds != "" {
+			needs = s.engineNeeds
+		}
 		engines = append(engines, map[string]any{
 			"version": e.version, "data_schema": e.schema,
-			"requires": map[string]any{"desktop": ">=1.0.0"},
+			"requires": map[string]any{"desktop": needs},
 			"assets":   map[string]any{feed.ArchARM64: map[string]any{"url": h.serve("/engine/"+e.version, b), "sha256": updatestest.SHA256(b), "size": len(b)}},
 		})
 	}

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,8 +14,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
+	"github.com/ohcnetwork/care_desktop/app/internal/updates"
 )
 
 func TestNewerVersion(t *testing.T) {
@@ -61,7 +66,15 @@ func TestPlatformAssetPicksOneInstaller(t *testing.T) {
 	}
 }
 
-func TestDownloadVerifiedRetriesThenRejectsDamagedInstallers(t *testing.T) {
+func updateCache(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP", "HOME", "XDG_CACHE_HOME", "LOCALAPPDATA"} {
+		t.Setenv(k, tmp)
+	}
+}
+
+func TestDownloadReleaseRetriesOnceThenRejectsDamagedInstallers(t *testing.T) {
 	good := []byte("CARE Clinic installer")
 	digest := sha256.Sum256(good)
 	want := hex.EncodeToString(digest[:])
@@ -72,26 +85,19 @@ func TestDownloadVerifiedRetriesThenRejectsDamagedInstallers(t *testing.T) {
 		installed bool
 	}{
 		{"intact", []string{string(good)}, 1, true},
-		{"damaged once", []string{"truncated", string(good)}, 2, true},
-		{"damaged twice", []string{"truncated", "corrupted"}, 2, false},
+		{"damaged once", []string{"truncated-bad-data-xx", string(good)}, 2, true},
+		{"damaged twice", []string{"truncated-bad-data-xx", "corrupted-bad-data-yy"}, 2, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("TMPDIR", tmp)
-			t.Setenv("TMP", tmp)
-			t.Setenv("TEMP", tmp)
-			t.Setenv("HOME", tmp)
-			t.Setenv("XDG_CACHE_HOME", tmp)
-			t.Setenv("LOCALAPPDATA", tmp)
+			updateCache(t)
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				n := requests.Add(1)
 				_, _ = w.Write([]byte(tc.bodies[n-1]))
 			}))
 			defer server.Close()
-			var logs []string
 			asset := ghAsset{Name: "CARE-Clinic-1.2.3-setup.exe", URL: server.URL}
-			path, err := downloadVerified(asset, want, "1.2.3", func(line string) { logs = append(logs, line) }, nil)
+			path, err := downloadRelease(context.Background(), asset, want, nil)
 			if got := requests.Load(); got != tc.requests {
 				t.Fatalf("made %d download attempts, want %d", got, tc.requests)
 			}
@@ -102,30 +108,89 @@ func TestDownloadVerifiedRetriesThenRejectsDamagedInstallers(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), "didn't download properly") ||
-				!strings.Contains(err.Error(), "choose Update again") {
-				t.Fatalf("damaged download was not rejected clearly: %v", err)
+			if !errors.Is(err, updates.ErrChecksum) {
+				t.Fatalf("damaged download was not rejected: %v", err)
 			}
-			if !strings.Contains(strings.Join(logs, "\n"), "Trying once more") {
-				t.Fatalf("retry was not logged: %q", logs)
+			if !strings.Contains(downloadFailed("1.2.3", err).Error(), "choose Download again") {
+				t.Fatal("the failure does not say how to retry")
 			}
 			cache, _ := os.UserCacheDir()
-			if left, _ := os.ReadDir(filepath.Join(cache, "CARE Clinic", "updates")); len(left) != 0 {
+			if left, _ := os.ReadDir(filepath.Join(cache, "CARE Clinic", "updates", "downloads")); len(left) != 0 {
 				t.Fatalf("damaged download was left behind: %v", left)
 			}
 		})
 	}
 }
 
+func TestDownloadReleaseResumesAPartialDownload(t *testing.T) {
+	updateCache(t)
+	good := []byte(strings.Repeat("CARE Clinic installer ", 100))
+	digest := sha256.Sum256(good)
+	want := hex.EncodeToString(digest[:])
+	var ranges []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ranges = append(ranges, r.Header.Get("Range"))
+		http.ServeContent(w, r, "setup.exe", time.Time{}, bytes.NewReader(good))
+	}))
+	defer server.Close()
+	asset := ghAsset{Name: "CARE-Clinic-1.2.3-setup.exe", URL: server.URL, Size: int64(len(good))}
+	cache, _ := os.UserCacheDir()
+	dir := filepath.Join(cache, "CARE Clinic", "updates", "downloads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, want+"-"+asset.Name+".part"), good[:500], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var last int64
+	path, err := downloadRelease(context.Background(), asset, want, func(done, _ int64) { last = done })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, good) {
+		t.Fatal("the resumed download is not the installer")
+	}
+	if len(ranges) != 1 || ranges[0] != "bytes=500-" || last != int64(len(good)) {
+		t.Fatalf("ranges %q, last progress %d", ranges, last)
+	}
+	// A verified download is reused without another request.
+	if _, err := downloadRelease(context.Background(), asset, want, nil); err != nil || len(ranges) != 1 {
+		t.Fatalf("the verified download was fetched again: %v %q", err, ranges)
+	}
+}
+
 func TestDownloadRejectsUnsafeAssetAndChecksum(t *testing.T) {
 	sum := strings.Repeat("a", 64)
 	for _, name := range []string{"../installer.exe", `..\installer.exe`, "", "."} {
-		if _, err := downloadVerified(ghAsset{Name: name}, sum, "1.2.3", nil, nil); err == nil {
+		if _, err := downloadRelease(context.Background(), ghAsset{Name: name}, sum, nil); err == nil {
 			t.Errorf("unsafe filename %q accepted", name)
 		}
 	}
-	if _, err := downloadVerified(ghAsset{Name: "installer.exe"}, "invalid", "1.2.3", nil, nil); err == nil {
+	if _, err := downloadRelease(context.Background(), ghAsset{Name: "installer.exe"}, "invalid", nil); err == nil {
 		t.Fatal("invalid checksum accepted")
+	}
+}
+
+func TestMacUpdateTrust(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		old, new      string
+		allowUnsigned bool
+		ok            bool
+	}{
+		{"same team", "TEAM1", "TEAM1", false, true},
+		{"same team, unsigned feed allowed", "TEAM1", "TEAM1", true, true},
+		{"other team", "TEAM1", "TEAM2", true, false},
+		{"signed to ad-hoc is a downgrade", "TEAM1", "", true, false},
+		{"ad-hoc to signed", "", "TEAM1", true, false},
+		{"ad-hoc to ad-hoc needs an unsigned feed", "", "", false, false},
+		{"ad-hoc to ad-hoc on an unsigned feed", "", "", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := macUpdateTrust(tc.old, tc.new, tc.allowUnsigned); (err == nil) != tc.ok {
+				t.Fatalf("macUpdateTrust(%q, %q, %v) = %v", tc.old, tc.new, tc.allowUnsigned, err)
+			}
+		})
 	}
 }
 

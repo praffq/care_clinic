@@ -94,9 +94,81 @@ within a `data_schema`.
 
 ### Desktop (F8)
 
-Only planned and downloaded: `Apply` stops at a desktop step with
-`ErrDesktopUpdate` and the verified installer's path. Installing it (and
-swapping the running app) is the caller's job.
+The desktop step is always first in a plan. With `Options.Desktop` set (the
+app sets it; the `ctl` command line does not, and still stops with
+`ErrDesktopUpdate` and the verified installer's path), it is a journaled
+operation:
+
+| Step | Does |
+| --- | --- |
+| `download-installer` | Downloads the feed's desktop asset into `downloads/<sha256>` through a resumable `.part` file (HTTP `Range`; a server that ignores it restarts the download), then checks size and SHA-256. A mismatch deletes the file. |
+| `verify-installer` | `Desktop.Verify`: on macOS mounts the DMG and checks the bundle (below). A verification failure is permanent: it is not retried and rolls back. |
+| `handoff` | `Desktop.Handoff` starts the update helper and sets the journal to `restarting`. `Apply` returns `ErrRestartRequired`; the app then lets the helper go ahead and quits. |
+| `relaunch` | Runs in the new app (`Resume` on start): it must report the new desktop version, or the swap failed. Then the old app is still installed, the update is rolled back and the result says the current app was kept. |
+| `update-service` | `Desktop.UpdateService`: reinstalls `care-clinic-service` from the new app when its binary or LaunchDaemon plist differ from the installed ones (`install.Current`), behind one administrator prompt. |
+| `health` | Waits for the engine and, when CARE is installed, starts the stack and checks its health. |
+
+The steps after `handoff` have no rollback: the new app is already in place.
+If one of them fails the journal is left `uncertain` with result `incomplete`,
+and `Resume` (the app's **Try again**) retries the remaining steps. When the
+desktop step succeeds, `Resume` continues the rest of the plan (for example an
+engine update in the same revision) as a new `Apply`.
+
+The macOS bundle check (`verifyMacBundle`): `codesign --verify --deep
+--strict`, the version and bundle identifier, and the signing team. The new
+app must be signed by the running app's team; a Developer ID install never
+accepts an ad-hoc build. Ad-hoc builds replace ad-hoc builds only where this
+build accepts an unsigned feed (`feed.UnsignedFeedAllowed`, i.e. no
+production keys are compiled in). Signed updates must also pass `spctl`.
+
+An ad-hoc install is never upgraded to a signed one in place: the team check
+rejects it ("signed by a different team"). To move a clinic to signed builds,
+reinstall once:
+
+1. Download the signed DMG from the `desktop-v*` release and open it.
+2. Quit CARE Clinic and drag the new app over the old one in Applications.
+3. Open the app; it reinstalls `care-clinic-service` from the new bundle
+   (one administrator prompt). The clinic data and settings are kept.
+
+From then on, signed updates install themselves.
+
+The update helper (`install.sh` in the update's work folder) waits for the
+continue file and for the running app to exit, re-verifies the staged bundle,
+swaps it in through a private sibling folder (atomic renames; the old app is
+put back if the final rename fails), elevating only when the Applications
+folder needs it, then opens the app. On any failure it shows an alert and
+reopens the old app.
+
+The service step runs `scripts/service-macos.sh install` from the new
+bundle in one administrator prompt: it replaces the binary, then `bootout`
+stops the old service (and with it the clinic VM, cleanly) and `bootstrap`
+starts the new one, which adopts or restarts the engine and stack from the
+same slot; `data.img` is not touched.
+
+An update can ask for the administrator password twice: once for the swap,
+when the Applications folder is not writable by the user, and once for the
+service reinstall, when the new bundle carries a newer service.
+
+#### In the app
+
+- **Server with a reachable service**: the coordinator above, with the feed
+  at `CARE_UPDATES_URL` (default `https://praffq.github.io/care_clinic/updates.json`).
+  If the feed is not published yet (404), the app falls back to the release.
+- **Otherwise** (clients, before setup, Windows, no service): the latest
+  GitHub release (`desktop-v*`): the platform installer is downloaded the same
+  resumable way and checked against `SHA256SUMS`; unsigned status comes from
+  `release-manifest.json`. On Windows the existing silent `setup.exe` helper
+  installs it. This path has no journal and no service step.
+
+Windows has no journaled service step yet: there is no Windows service to
+reinstall until S22 adds one, so a Windows update is the `setup.exe` helper
+alone.
+
+The UI: **Update CARE Clinic** downloads and verifies (with progress), then
+**Restart to update** hands off. An unsigned update shows an **Unsigned**
+badge. After the relaunch the panel shows *Finishing the update…*, then
+*installed* or what did not finish, with **Try again** when the remaining
+steps can be retried.
 
 ## Crashes and failures
 
@@ -128,7 +200,16 @@ the [demo feed](../demo/README.md).
 - `app/internal/updates`: every failure point of both operations (rolled back
   to a healthy clinic), a crash before and after every step followed by
   `Resume` or `Rollback`, crashes during rollback, rollback failure and
-  retry, retries, feed rejection, locking.
+  retry, retries, feed rejection, locking. `desktop_test.go`: the desktop
+  operation with a fake app (restart and continue the plan, a failed swap
+  keeps the old app, permanent verification failures, retried service
+  updates, resumable and checksum-verified downloads).
+- `app`: `TestMacUpdateTrust` (team rules), release downloads (resume,
+  retry, checksum), and `TestMacSelfUpdateSwap`, which builds two ad-hoc
+  signed app versions in a temp dir and runs the real verification and helper
+  between them (`scripts/test-self-update-swap.sh`, macOS).
+- `app/frontend/tests/app-updater.spec.ts`: update available, download
+  progress, restart to update, unsigned badge, and the relaunch outcome.
 - `app/cmd/release` `TestDemoWithCoordinator`: demo revisions 1–7 in order,
   served over HTTP: fresh install, CARE update, engine slot swap, broken CARE
   rolled back via the database restore, a replayed revision and a tampered

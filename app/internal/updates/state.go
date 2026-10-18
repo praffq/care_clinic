@@ -125,6 +125,10 @@ const (
 	// StateFailed: the rollback itself failed; the journal is kept until
 	// Rollback succeeds.
 	StateFailed JournalState = "failed"
+	// StateRestarting: a desktop update handed off to the updater helper,
+	// which replaces the app after it quits and relaunches it. The relaunched
+	// app calls Resume to finish the operation.
+	StateRestarting JournalState = "restarting"
 )
 
 // Step statuses.
@@ -209,11 +213,29 @@ type EngineTarget struct {
 	WithCare bool `json:"with_care"`
 }
 
+// DesktopTarget is the desktop app release being installed.
+type DesktopTarget struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	// Path is the verified installer in the download cache.
+	Path string `json:"path,omitempty"`
+	// Engine is the engine version running when the update started (empty:
+	// none) and WithCare whether CARE is installed: the health step waits for
+	// both to come back after the service is reinstalled.
+	Engine   string `json:"engine,omitempty"`
+	WithCare bool   `json:"with_care"`
+	// Continue: the plan had more steps after this one; the relaunched app
+	// applies them once the desktop step commits.
+	Continue bool `json:"continue,omitempty"`
+}
+
 // Journal is journal.json, present only while an operation is in flight
 // (or its rollback failed).
 type Journal struct {
 	ID            string          `json:"id"`
-	Component     string          `json:"component"` // feed.ComponentCare, feed.ComponentEngine, ComponentPlugins or ComponentFrontend
+	Component     string          `json:"component"` // feed.ComponentCare, feed.ComponentEngine, ComponentPlugins, ComponentFrontend or ComponentDesktop
 	From          string          `json:"from,omitempty"`
 	To            string          `json:"to"`
 	Revision      uint64          `json:"revision"`
@@ -229,6 +251,7 @@ type Journal struct {
 	Plugins       *PluginsTarget  `json:"plugins,omitempty"`
 	Frontend      *FrontendTarget `json:"frontend,omitempty"`
 	Engine        *EngineTarget   `json:"engine,omitempty"`
+	Desktop       *DesktopTarget  `json:"desktop,omitempty"`
 }
 
 // Results recorded in history.
@@ -236,6 +259,9 @@ const (
 	ResultApplied        = "applied"
 	ResultRolledBack     = "rolled_back"
 	ResultRollbackFailed = "rollback_failed"
+	// ResultIncomplete: a desktop update replaced the app, but a later step
+	// (service, health) did not finish and the operator gave up on it.
+	ResultIncomplete = "incomplete"
 )
 
 // HistoryEntry is one finished (or rollback-failed) operation.

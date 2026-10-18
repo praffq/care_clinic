@@ -164,14 +164,14 @@ test("available updates keep both paths usable and open the release notes", asyn
 
 test("update acceptance is not completion and duplicate clicks start only one job", async ({ page }) => {
   await visit(page, "available");
-  await page.evaluate(() => window.careTest.hold("InstallAppUpdate"));
+  await page.evaluate(() => window.careTest.hold("DownloadAppUpdate"));
   await page.getByRole("button", { name: "Update now", exact: true })
     .evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
   await expect(page.getByText("Preparing the update\u2026")).toBeVisible();
-  expect(await methodCount(page, "InstallAppUpdate")).toBe(1);
+  expect(await methodCount(page, "DownloadAppUpdate")).toBe(1);
   await expect(setup(page)).toBeDisabled();
   await expect(connect(page)).toBeDisabled();
-  await page.evaluate(() => window.careTest.release("InstallAppUpdate"));
+  await page.evaluate(() => window.careTest.release("DownloadAppUpdate"));
   await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "62");
   await expect(page.getByText("31.0 MB of 50.0 MB")).toBeVisible();
   await expect(setup(page)).toBeDisabled();
@@ -193,12 +193,12 @@ for (const first of ["update", "setup", "client"] as const) {
     }, first);
     if (first === "update") {
       await expect(page.getByText("Downloading CARE Clinic 0.1.6\u2026")).toBeVisible();
-      expect(await methodCount(page, "InstallAppUpdate")).toBe(1);
+      expect(await methodCount(page, "DownloadAppUpdate")).toBe(1);
       expect(await methodCount(page, "BeginServerSetup")).toBe(0);
       expect(await page.evaluate(() => window.careTest.state.role)).toBe("");
     } else {
       await expect(page.getByRole("heading", { name: first === "setup" ? "Checking this computer" : "Find your clinic's server" })).toBeVisible();
-      expect(await methodCount(page, "InstallAppUpdate")).toBe(0);
+      expect(await methodCount(page, "DownloadAppUpdate")).toBe(0);
     }
   });
 }
@@ -263,7 +263,7 @@ test("failed and cancelled updates keep technical details out of the UI and allo
   expect(await methodCount(page, "OpenLogFolder")).toBe(1);
   await page.getByRole("button", { name: "Try again", exact: true }).click();
   await expect(page.getByText("Downloading CARE Clinic 0.1.6\u2026")).toBeVisible();
-  expect(await methodCount(page, "InstallAppUpdate")).toBe(2);
+  expect(await methodCount(page, "DownloadAppUpdate")).toBe(2);
 });
 
 test("a damaged download has its specific retry state, without exposing checksums", async ({ page }) => {
@@ -281,7 +281,7 @@ test("a damaged download has its specific retry state, without exposing checksum
 
 test("synchronous update rejection clears the busy state and displays a friendly failure", async ({ page }) => {
   await visit(page, "available");
-  await page.evaluate(() => window.careTest.failNext("InstallAppUpdate", "something else is still running - wait for it to finish"));
+  await page.evaluate(() => window.careTest.failNext("DownloadAppUpdate", "something else is still running - wait for it to finish"));
   await page.getByRole("button", { name: "Update now", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Your current version was kept");
   await expect(setup(page)).toBeEnabled();

@@ -18,6 +18,7 @@ func (a *App) startup(ctx context.Context) {
 	// The service owns the engine, forwarding, mDNS and the watchdog; the
 	// app only watches its status for the control panel.
 	a.startServiceWatch()
+	go a.resumeAppUpdate()
 }
 
 const screenMargin = 80

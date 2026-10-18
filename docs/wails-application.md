@@ -239,8 +239,10 @@ The following methods are declared in [`wails.d.ts`](../app/frontend/src/wails.d
 
 | Method | Result | Execution and contract |
 | --- | --- | --- |
-| `CheckAppUpdate()` | `AppUpdate` | Checks the latest `praffq/care_clinic` GitHub release (`desktop-v<version>` tag) unless app update checks are off. |
-| `InstallAppUpdate()` | `void` | Job `app-update`; emits `app-update-progress`. |
+| `CheckAppUpdate()` | `AppUpdate` | Unless app update checks are off: the update feed on a server with the service, otherwise (or with no feed published) the latest `praffq/care_clinic` release (`desktop-v<version>`). `unsigned`, `source` (`feed`/`release`), `ready` (downloaded and verified). |
+| `DownloadAppUpdate()` | `void` | Job `app-update`: resumable download and verification; emits `app-update-progress`, ending with `ready`. |
+| `RestartToUpdate()` | `void` | Job `app-update`: hands the downloaded update to the helper (a journaled step from the feed) and quits; emits `installing`, `restarting`. |
+| `GetAppUpdateOutcome()`, `FinishAppUpdate()` | `AppUpdateOutcome {state, version, error, can_retry}`, `void` | How the last self-update ended, after the relaunch; `FinishAppUpdate` retries its unfinished steps (job `app-update`). See [updates](updates.md#desktop-f8). |
 | `GetUpdateChecks()`, `SetUpdateChecks(app, password)` | `UpdateChecks {app}`, `void` | The app update-check switch. |
 | `OpenURL(url)`, `ChooseFolder(title)` | `void`, `string` | Native browser and folder dialog; empty string means cancelled. |
 | `LogPath()`, `OpenLogFolder()` | `string`, `void` | Diagnostic log. |
@@ -307,7 +309,8 @@ original text.
 | `setup-failed` | `SetupFailure {can_retry}` | Sent before the failed `care-done`. |
 | `service-status` | `ServiceState` | Service, engine, stack, forward and mDNS state changed. |
 | `uninstalled` | `true` | Uninstall finished and the configuration was reset. |
-| `app-update-progress` | `{phase, done, total}` | `downloading`, `verifying`, `installing`, `restarting` or `installer`. |
+| `app-update-progress` | `{phase, done, total}` | `downloading`, `verifying`, `ready`, `installing`, `restarting` or `installer`. |
+| `app-update-outcome` | `AppUpdateOutcome` | `finishing`, `done` or `failed` while the relaunched app finishes a self-update. |
 | `client-connect-progress` | `finding`, `connecting`, `checking` or `opening` | Client connection stages. |
 | `quit-requested` | `{id, title, message}` | Running-job close request. |
 | `confirmation-requested`, `confirmation-cancelled` | Request, or its ID | Permission questions. |

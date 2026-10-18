@@ -36,7 +36,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 	sig, err := httpGet(ctx, f.Client, f.URL+".sig", maxSigBytes)
-	if errors.Is(err, errNotFound) {
+	if errors.Is(err, ErrNotFound) {
 		return data, nil, nil
 	}
 	if err != nil {
@@ -45,7 +45,9 @@ func (f HTTPFetcher) Fetch(ctx context.Context) ([]byte, []byte, error) {
 	return data, sig, nil
 }
 
-var errNotFound = errors.New("not found")
+// ErrNotFound means the server answered 404 (for example, no feed has been
+// published yet).
+var ErrNotFound = errors.New("not found")
 
 func httpGet(ctx context.Context, hc *http.Client, url string, limit int64) ([]byte, error) {
 	resp, err := open(ctx, hc, url)
@@ -77,7 +79,7 @@ func open(ctx context.Context, hc *http.Client, url string) (*http.Response, err
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("GET %s: %s: %w", url, resp.Status, errNotFound)
+		return nil, fmt.Errorf("GET %s: %s: %w", url, resp.Status, ErrNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
@@ -87,8 +89,13 @@ func open(ctx context.Context, hc *http.Client, url string) (*http.Response, err
 }
 
 // download fetches url into the cache as downloads/<sha256>, verifying size
-// and SHA-256; a verified cached copy is reused.
+// and SHA-256; a verified cached copy is reused and an interrupted one
+// resumes (FetchFile).
 func (c *Coordinator) download(ctx context.Context, url, sum string, size int64) (string, error) {
+	return c.downloadWith(ctx, url, sum, size, nil)
+}
+
+func (c *Coordinator) downloadWith(ctx context.Context, url, sum string, size int64, progress Progress) (string, error) {
 	dir := filepath.Join(c.o.Dir, downloadsDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -98,19 +105,7 @@ func (c *Coordinator) download(ctx context.Context, url, sum string, size int64)
 		return dst, nil
 	}
 	c.logf("Downloading %s", url)
-	err := c.fetchTo(ctx, url, dst, func(f *os.File) error {
-		got, n, err := hashFile(f.Name())
-		switch {
-		case err != nil:
-			return err
-		case n != size:
-			return fmt.Errorf("download %s: %d bytes, want %d", url, n, size)
-		case got != sum:
-			return fmt.Errorf("download %s: sha256 %s, want %s", url, got, sum)
-		}
-		return nil
-	}, size)
-	if err != nil {
+	if err := FetchFile(ctx, c.o.HTTP, url, dst, sum, size, progress); err != nil {
 		return "", err
 	}
 	return dst, nil

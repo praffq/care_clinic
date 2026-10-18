@@ -142,7 +142,7 @@ export type UpdateChecks = { app: boolean };
 export type QuitRequest = { id: number; title: string; message: string };
 export type ConfirmationRequest = { id: number; title: string; message: string };
 
-export type AppUpdatePhase = "downloading" | "verifying" | "installing" | "restarting" | "installer";
+export type AppUpdatePhase = "downloading" | "verifying" | "ready" | "installing" | "restarting" | "installer";
 
 export type AppUpdateProgress = { phase: AppUpdatePhase; done: number; total: number };
 
@@ -153,6 +153,19 @@ export type AppUpdate = {
   notes_url: string;
   asset: string;
   size: number;
+  /** Not signed (ad-hoc on macOS), or from an update feed accepted as unsigned. */
+  unsigned?: boolean;
+  source?: "feed" | "release";
+  /** Downloaded and verified; RestartToUpdate installs it. */
+  ready?: boolean;
+};
+
+/** How the last self-update ended, reported by the relaunched app. */
+export type AppUpdateOutcome = {
+  state: "" | "finishing" | "done" | "failed";
+  version: string;
+  error?: string;
+  can_retry?: boolean;
 };
 
 export type StorageLevel = "ok" | "low" | "critical" | "unknown";

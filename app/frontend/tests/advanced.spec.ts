@@ -88,7 +88,7 @@ async function openRemoval(page: Page) {
 async function blockAdvanced(page: Page) {
   await page.evaluate(() => window.careTest.progress({ phase: "verifying", done: 1, total: 1 }));
   await expect(root(page)).toHaveAttribute("data-panel-blocked", "true");
-  expect(await count(page, "InstallAppUpdate")).toBe(0);
+  expect(await count(page, "DownloadAppUpdate")).toBe(0);
 }
 
 async function releaseAdvanced(page: Page) {

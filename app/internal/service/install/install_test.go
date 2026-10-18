@@ -1,7 +1,9 @@
 package install
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,5 +44,34 @@ func TestScriptRejects(t *testing.T) {
 		if _, err := Script(p, "/tmp/p"); err == nil {
 			t.Errorf("accepted %+v", p)
 		}
+	}
+}
+
+func TestCurrent(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := Plan{Binary: write("bundled", "service v2"), Plist: []byte("plist v2"), User: "nurse"}
+	binary, plist := filepath.Join(dir, "installed"), filepath.Join(dir, "installed.plist")
+	if ok, err := current(p, binary, plist); ok || err != nil {
+		t.Fatalf("nothing installed: %v, %v", ok, err)
+	}
+	write("installed", "service v1")
+	write("installed.plist", "plist v2")
+	if ok, err := current(p, binary, plist); ok || err != nil {
+		t.Fatalf("older binary: %v, %v", ok, err)
+	}
+	write("installed", "service v2")
+	if ok, err := current(p, binary, plist); !ok || err != nil {
+		t.Fatalf("same service: %v, %v", ok, err)
+	}
+	write("installed.plist", "plist v1")
+	if ok, err := current(p, binary, plist); ok || err != nil {
+		t.Fatalf("older plist: %v, %v", ok, err)
 	}
 }

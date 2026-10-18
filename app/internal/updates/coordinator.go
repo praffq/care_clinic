@@ -132,6 +132,12 @@ type Options struct {
 	// (dev images, or a clinic not installed from the feed).
 	FrontendEnv map[string]string
 
+	// Desktop installs desktop app updates; nil stops Apply at a desktop
+	// step with ErrDesktopUpdate.
+	Desktop Desktop
+	// Progress reports the desktop installer download.
+	Progress Progress
+
 	Now func() time.Time
 	Log func(string)
 
@@ -165,7 +171,7 @@ type OpError struct {
 	Component string
 	To        string
 	Step      string
-	Result    string // ResultRolledBack or ResultRollbackFailed
+	Result    string // ResultRolledBack, ResultRollbackFailed or ResultIncomplete
 	Err       error
 	// RollbackErr is set when Result is ResultRollbackFailed.
 	RollbackErr error
@@ -177,8 +183,15 @@ func (e *OpError) Error() string {
 		s += " at " + e.Step
 	}
 	s += ": " + e.Err.Error()
-	if e.Result == ResultRollbackFailed {
+	switch e.Result {
+	case ResultRollbackFailed:
 		return s + "; rollback failed: " + e.RollbackErr.Error()
+	case ResultIncomplete:
+		return s + " (the app was updated; the remaining steps were abandoned)"
+	case ResultRolledBack:
+		if e.Component == feed.ComponentDesktop {
+			return s + " (the current app was kept)"
+		}
 	}
 	return s + " (rolled back)"
 }
@@ -342,6 +355,8 @@ type PlannedStep struct {
 	Component string `json:"component"`
 	From      string `json:"from,omitempty"`
 	To        string `json:"to"`
+	// Size is the desktop installer's size in bytes.
+	Size int64 `json:"size,omitempty"`
 }
 
 // CheckResult is the outcome of Check.
@@ -367,6 +382,15 @@ type CheckResult struct {
 // feed.ErrBadSignature, feed.ErrUnknownKey, feed.ErrRollback,
 // feed.ErrExpired or feed.ErrInvalid; verified.json is then left unchanged.
 func (c *Coordinator) Check(ctx context.Context) (*CheckResult, error) {
+	return c.check(ctx, true)
+}
+
+// CheckPlan is Check without the pre-fetch.
+func (c *Coordinator) CheckPlan(ctx context.Context) (*CheckResult, error) {
+	return c.check(ctx, false)
+}
+
+func (c *Coordinator) check(ctx context.Context, prefetch bool) (*CheckResult, error) {
 	unlock, err := c.acquire()
 	if err != nil {
 		return nil, err
@@ -424,7 +448,14 @@ func (c *Coordinator) Check(ctx context.Context) (*CheckResult, error) {
 	}
 	res.Available, res.Urgent, res.Held = true, p.Urgent, p.Held
 	for _, s := range p.Steps {
-		res.Steps = append(res.Steps, PlannedStep{Component: s.Component, From: s.From, To: s.To})
+		ps := PlannedStep{Component: s.Component, From: s.From, To: s.To}
+		if s.Desktop != nil {
+			ps.Size = s.Desktop.Assets[c.o.DesktopPlatform].Size
+		}
+		res.Steps = append(res.Steps, ps)
+	}
+	if !prefetch {
+		return res, nil
 	}
 	if err := c.prefetch(ctx, m, in, p); err != nil {
 		if ctx.Err() != nil {
@@ -502,12 +533,20 @@ type ApplyResult struct {
 // each step commits before the next starts. It stops at the first failure
 // (an *OpError, rolled back or not), at a desktop step (ErrDesktopUpdate),
 // or returns ErrUpToDate / ErrNotAvailable when there is nothing to do.
+//
+// With Options.Desktop, a desktop step runs as a journaled operation that
+// hands off to the updater helper and returns ErrRestartRequired; the
+// relaunched app calls Resume, which finishes it and applies the rest.
 func (c *Coordinator) Apply(ctx context.Context) (*ApplyResult, error) {
 	unlock, err := c.acquire()
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	return c.apply(ctx)
+}
+
+func (c *Coordinator) apply(ctx context.Context) (*ApplyResult, error) {
 	if j, err := c.st.journal(); err != nil {
 		return nil, err
 	} else if j != nil {
@@ -537,8 +576,8 @@ func (c *Coordinator) Apply(ctx context.Context) (*ApplyResult, error) {
 		return nil, ErrUpToDate
 	}
 	res := &ApplyResult{}
-	for _, s := range p.Steps {
-		if s.Component == feed.ComponentDesktop {
+	for i, s := range p.Steps {
+		if s.Component == feed.ComponentDesktop && c.o.Desktop == nil {
 			path, err := c.downloadDesktop(ctx, s.Desktop)
 			if err != nil {
 				return res, err
@@ -553,7 +592,13 @@ func (c *Coordinator) Apply(ctx context.Context) (*ApplyResult, error) {
 		if err != nil {
 			return res, err
 		}
+		if j.Desktop != nil {
+			j.Desktop.Continue = i < len(p.Steps)-1
+		}
 		if err := c.run(ctx, j); err != nil {
+			if errors.Is(err, ErrRestartRequired) {
+				res.Desktop = &DesktopDownload{Version: s.To, Path: j.Desktop.Path}
+			}
 			return res, err
 		}
 		h, err := c.st.history()
@@ -581,15 +626,30 @@ func (c *Coordinator) Resume(ctx context.Context) error {
 		return ErrNoJournal
 	}
 	switch j.State {
-	case StateUncertain:
+	case StateUncertain, StateRestarting:
 		c.logf("Resuming the %s update to %s", j.Component, j.To)
-		return c.run(ctx, j)
+		if err := c.run(ctx, j); err != nil {
+			return err
+		}
+		return c.continuePlan(ctx, j)
 	case StateRollbackUncertain:
 		c.logf("Resuming the rollback of the %s update to %s", j.Component, j.To)
 		return c.rollback(ctx, j, errors.New(j.Error))
 	default:
 		return fmt.Errorf("%w: the rollback failed; use Rollback to retry it", ErrRollbackFailed)
 	}
+}
+
+// continuePlan applies the rest of the plan a desktop update interrupted.
+func (c *Coordinator) continuePlan(ctx context.Context, j *Journal) error {
+	if j.Desktop == nil || !j.Desktop.Continue {
+		return nil
+	}
+	c.logf("Continuing the update after the desktop app")
+	if _, err := c.apply(ctx); err != nil && !errors.Is(err, ErrUpToDate) {
+		return fmt.Errorf("the desktop app was updated; continuing the update: %w", err)
+	}
+	return nil
 }
 
 // Rollback undoes an unfinished operation, or retries a failed rollback.
@@ -607,7 +667,7 @@ func (c *Coordinator) Rollback(ctx context.Context) error {
 		return ErrNoJournal
 	}
 	c.logf("Rolling back the %s update to %s", j.Component, j.To)
-	if j.State == StateUncertain {
+	if j.State == StateUncertain || j.State == StateRestarting {
 		err = c.rollback(ctx, j, errors.New("rolled back on request"))
 	} else {
 		for i := range j.RollbackSteps {
@@ -618,7 +678,7 @@ func (c *Coordinator) Rollback(ctx context.Context) error {
 		err = c.rollback(ctx, j, errors.New(j.Error))
 	}
 	// The rollback was asked for, so finishing it is success.
-	if oe, ok := errors.AsType[*OpError](err); ok && oe.Result == ResultRolledBack {
+	if oe, ok := errors.AsType[*OpError](err); ok && (oe.Result == ResultRolledBack || oe.Result == ResultIncomplete) {
 		return nil
 	}
 	return err
@@ -639,8 +699,12 @@ func (c *Coordinator) hook(point string) error {
 // Permanent reports whether err is deterministic, so a step that returned it
 // is not retried: an image build the agent classified as failing the same
 // way every time (a missing package or repository, a resolver conflict, a
-// compile error) or an op the agent rejected as invalid.
+// compile error), an op the agent rejected as invalid, or an error marked
+// with MarkPermanent.
 func Permanent(err error) bool {
+	if _, ok := errors.AsType[permanentError](err); ok {
+		return true
+	}
 	if errors.Is(err, ErrNoBuilder) || errors.Is(err, ErrNoFrontendBuilder) || errors.Is(err, ErrFrontendEnvUnknown) {
 		return true
 	}
@@ -710,6 +774,9 @@ func (c *Coordinator) runSteps(ctx context.Context, j *Journal, steps []StepReco
 				if err := c.saveJournal(j); err != nil {
 					return err
 				}
+				if j.State == StateRestarting {
+					return ErrRestartRequired
+				}
 				break
 			}
 			last, s.Error = err, err.Error()
@@ -765,6 +832,10 @@ func (c *Coordinator) run(ctx context.Context, j *Journal) error {
 	err := c.runSteps(ctx, j, j.Steps, c.forwardSteps(j))
 	var se *stepError
 	switch {
+	case errors.Is(err, ErrRestartRequired):
+		return err
+	case errors.As(err, &se) && desktopReplaced(j):
+		return c.incomplete(j, se)
 	case errors.As(err, &se):
 		j.FailedStep = se.step
 		return c.rollback(ctx, j, se.err)
@@ -776,6 +847,23 @@ func (c *Coordinator) run(ctx context.Context, j *Journal) error {
 		return err
 	}
 	return c.commit(j)
+}
+
+// incomplete keeps a desktop update whose app was already replaced: there
+// is nothing to roll back to, so the journal stays uncertain for Resume to
+// retry the failed step (Rollback abandons it).
+func (c *Coordinator) incomplete(j *Journal, se *stepError) error {
+	j.State, j.FailedStep, j.Error = StateUncertain, se.step, se.err.Error()
+	for i := range j.Steps {
+		if s := &j.Steps[i]; s.Status != StepDone {
+			s.Status, s.Attempts = StepPending, 0
+		}
+	}
+	if err := c.saveJournal(j); err != nil {
+		return err
+	}
+	c.logf("%s update to %s: %s failed: %s", j.Component, j.To, se.step, se.err)
+	return fmt.Errorf("%w: %s: %w", ErrIncomplete, se.step, se.err)
 }
 
 // rollback undoes j after cause; it continues an earlier rollback when the
@@ -816,7 +904,10 @@ func (c *Coordinator) rollback(ctx context.Context, j *Journal, cause error) err
 		return err
 	}
 	opErr.Result = ResultRolledBack
-	if err := c.finish(j, ResultRolledBack); err != nil {
+	if desktopReplaced(j) {
+		opErr.Result = ResultIncomplete
+	}
+	if err := c.finish(j, opErr.Result); err != nil {
 		return err
 	}
 	if err := c.st.remove(JournalFile); err != nil {
@@ -907,6 +998,11 @@ func (c *Coordinator) newJournal(ctx context.Context, m *feed.Manifest, rev uint
 			j.Rollback.PreviousEngine = in.Engine.Version
 		}
 		names = engineSteps
+	case feed.ComponentDesktop:
+		if err := c.newDesktopJournal(ctx, j, in, s); err != nil {
+			return nil, err
+		}
+		names = desktopSteps
 	default:
 		return nil, fmt.Errorf("cannot apply %s updates", s.Component)
 	}
@@ -917,6 +1013,9 @@ func (c *Coordinator) newJournal(ctx context.Context, m *feed.Manifest, rev uint
 }
 
 func (c *Coordinator) forwardSteps(j *Journal) map[string]stepFunc {
+	if j.Component == feed.ComponentDesktop {
+		return c.desktopForward()
+	}
 	if j.Component == feed.ComponentEngine {
 		return c.engineForward()
 	}
@@ -924,6 +1023,9 @@ func (c *Coordinator) forwardSteps(j *Journal) map[string]stepFunc {
 }
 
 func (c *Coordinator) rollbackPlan(j *Journal) []string {
+	if j.Component == feed.ComponentDesktop {
+		return nil // the old app is untouched until the helper swaps it
+	}
 	if j.Component == feed.ComponentEngine {
 		return engineRollbackPlan(j)
 	}
@@ -931,6 +1033,9 @@ func (c *Coordinator) rollbackPlan(j *Journal) []string {
 }
 
 func (c *Coordinator) rollbackSteps(j *Journal) map[string]stepFunc {
+	if j.Component == feed.ComponentDesktop {
+		return nil
+	}
 	if j.Component == feed.ComponentEngine {
 		return c.engineRollback()
 	}

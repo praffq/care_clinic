@@ -9,6 +9,7 @@ const phaseText = (phase: AppUpdateProgress["phase"], version: string) =>
   ({
     downloading: `Downloading CARE Clinic ${version}...`,
     verifying: `Checking CARE Clinic ${version}...`,
+    ready: `CARE Clinic ${version} is ready to install.`,
     installing: `Installing CARE Clinic ${version}...`,
     restarting: "Restarting CARE Clinic to finish updating...",
     installer: "The installer is open. Follow it to finish updating.",
