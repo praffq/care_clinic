@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Build the CARE Clinic dev image tarballs into dist/images/ using the local
-# docker (Rancher Desktop / Docker Desktop). See docs/dev-images.md.
+# Build the CARE Clinic images. Locally (Rancher Desktop / Docker Desktop) it
+# writes docker-save tarballs into dist/images/; with --push (CI, see
+# .github/workflows/images.yml) the same definitions are built and pushed to a
+# registry. See docs/dev-images.md.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -11,10 +13,14 @@ CACHE="$ROOT/dist/.cache"
 
 ALL=(care-backend-A care-backend-B care-backend-C-broken care-frontend-A
      care-caddy care-backup postgres redis silo)
+# Images we build (and, with --push, publish). The demo ones are opt-in there.
+OWNED=(care-backend-A care-frontend-A care-caddy care-backup)
+DEMO=(care-backend-B care-backend-C-broken)
 
 usage() {
   cat <<EOF
 Usage: scripts/dev-images.sh [--arch arm64|amd64] [--only NAME]... [--force] [--verify]
+       scripts/dev-images.sh --push PREFIX [--tag TAG] [--arch arm64|amd64] [--only NAME]...
 
 Builds/pulls the CARE Clinic images for linux/<arch> with the local docker,
 writes dist/images/<name>.tar and <name>.tar.digest (sha256 image ID).
@@ -24,7 +30,27 @@ writes dist/images/<name>.tar and <name>.tar.digest (sha256 image ID).
   --force    re-save tarballs even if the image ID is unchanged
   --verify   after building: docker image rm, docker load < tar, and check
              the loaded image ID equals .digest
+
+Push mode (CI): build the images we own (default: ${OWNED[*]};
+demo images via --only) with a docker-container buildx builder, push each as
+PREFIX/<repo>:TAG-<arch> (registry cache at PREFIX/<repo>:buildcache-<arch>)
+and write dist/images/push/<repo>-<arch>.json with the pushed digest. No
+tarballs. Repos: $(for n in "${OWNED[@]}" "${DEMO[@]}"; do printf '%s ' "$(repo_of "$n")"; done)
+
+  --push     registry prefix, e.g. ghcr.io/praffq/care_clinic
+  --tag      tag base (default: dev)
 EOF
+}
+
+# repo_of NAME: the registry repository an owned image is pushed to.
+repo_of() {
+  case "$1" in
+    care-backend-A)        echo care-backend ;;
+    care-frontend-A)       echo care-frontend ;;
+    care-backend-B)        echo care-backend-demo-b ;;
+    care-backend-C-broken) echo care-backend-demo-c-broken ;;
+    *)                     echo "$1" ;;
+  esac
 }
 
 case "$(uname -m)" in
@@ -35,9 +61,13 @@ esac
 ONLY=()
 FORCE=0
 VERIFY=0
+PUSH=""
+TAG=dev
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch)   ARCH=${2:?--arch needs a value}; shift 2 ;;
+    --push)   PUSH=${2:?--push needs a registry prefix}; shift 2 ;;
+    --tag)    TAG=${2:?--tag needs a value}; shift 2 ;;
     --only)   ONLY+=("${2:?--only needs a value}"); shift 2 ;;
     --force)  FORCE=1; shift ;;
     --verify) VERIFY=1; shift ;;
@@ -49,7 +79,16 @@ case "$ARCH" in arm64|amd64) ;; *) echo "unsupported --arch: $ARCH" >&2; exit 2 
 PLATFORM="linux/$ARCH"
 for n in ${ONLY[@]+"${ONLY[@]}"}; do
   case " ${ALL[*]} " in *" $n "*) ;; *) echo "unknown image: $n" >&2; exit 2 ;; esac
+  if [ -n "$PUSH" ]; then
+    case " ${OWNED[*]} ${DEMO[*]} " in *" $n "*) ;;
+      *) echo "--push publishes only images we build, not $n" >&2; exit 2 ;; esac
+  fi
 done
+if [ -n "$PUSH" ]; then
+  [ "$VERIFY" = 0 ] || { echo "--verify does not apply to --push" >&2; exit 2; }
+  case "$PUSH" in *[A-Z]*|*/) echo "--push: want a lowercase prefix without a trailing /" >&2; exit 2 ;; esac
+  case "$TAG" in *[!A-Za-z0-9_.-]*|"") echo "--tag: invalid tag: $TAG" >&2; exit 2 ;; esac
+fi
 
 command -v jq >/dev/null || { echo "jq is required (brew install jq)" >&2; exit 1; }
 
@@ -89,7 +128,11 @@ SILO=$(pin images silo);           need images.silo "$SILO"
 CORAZA=$(env_pin CORAZA_VERSION);  need CORAZA_VERSION "$CORAZA"
 
 # Local tags; the tarballs carry these names, the engine uses the digest.
-tag() { echo "care-clinic-dev/$(echo "$1" | tr "[:upper:]" "[:lower:]"):$ARCH"; }
+# With --push: the registry ref the image is pushed as.
+tag() {
+  if [ -n "$PUSH" ]; then echo "$PUSH/$(repo_of "$1"):$TAG-$ARCH"
+  else echo "care-clinic-dev/$(echo "$1" | tr "[:upper:]" "[:lower:]"):$ARCH"; fi
+}
 
 # source REPO REF LABEL: shallow checkout of github.com/REPO at REF into the
 # cache; prints the directory. Re-fetches each run, so branch refs move.
@@ -107,20 +150,46 @@ source_dir() {
   echo "$dir"
 }
 
-BUILD_FLAGS=(--platform "$PLATFORM" --load --provenance=false --sbom=false)
+# The image definitions below are shared by local builds and CI (--push):
+# only the output (--load vs --push) and the cache differ.
+BUILD_FLAGS=(--platform "$PLATFORM" --provenance=false --sbom=false)
+if [ -n "$PUSH" ]; then BUILD_FLAGS+=(--push); else BUILD_FLAGS+=(--load); fi
+# The repository these images are built from; GHCR links packages to it.
+SELF_REPO=${GITHUB_REPOSITORY:-praffq/care_clinic}
 
 empty_ctx() { local d="$CACHE/empty"; mkdir -p "$d"; echo "$d"; }
+
+# Upstream commits the CARE images were built from (for --push metadata).
+BE_SHA=""
+FE_SHA=""
+
+# buildx NAME ARGS...: docker buildx build of owned image NAME, tagged and
+# labelled the same way locally and in CI.
+buildx() {
+  local name=$1 extra=() cache
+  shift
+  if [ -n "$PUSH" ]; then
+    cache="$PUSH/$(repo_of "$name"):buildcache-$ARCH"
+    mkdir -p "$CACHE/metadata"
+    extra=(--cache-from "type=registry,ref=$cache"
+           --cache-to "type=registry,ref=$cache,mode=max,image-manifest=true,oci-mediatypes=true"
+           --metadata-file "$CACHE/metadata/$name-$ARCH.json")
+  fi
+  docker buildx build "${BUILD_FLAGS[@]}" ${extra[@]+"${extra[@]}"} \
+    --label "org.opencontainers.image.source=https://github.com/$SELF_REPO" \
+    --label "org.opencontainers.image.title=$(repo_of "$name")" \
+    -t "$(tag "$name")" "$@"
+}
 
 backend_a_built=0
 build_backend_a() {
   [ "$backend_a_built" = 1 ] && return
-  local src sha
+  local src
   src=$(source_dir "$BE_REPO" "$BE_REF" backend)
-  sha=$(git -C "$src" rev-parse HEAD)
-  docker buildx build "${BUILD_FLAGS[@]}" -f "$src/docker/prod.Dockerfile" \
-    --label "org.opencontainers.image.source=https://github.com/$BE_REPO" \
-    --label "org.opencontainers.image.revision=$sha" \
-    -t "$(tag care-backend-A)" "$src"
+  BE_SHA=$(git -C "$src" rev-parse HEAD)
+  buildx care-backend-A -f "$src/docker/prod.Dockerfile" \
+    --label "network.ohc.care.upstream=https://github.com/$BE_REPO" \
+    --label "network.ohc.care.upstream.revision=$BE_SHA" "$src"
   backend_a_built=1
 }
 
@@ -130,25 +199,25 @@ build() {
     care-backend-B|care-backend-C-broken)
       build_backend_a
       local d="$ROOT/demo/images/${1#care-}"
-      docker buildx build "${BUILD_FLAGS[@]}" --build-arg "BASE=$(tag care-backend-A)" \
-        -t "$(tag "$1")" "$d" ;;
+      buildx "$1" --build-arg "BASE=$(tag care-backend-A)" \
+        --label "network.ohc.care.upstream=https://github.com/$BE_REPO" \
+        --label "network.ohc.care.upstream.revision=$BE_SHA" "$d" ;;
     care-frontend-A)
-      local src sha
+      local src
       src=$(source_dir "$FE_REPO" "$FE_REF" frontend)
-      sha=$(git -C "$src" rev-parse HEAD)
+      FE_SHA=$(git -C "$src" rev-parse HEAD)
       cp "$DEPLOY/frontend.env" "$src/.env.local"
-      docker buildx build "${BUILD_FLAGS[@]}" \
-        --label "org.opencontainers.image.source=https://github.com/$FE_REPO" \
-        --label "org.opencontainers.image.revision=$sha" \
-        -t "$(tag "$1")" "$src" ;;
+      buildx "$1" \
+        --label "network.ohc.care.upstream=https://github.com/$FE_REPO" \
+        --label "network.ohc.care.upstream.revision=$FE_SHA" "$src" ;;
     care-caddy)
-      docker buildx build "${BUILD_FLAGS[@]}" -f "$DEPLOY/caddy.Dockerfile" \
+      buildx "$1" -f "$DEPLOY/caddy.Dockerfile" \
         --build-arg "CADDY_IMAGE=$CADDY" --build-arg "CORAZA_VERSION=$CORAZA" \
-        -t "$(tag "$1")" "$(empty_ctx)" ;;
+        "$(empty_ctx)" ;;
     care-backup)
-      docker buildx build "${BUILD_FLAGS[@]}" -f "$DEPLOY/backup.Dockerfile" \
+      buildx "$1" -f "$DEPLOY/backup.Dockerfile" \
         --build-arg "POSTGRES_IMAGE=$POSTGRES" \
-        -t "$(tag "$1")" "$(empty_ctx)" ;;
+        "$(empty_ctx)" ;;
     postgres) docker pull -q --platform "$PLATFORM" "$POSTGRES" >/dev/null ;;
     redis)    docker pull -q --platform "$PLATFORM" "$REDIS" >/dev/null ;;
     silo)     docker pull -q --platform "$PLATFORM" "$SILO" >/dev/null ;;
@@ -224,7 +293,36 @@ verify() {
 
 mkdir -p "$OUT" "$CACHE"
 targets=("${ALL[@]}")
+[ -n "$PUSH" ] && targets=("${OWNED[@]}")
 [ ${#ONLY[@]} -gt 0 ] && targets=("${ONLY[@]}")
+
+# record_push NAME: write dist/images/push/<repo>-<arch>.json for a pushed image.
+record_push() {
+  local name=$1 repo digest revision=""
+  repo=$(repo_of "$name")
+  case "$name" in
+    care-backend-*)  revision=$BE_SHA ;;
+    care-frontend-*) revision=$FE_SHA ;;
+  esac
+  digest=$(jq -r '."containerimage.digest" // empty' "$CACHE/metadata/$name-$ARCH.json")
+  printf '%s' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' ||
+    { echo "no pushed digest for $name in buildx metadata" >&2; return 1; }
+  mkdir -p "$OUT/push"
+  jq -n --arg name "$name" --arg repo "$repo" --arg ref "$PUSH/$repo" --arg arch "$ARCH" \
+    --arg tag "$(tag "$name")" --arg digest "$digest" --arg revision "$revision" \
+    '{name: $name, repo: $repo, ref: $ref, arch: $arch, tag: $tag, digest: $digest, revision: $revision}' \
+    >"$OUT/push/$repo-$ARCH.json"
+  log "pushed $(tag "$name") ($digest)"
+}
+
+if [ -n "$PUSH" ]; then
+  for name in "${targets[@]}"; do
+    log "[$PLATFORM] $name -> $(tag "$name")"
+    build "$name"
+    record_push "$name"
+  done
+  exit 0
+fi
 
 declare -a secs
 i=0

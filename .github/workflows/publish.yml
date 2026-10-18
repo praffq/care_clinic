@@ -1,0 +1,171 @@
+name: Publish update feed
+
+# Builds the signed update feed from the latest images.yml digests and an
+# engine-v<version> release, signs it with the FEED_SIGNING_KEY secret, and
+# deploys updates.json + updates.json.sig to this repository's GitHub Pages
+# (merged with the feed already published there). Manual only.
+# See docs/ci-publishing.md for the one-time key and Pages setup.
+on:
+  workflow_dispatch:
+    inputs:
+      images_run_id:
+        description: "images.yml run ID to take digests from (default: latest successful run on main)"
+        type: string
+        default: ""
+      care:
+        description: Publish a CARE release from the images digests
+        type: boolean
+        default: true
+      engine:
+        description: Publish the engine release engine-v<engine/VERSION>
+        type: boolean
+        default: true
+      migrations:
+        description: The CARE release carries database migrations
+        type: boolean
+        default: true
+      expires_days:
+        description: Days until the feed expires
+        type: string
+        default: "30"
+      block:
+        description: "Releases to withdraw, space-separated component:version (e.g. care:3.1.0+be.x.fe.y)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-feed
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  feed:
+    name: Generate and sign updates.json
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require the signing key
+        env:
+          FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
+        run: |
+          if [ -z "$FEED_SIGNING_KEY" ]; then
+            echo "::error title=FEED_SIGNING_KEY is not set::Create a key with 'go run ./cmd/release keygen --out feed.key' (in app/) and store it with 'gh secret set FEED_SIGNING_KEY -R $GITHUB_REPOSITORY < feed.key'. See docs/ci-publishing.md."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+      - name: Build the release CLI
+        working-directory: app
+        run: go build -o "$RUNNER_TEMP/release" ./cmd/release
+      - name: Collect image digests
+        if: inputs.care
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.images_run_id }}
+          MIGRATIONS: ${{ inputs.migrations }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -R "$GITHUB_REPOSITORY" --workflow images.yml --branch main --status success \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$RUN_ID" ] || { echo "::error::No successful images.yml run on main; run it first or pass images_run_id."; exit 1; }
+          fi
+          echo "Using images from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n images -D in/images
+          jq -e '.care.images | has("backend") and has("frontend") and has("caddy") and has("backup")' in/images/images.json >/dev/null ||
+            { echo "::error::images.json of run $RUN_ID has no complete care section"; exit 1; }
+          jq --argjson m "$MIGRATIONS" '.care.migrations = $m' in/images/images.json >in/care.json
+      - name: Collect engine assets
+        if: inputs.engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="engine-v$(tr -d '[:space:]' <engine/VERSION)"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p engine.json -D in/engine ||
+            { echo "::error::Release $tag has no engine.json; run engine.yml via workflow_dispatch first."; exit 1; }
+          cp in/engine/engine.json in/engine-section.json
+      - name: Generate updates.json
+        env:
+          EXPIRES_DAYS: ${{ inputs.expires_days }}
+          BLOCK: ${{ inputs.block }}
+          FEED_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          parts=()
+          for f in in/care.json in/engine-section.json; do
+            if [ -f "$f" ]; then parts+=("$f"); fi
+          done
+          [ ${#parts[@]} -gt 0 ] || { echo "::error::Nothing to publish: enable care and/or engine."; exit 1; }
+          jq -s 'add' "${parts[@]}" >in/artifacts.json
+          jq . in/artifacts.json
+
+          case "$EXPIRES_DAYS" in ''|*[!0-9]*) echo "::error::expires_days must be a number"; exit 1 ;; esac
+          args=(--versions versions.yml --artifacts in/artifacts.json
+                --expires "$(date -u -d "+$EXPIRES_DAYS days" +%Y-%m-%dT%H:%M:%SZ)" --out site/updates.json)
+          revision=1
+          status=$(curl -sS -o in/previous.json -w '%{http_code}' "$FEED_URL/updates.json")
+          case "$status" in
+            200)
+              revision=$(( $(jq -r .revision in/previous.json) + 1 ))
+              args+=(--previous in/previous.json)
+              echo "Merging with $FEED_URL/updates.json (revision $((revision - 1)))" ;;
+            404) echo "No feed at $FEED_URL yet; starting at revision 1" ;;
+            *) echo "::error::GET $FEED_URL/updates.json returned $status"; exit 1 ;;
+          esac
+          for b in $BLOCK; do args+=(--block "$b"); done
+          mkdir -p site
+          "$RUNNER_TEMP/release" generate --revision "$revision" "${args[@]}"
+      - name: Sign and verify
+        env:
+          FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/feed.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$FEED_SIGNING_KEY" >"$key"
+          # Derive the public key (PKCS#8 prefix + 32-byte seed) to verify.
+          pub=$({ printf '302e020100300506032b657004220420' | xxd -r -p; tr -d '[:space:]' <"$key" | base64 -d; } |
+            openssl pkey -inform DER -pubout -outform DER | tail -c 32 | base64)
+          if [ "$pub" = "$(tr -d '[:space:]' <app/internal/feed/devkeys/dev.pub)" ]; then
+            echo "::error::FEED_SIGNING_KEY is the development key; generate a real one (docs/ci-publishing.md)."
+            exit 1
+          fi
+          printf '%s\n' "$pub" >"$RUNNER_TEMP/feed.pub"
+          "$RUNNER_TEMP/release" sign --key "$key" --in site/updates.json
+          "$RUNNER_TEMP/release" verify --pub "$RUNNER_TEMP/feed.pub" --in site/updates.json | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/feed.pub" site/feed.pub
+          echo "Public key: \`$pub\`" >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -29,6 +29,7 @@ application's own user or API documentation.
 | [Development and release](development-and-release.md) | Local builds, embedded assets, release pins, CI, packaging, and changing the backend safely. |
 | [Release pins](versions.md) | The `versions.yml` file that pins desktop, engine, CARE and image versions, and how it is validated. |
 | [Dev image tarballs](dev-images.md) | Building the engine's images locally into `dist/images/*.tar` with digests for the dev update path. |
+| [CI publishing](ci-publishing.md) | `images.yml`, `engine.yml` and `publish.yml`: multi-arch images on GHCR, engine releases, the signed feed on GitHub Pages, and the one-time key/Pages/package setup. |
 | [Update feed](updates-feed.md) | The signed `updates.json` feed clients read, its signature and trust model, and how it is verified. |
 | [Releasing CARE Clinic](releases.md) | Preparing a version, how merging a version bump starts the release, reviewing and publishing the draft, signing limitations, and retrying safely. |
 | [Facility setup](onboarding.md) | The CARE Onboarding frontend plugin, enabled by default for new installations, and its CARE startup requirements. |

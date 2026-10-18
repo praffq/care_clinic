@@ -354,6 +354,8 @@ other platforms, not successful administrator prompts, certificate installation,
 browser trust, or real clinic Wi-Fi behavior. Network mDNS tests remain opt-in.
 PostgreSQL tests create an isolated fixture; CI does not start the clinic's
 Compose stack, build upstream CARE images, or contact a production database.
+Publishing images, engine bundles and the signed feed is done by separate
+workflows; see [CI publishing](ci-publishing.md).
 
 Local equivalents for the portable checks:
 
