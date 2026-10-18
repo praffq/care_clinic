@@ -17,7 +17,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -75,6 +77,31 @@ func tlsListener(bundlePath, addr string) (net.Listener, error) {
 	return tls.NewListener(l, cfg), nil
 }
 
+// containerdStoreType is DriverStatus "driver-type" when dockerd uses the
+// containerd image store, which image digests rely on.
+const containerdStoreType = "io.containerd.snapshotter.v1"
+
+// logImageStore waits for dockerd and logs which image store it uses.
+func logImageStore(ctx context.Context) {
+	for {
+		out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.Driver}} {{json .DriverStatus}}").Output()
+		if err == nil {
+			info := strings.TrimSpace(string(out))
+			if strings.Contains(info, containerdStoreType) {
+				log.Printf("docker image store: containerd (%s)", info)
+			} else {
+				log.Printf("WARNING: docker is not using the containerd image store; image digests will not match (%s)", info)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
 func main() {
 	vsockPort := flag.Uint("vsock-port", DefaultVsockPort, "AF_VSOCK listen port (0 disables)")
 	tlsBundle := flag.String("tls-bundle", DefaultTLSBundle, "PEM bundle (CA cert, server cert, server key) enabling the mutual-TLS TCP listener")
@@ -114,6 +141,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go logImageStore(ctx)
 	errc := make(chan error, len(listeners))
 	var wg sync.WaitGroup
 	for _, l := range listeners {

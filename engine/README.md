@@ -111,9 +111,20 @@ static (`CGO_ENABLED=0`) during the image build. Listeners:
 The TLS bundle is passed with `-fw_cfg name=opt/care/tls,file=bundle.pem` and
 holds three PEM blocks, in order: the CA certificate, the server certificate
 and the server private key. Clients must present a certificate issued by that
-CA. Without the bundle there is no TCP listener at all. The `vmw_vsock_virtio_transport`
+CA. The bundle is read once at startup and never logged. Without the bundle
+there is no TCP listener at all. The `vmw_vsock_virtio_transport`
 and `qemu_fw_cfg` modules are loaded from `/etc/modules`. Request lines are
 logged to `/var/log/care-engine-agent.log`.
+
+`dockerd` uses the containerd image store (`"features":
+{"containerd-snapshotter": true}` in `/etc/docker/daemon.json`), which image
+digest checks rely on. Once dockerd answers, the agent logs the active store,
+e.g. `docker image store: containerd (overlayfs [["driver-type","io.containerd.snapshotter.v1"]])`,
+or a warning if it is not containerd.
+
+Before the clinic stack is installed (no `/var/lib/care/clinic/docker-compose.yml`),
+`stack.status` returns no services, `stack.stop`/`stack.down` succeed without
+doing anything, and `stack.logs` fails with error code `not_installed`.
 
 ## Smoke test
 
@@ -143,7 +154,7 @@ tar -C dist -xzf dist/care-engine-0.1.0-arm64.tar.gz
 app/cmd/vzboot/build.sh            # builds dist/vzboot, ad-hoc signed with
                                    # com.apple.security.virtualization
 dist/vzboot --bundle dist/care-engine-0.1.0-arm64 --data /tmp/data.img \
-  [--mem 4096 --cpus 2] [--call "POST /v1/ops/stack.status"] [--exit]
+  [--mem 4096 --cpus 2] [--call 'POST /v1/ops/stack.status [JSON body]'] [--exit]
 ```
 
 It creates a sparse 64 GiB data disk if absent, boots with the Linux boot

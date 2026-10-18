@@ -50,7 +50,7 @@ func main() {
 	readyTimeout := flag.Duration("timeout", 3*time.Minute, "how long to wait for docker_ready")
 	exit := flag.Bool("exit", false, "shut the VM down after the status check and calls instead of waiting for SIGINT")
 	var calls callFlags
-	flag.Var(&calls, "call", `extra request to make once ready, "METHOD /path" (repeatable), e.g. "POST /v1/ops/stack.status"`)
+	flag.Var(&calls, "call", `extra request to make once ready, "METHOD /path [JSON body]" (repeatable), e.g. "POST /v1/ops/stack.status"`)
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	if *bundle == "" || *data == "" {
@@ -290,12 +290,15 @@ func run(bundle, data, consoleLog string, mem uint64, cpus uint, readyTimeout ti
 	}
 
 	for _, c := range calls {
-		method, path, ok := strings.Cut(c, " ")
+		method, rest, ok := strings.Cut(c, " ")
 		if !ok {
-			return fmt.Errorf("--call %q: want \"METHOD /path\"", c)
+			return fmt.Errorf("--call %q: want \"METHOD /path [JSON body]\"", c)
 		}
+		path, reqBody, _ := strings.Cut(rest, " ")
 		var body []byte
-		if method == http.MethodPost || method == http.MethodPut {
+		if reqBody != "" {
+			body = []byte(reqBody)
+		} else if method == http.MethodPost || method == http.MethodPut {
 			body = []byte("{}")
 		}
 		code, out, err := do(ctx, client, method, path, body)

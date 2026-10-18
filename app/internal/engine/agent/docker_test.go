@@ -208,6 +208,9 @@ func TestDockerStackStatus(t *testing.T) {
 		t.Fatalf("empty: %+v %v", res, err)
 	}
 
+}
+
+func TestDockerWithoutComposeFile(t *testing.T) {
 	d, r := newDocker(func(Command) fakeRun { return fakeRun{err: errors.New("must not run")} })
 	d.Stat = func(name string) (os.FileInfo, error) {
 		if name != ComposeFile {
@@ -215,8 +218,19 @@ func TestDockerStackStatus(t *testing.T) {
 		}
 		return nil, fs.ErrNotExist
 	}
-	if res, err := d.StackStatus(context.Background()); err != nil || len(res.Services) != 0 || res.Services == nil {
-		t.Fatalf("no compose file: %+v %v", res, err)
+	ctx, em := context.Background(), &recEmitter{}
+	if res, err := d.StackStatus(ctx); err != nil || len(res.Services) != 0 || res.Services == nil {
+		t.Fatalf("stack.status: %+v %v", res, err)
+	}
+	if err := d.StackStop(ctx, protocol.StackStop{}, em); err != nil {
+		t.Fatalf("stack.stop: %v", err)
+	}
+	if err := d.StackDown(ctx, protocol.StackDown{}, em); err != nil {
+		t.Fatalf("stack.down: %v", err)
+	}
+	var oe *protocol.OpError
+	if err := d.StackLogs(ctx, protocol.StackLogs{Service: "backend", TailLines: 10}, em); !errors.As(err, &oe) || oe.Code != CodeNotInstalled {
+		t.Fatalf("stack.logs: %v", err)
 	}
 	if len(r.argv()) != 0 {
 		t.Fatalf("ran %v without a compose file", r.argv())
