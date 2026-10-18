@@ -36,6 +36,25 @@ clinic install|up|stop|migrate|status|logs|superuser`.
 | Install folder | `~/Library/Application Support/care-clinic/install/` | Copied from the app's embedded kit on setup and each launch. `backend.env` and `frontend.env` are preserved. |
 | Engine config area | Inside the VM | What compose actually reads: the uploaded kit files plus generated files. |
 
+`care-clinic-service ctl` embeds the kit too (`app/install`, staged by
+`stage-install.mjs`; `build.sh` stages it first). Its commands that render
+the kit (`clinic install`, `update`, `plugins`, `frontend`) use that embedded
+kit with the clinic's `backend.env` and `frontend.env` from the install
+folder, unless `--deployments dir` names another kit. A kit copied to disk
+earlier is never the default: it can predate a service.
+
+### A kit that would drop a service
+
+Compose removes a service that the uploaded `docker-compose.yml` no longer
+defines. A stale kit without `backup`, for example, removed the backup
+container and every later update then failed at its backup step. So
+`Configure` (the app and ctl alike) first lists the stack's services
+(running or stopped) and refuses, uploading nothing, when the kit lacks one:
+"the deployment kit has no backup service, which the clinic is running: the
+kit is out of date, so its configuration was not applied". Updates, plugin
+and frontend changes check the same in their `preflight` step, before any
+backup or build, and stop at once. Only ctl can override it, with `--force`.
+
 `Configure` uploads `docker-compose.yml` (as `compose.yml`), `backend.env`,
 `Caddyfile`, `minio-entrypoint.sh` and `setup.html`, plus three generated
 files:

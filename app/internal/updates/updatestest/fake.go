@@ -86,6 +86,8 @@ type World struct {
 	// Unbuildable are plugin names (or, for frontend rebuilds, REACT_*
 	// keys) whose image.build fails deterministically (build_failed).
 	Unbuildable map[string]bool
+	// KitErr is what CheckKit returns (a stale deployment kit).
+	KitErr error
 	// BadSettings are frontend settings (KEY=value) whose rebuilt frontend
 	// fails health while running.
 	BadSettings map[string]bool
@@ -542,6 +544,13 @@ func (w *World) Healthy() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.healthLocked()
+}
+
+// CheckKit implements updates.Stack; it is not recorded in Calls.
+func (w *World) CheckKit(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.KitErr
 }
 
 // DBSize implements updates.Stack.

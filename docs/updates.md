@@ -57,7 +57,7 @@ as its own journaled operation. Each step of an operation runs at most 3 times
 
 | Step | Does | Journal |
 | --- | --- | --- |
-| `preflight` | clock not behind the feed, free disk ≥ 2 × DB + image reserve, stack healthy (updates only) | |
+| `preflight` | clock not behind the feed, free disk ≥ 2 × DB + image reserve, stack healthy (updates only), the deployment kit has every service the stack has | |
 | `backup` | `backup.run`, then export the set to the host's `backup_dir` (skipped on a fresh install) | `backup_id` |
 | `images` | download tarballs, load/pull every image | |
 | `build` | rebuild the derived backend image with the installed plugin set on the new base when it has custom plugins ([plugins.md](plugins.md)) | `plugins.image` |
@@ -180,7 +180,8 @@ steps can be retried.
   rollback) or `Rollback` (undo) is called.
 - A step is tried 3 times, except permanent errors: a deterministic image
   build failure (`build_failed`), a missing builder or release `build_env`,
-  and rejected plugin specs or settings roll back at once.
+  a deployment kit that would drop a service, and rejected plugin specs or
+  settings roll back at once.
 - A rollback that fails 3 times leaves the journal `failed` and records
   `rollback_failed`; `Rollback` retries it.
 
@@ -188,9 +189,14 @@ steps can be retried.
 
 ```sh
 care-clinic-service ctl [--dev] update check  --desktop-version 0.2.0 --feed http://localhost:8787/current/updates.json
-care-clinic-service ctl [--dev] update apply  --desktop-version 0.2.0 --deployments deployments
+care-clinic-service ctl [--dev] update apply  --desktop-version 0.2.0
 care-clinic-service ctl [--dev] update status|history|resume|rollback --desktop-version 0.2.0
 ```
+
+The kit is the one built into `care-clinic-service` with the clinic's
+`backend.env` and `frontend.env` (or `--deployments dir`); a kit that lacks a
+service the clinic runs is refused unless `--force` (see
+[clinic lifecycle](clinic-lifecycle.md#a-kit-that-would-drop-a-service)).
 
 Release builds trust only the release keys; build with `-tags devfeed` to use
 the [demo feed](../demo/README.md).

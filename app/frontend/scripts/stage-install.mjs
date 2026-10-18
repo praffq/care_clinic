@@ -43,10 +43,12 @@ const items = readdirSync(source).filter((name) => !SKIP.has(name));
 if (items.length === 0) throw new Error(`nothing to stage: ${source} is empty`);
 
 // Clear first, so a file deleted from deployments/ cannot linger in an install
-// dir staged by an earlier build. .gitkeep is tracked and must survive.
+// dir staged by an earlier build. .gitkeep and kit.go (the Go package that
+// embeds the kit into care-clinic-service) are tracked and must survive.
+const TRACKED = new Set([".gitkeep", "kit.go"]);
 mkdirSync(install, { recursive: true });
 for (const stale of readdirSync(install)) {
-  if (stale !== ".gitkeep") rmSync(join(install, stale), { recursive: true, force: true });
+  if (!TRACKED.has(stale)) rmSync(join(install, stale), { recursive: true, force: true });
 }
 for (const item of items) {
   cpSync(join(source, item), join(install, item), { recursive: true });

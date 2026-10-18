@@ -19,7 +19,7 @@ const clinicUsage = `usage: care-clinic-service ctl [--dev] clinic <command> [fl
 Installs and drives the CARE stack in the engine without the desktop app.
 
 commands:
-  install --images <dir> [--deployments dir] [--backend care-backend-B]
+  install --images <dir> [--deployments dir] [--force] [--backend care-backend-B]
           [--origin https://host ...] [--admin user --admin-password pw]
                      load the dev images (scripts/dev-images.sh), upload the
                      config for <mdns_name>.local, migrate and start, then
@@ -111,7 +111,12 @@ func clinicInstall(ctx context.Context, c *control.Client, rt *stack.Runtime, ar
 	if err != nil {
 		return err
 	}
-	if err := rt.Install(ctx, os.DirFS(*f.kit), host, f.origins, imgs, plugs); err != nil {
+	kit, err := f.kitFS()
+	if err != nil {
+		return err
+	}
+	rt.AllowDroppedServices = *f.force
+	if err := rt.Install(ctx, kit, host, f.origins, imgs, plugs); err != nil {
 		return err
 	}
 	if err := u.Reinstalled(ctx); err != nil {

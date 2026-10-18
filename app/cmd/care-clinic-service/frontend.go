@@ -29,7 +29,7 @@ commands:
   reset                      drop every override (the published frontend)
 
 flags (as for ctl update):
-  --feed url --state dir --deployments dir --origin url --images dir
+  --feed url --state dir --deployments dir --force --origin url --images dir
   --desktop-version v       only checked by ctl update (default 0.0.0)
 `
 

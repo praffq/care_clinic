@@ -9,9 +9,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/stack/stacktest"
@@ -264,7 +266,7 @@ func TestInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	testCert() // small keys
-	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull RunMigrations StackUp Manage"
+	want := "ImageLoad ImagePull ImagePull ImagePull ImagePull ImagePull ImagePull StackStatus RunMigrations StackUp Manage"
 	if got := strings.Join(svc.Methods(), " "); got != want {
 		t.Errorf("calls = %s\nwant    %s", got, want)
 	}
@@ -461,5 +463,132 @@ func TestInstalledImages(t *testing.T) {
 	}
 	if _, err := ParseStackImages([]byte("IMAGE_BACKEND=x@sha256:bad\n")); err == nil {
 		t.Error("parsed a bad stack.env")
+	}
+}
+
+// staleKit is the deployment kit with the backup service removed from its
+// compose file, like a kit from before backups.
+func staleKit(t *testing.T) fstest.MapFS {
+	t.Helper()
+	m := fstest.MapFS{}
+	for _, f := range kitFiles {
+		b, err := fs.ReadFile(kit, f.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m[f.src] = &fstest.MapFile{Data: b}
+	}
+	var out []string
+	in, found := false, false
+	for _, line := range strings.SplitAfter(string(m["docker-compose.yml"].Data), "\n") {
+		if line == "  backup:\n" {
+			in, found = true, true
+			continue
+		}
+		// The service ends at the next line indented less than its keys.
+		if in && strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "   ") {
+			in = false
+		}
+		if !in {
+			out = append(out, line)
+		}
+	}
+	if !found {
+		t.Fatal("docker-compose.yml has no backup service")
+	}
+	compose := strings.Join(out, "")
+	m["docker-compose.yml"] = &fstest.MapFile{Data: []byte(compose)}
+	return m
+}
+
+func TestComposeServices(t *testing.T) {
+	b, err := fs.ReadFile(kit, "docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ComposeServices(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range protocol.Services {
+		if !slices.Contains(got, string(s)) {
+			t.Errorf("services = %v, missing %s", got, s)
+		}
+	}
+	stale, err := ComposeServices(staleKit(t)["docker-compose.yml"].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(stale, "backup") || !slices.Contains(stale, "backend") || !slices.Contains(stale, "caddy") {
+		t.Errorf("stale kit services = %v, want all but backup", stale)
+	}
+	for _, bad := range []string{"services: [", "name: x\n"} {
+		if _, err := ComposeServices([]byte(bad)); err == nil {
+			t.Errorf("ComposeServices(%q) = nil error", bad)
+		}
+	}
+}
+
+func TestConfigureRefusesDroppedService(t *testing.T) {
+	svc := stacktest.New(t)
+	running := protocol.StackStatusResult{}
+	for _, s := range []protocol.Service{protocol.ServiceBackend, protocol.ServiceBackup, protocol.ServiceCaddy} {
+		running.Services = append(running.Services, protocol.ServiceState{Name: s, State: "running"})
+	}
+	svc.Fake.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+		if _, ok := op.(*protocol.StackStatus); ok {
+			return running, nil
+		}
+		return nil, nil
+	}
+	r := &Runtime{Service: svc, StateDir: t.TempDir()}
+	stale := staleKit(t)
+
+	err := r.Configure(ctxT(t), stale, "care.local", nil, testImages(), "")
+	var dse *DroppedServicesError
+	if !errors.As(err, &dse) || !slices.Equal(dse.Services, []protocol.Service{protocol.ServiceBackup}) {
+		t.Fatalf("Configure(stale kit) = %v, want the backup service refused", err)
+	}
+	if !strings.Contains(err.Error(), "no backup service") || !strings.Contains(err.Error(), "out of date") {
+		t.Errorf("message = %q", err)
+	}
+	if _, err := os.Stat(filepath.Join(svc.Files, "config", "compose.yml")); !os.IsNotExist(err) {
+		t.Errorf("the stale kit was uploaded (%v)", err)
+	}
+	if err := r.CheckKit(ctxT(t), stale); !errors.As(err, &dse) {
+		t.Errorf("CheckKit(stale kit) = %v", err)
+	}
+
+	// The current kit has every running service.
+	if err := r.CheckKit(ctxT(t), kit); err != nil {
+		t.Errorf("CheckKit(kit) = %v", err)
+	}
+	if err := r.Configure(ctxT(t), kit, "care.local", nil, testImages(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Forced, the stale kit is rendered.
+	r.AllowDroppedServices = true
+	if err := r.CheckKit(ctxT(t), stale); err != nil {
+		t.Errorf("forced CheckKit = %v", err)
+	}
+	if err := r.Configure(ctxT(t), stale, "care.local", nil, testImages(), ""); err != nil {
+		t.Errorf("forced Configure = %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(svc.Files, "config", "compose.yml"))
+	if strings.Contains(string(b), "\n  backup:") {
+		t.Error("forced Configure did not upload the stale compose file")
+	}
+
+	// A status failure is not taken for an empty stack.
+	r.AllowDroppedServices = false
+	svc.Fake.Handle = func(_ context.Context, op protocol.Op, _ agent.Emitter) (any, error) {
+		if _, ok := op.(*protocol.StackStatus); ok {
+			return nil, &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "compose ps failed"}
+		}
+		return nil, nil
+	}
+	if err := r.CheckKit(ctxT(t), kit); err == nil || !strings.Contains(err.Error(), "compose ps failed") {
+		t.Errorf("CheckKit with a failing status = %v", err)
 	}
 }
