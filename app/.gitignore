@@ -20,3 +20,5 @@ build/windows/installer/wails_tools.nsh
 build/windows/installer/tmp/
 # wails dev
 .wails/
+# dev update-feed signing key (only devkeys/dev.pub is committed)
+dev.key

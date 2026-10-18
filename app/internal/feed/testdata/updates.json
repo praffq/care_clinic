@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "revision": 42,
+  "published_at": "2026-10-01T00:00:00Z",
+  "expires": "2026-11-01T00:00:00Z",
+  "desktop": [
+    {
+      "version": "0.2.0",
+      "requires": { "engine": ">=0.1.0 <0.2.0" },
+      "assets": {
+        "darwin-arm64": { "url": "https://github.com/praffq/care_clinic/releases/download/desktop-v0.2.0/CARE-Clinic-darwin-arm64.dmg", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size": 104857600 },
+        "windows-amd64": { "url": "https://github.com/praffq/care_clinic/releases/download/desktop-v0.2.0/CARE-Clinic-windows-amd64.exe", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "size": 94371840 }
+      }
+    }
+  ],
+  "engine": [
+    {
+      "version": "0.1.1",
+      "requires": { "desktop": ">=0.2.0" },
+      "data_schema": 1,
+      "assets": {
+        "arm64": { "url": "https://github.com/praffq/care_clinic/releases/download/engine-v0.1.1/engine-arm64.qcow2.zst", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 734003200 },
+        "amd64": { "url": "https://github.com/praffq/care_clinic/releases/download/engine-v0.1.1/engine-amd64.qcow2.zst", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 754974720 }
+      }
+    }
+  ],
+  "care": [
+    {
+      "version": "3.1.0+be.4f2a1c.fe.9b33d0",
+      "released_at": "2026-09-28T10:00:00Z",
+      "requires": { "desktop": ">=0.2.0", "engine": ">=0.1.0" },
+      "migrations": true,
+      "images": {
+        "backend": { "ref": "ghcr.io/praffq/care_clinic/care-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        "frontend": { "ref": "ghcr.io/praffq/care_clinic/care-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        "caddy": { "ref": "ghcr.io/praffq/care_clinic/caddy@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        "backup": { "ref": "ghcr.io/praffq/care_clinic/backup@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+      },
+      "build_env": { "REACT_CARE_API_URL": "https://care.local" }
+    },
+    {
+      "version": "3.1.0+be.7c91e0.fe.9b33d0",
+      "released_at": "2026-09-30T16:30:00Z",
+      "requires": { "desktop": ">=0.2.0", "engine": ">=0.1.0" },
+      "migrations": false,
+      "images": {
+        "backend": { "ref": "ghcr.io/praffq/care_clinic/care-backend@sha256:3333333333333333333333333333333333333333333333333333333333333333", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" },
+        "frontend": { "ref": "ghcr.io/praffq/care_clinic/care-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        "caddy": { "ref": "ghcr.io/praffq/care_clinic/caddy@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        "backup": { "ref": "ghcr.io/praffq/care_clinic/backup@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+      }
+    }
+  ],
+  "support_images": {
+    "postgres": { "ref": "docker.io/library/postgres@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+    "redis": { "ref": "docker.io/library/redis@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" },
+    "silo": { "ref": "docker.io/pgsty/silo@sha256:1111111111111111111111111111111111111111111111111111111111111111", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+  },
+  "blocked": ["engine:0.1.0"]
+}
