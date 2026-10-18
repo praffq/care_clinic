@@ -16,52 +16,25 @@ import (
 )
 
 type UninstallOptions struct {
-	RemoveImages            bool
-	RemoveInstallDir        bool
-	RemoveBackups           bool
-	RemoveUnusedCertificate bool
+	// RemoveData also deletes the clinic database and files in the engine.
+	RemoveData bool
+	// RemoveInstallDir deletes this computer's copy of the deployment kit.
+	RemoveInstallDir bool
 }
 
+// Uninstall removes the CARE stack from the engine and undoes this
+// computer's hosts entry, certificate trust and home access. The service and
+// engine stay installed.
 func (e *Clinic) Uninstall(opts UninstallOptions) error {
-	resources, err := e.inspectProject()
+	r, err := e.runtime()
 	if err != nil {
 		return err
 	}
-	if opts.RemoveInstallDir && !opts.RemoveBackups {
-		if err := e.Backups().PreserveBackupCertificate(); err != nil {
-			return err
-		}
+	rootPEM := e.caddyRootPEM()
+	if err := r.Down(e.context(), opts.RemoveData); err != nil {
+		return fmt.Errorf("couldn't remove CARE from the engine: %w", err)
 	}
-	rootPEM := ""
-	if info, err := os.Stat(filepath.Join(e.InstallDir, "docker-compose.yml")); err == nil {
-		if !info.Mode().IsRegular() {
-			return errors.New("the installed compose file is not a regular file")
-		}
-		rootPEM = e.caddyRootPEM()
-		e.logln("Removing containers, network, and data volumes...")
-		if err := e.dc("down", "-v", "--remove-orphans"); err != nil {
-			e.logln("  (compose down reported an error - continuing cleanup)")
-		}
-		if err := e.TeardownProject(); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	} else {
-		for _, resource := range resources {
-			if len(resource.ids) > 0 {
-				return errors.New("clinic resources remain but this installation's compose file is missing; reopen CARE Clinic to restore its files before uninstalling")
-			}
-		}
-	}
-
 	var failed []error
-	if opts.RemoveImages {
-		e.logln("Removing Docker images...")
-		if err := e.removeImages(); err != nil {
-			failed = append(failed, err)
-		}
-	}
 	for _, detail := range e.revertSystemChanges(rootPEM) {
 		failed = append(failed, errors.New(detail))
 	}
@@ -71,35 +44,18 @@ func (e *Clinic) Uninstall(opts UninstallOptions) error {
 	if err := errors.Join(failed...); err != nil {
 		return err
 	}
-	if opts.RemoveBackups {
-		e.logln("Removing backups in " + e.backupDir())
-		if err := e.Backups().DeleteBackups(); err != nil {
-			return err
-		}
-	}
 	if opts.RemoveInstallDir {
-		if err := e.removeInstallFiles(opts.RemoveUnusedCertificate); err != nil {
-			return err
-		}
+		return e.RemoveInstallFiles()
 	}
-	e.reportLeftovers(opts, nil)
 	return nil
 }
 
-func (e *Clinic) removeInstallFiles(removeUnusedKey bool) error {
-	if looksLikeSourceRepo(e.InstallDir) {
-		e.logln("Install dir looks like a source checkout - left in place: " + e.InstallDir)
-		return fmt.Errorf("the source checkout at %s was kept; its files must not be deleted automatically", e.InstallDir)
-	}
+// RemoveInstallFiles deletes this computer's copy of the deployment kit.
+func (e *Clinic) RemoveInstallFiles() error {
 	dir := filepath.Clean(e.InstallDir)
 	if !filepath.IsAbs(dir) || !strings.EqualFold(filepath.Base(dir), "install") ||
 		!strings.EqualFold(filepath.Base(filepath.Dir(dir)), "care-clinic") {
 		return fmt.Errorf("refusing to delete an unrecognized installation directory: %s", dir)
-	}
-	if removeUnusedKey {
-		if err := e.Backups().DiscardUnusedCertificate(); err != nil {
-			return err
-		}
 	}
 	e.logln("Removing installed files " + dir)
 	return os.RemoveAll(dir)

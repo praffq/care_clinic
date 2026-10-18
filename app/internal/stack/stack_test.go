@@ -402,3 +402,58 @@ func TestCreateSuperuser(t *testing.T) {
 		t.Errorf("existing user: %v", err)
 	}
 }
+
+func TestDown(t *testing.T) {
+	svc := stacktest.New(t)
+	state := t.TempDir()
+	r := &Runtime{Service: svc, StateDir: state}
+	if err := r.Install(ctxT(t), kit, "care.local", nil, testImages()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Down(ctxT(t), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(state, SecretsEnv)); err != nil {
+		t.Errorf("keeping data removed the secrets: %v", err)
+	}
+	if err := r.Down(ctxT(t), true); err != nil {
+		t.Fatal(err)
+	}
+	calls := svc.Fake.Calls()
+	if op := calls[len(calls)-1].Op.(*protocol.StackDown); !op.RemoveVolumes || op.ConfirmPurge != protocol.PurgeConfirmation {
+		t.Errorf("purge op = %+v", op)
+	}
+	if left, _ := os.ReadDir(filepath.Join(svc.Files, "config")); len(left) != 0 {
+		t.Errorf("config left after purge: %v", left)
+	}
+	if _, err := os.Stat(filepath.Join(state, SecretsEnv)); !os.IsNotExist(err) {
+		t.Errorf("host secrets kept after purge: %v", err)
+	}
+}
+
+func TestInstalledImages(t *testing.T) {
+	svc := stacktest.New(t)
+	r := &Runtime{Service: svc, StateDir: t.TempDir()}
+	if _, err := r.InstalledImages(ctxT(t)); !isNotFound(err) {
+		t.Fatalf("no clinic: err = %v", err)
+	}
+	want := testImages()
+	if err := r.Install(ctxT(t), kit, "care.local", nil, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.InstalledImages(ctxT(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d images", len(got))
+	}
+	for i := range want {
+		if got[i].Ref() != want[i].Ref() || got[i].Role != want[i].Role || got[i].Tarball != "" {
+			t.Errorf("image %d = %+v, want %s", i, got[i], want[i].Ref())
+		}
+	}
+	if _, err := ParseStackImages([]byte("IMAGE_BACKEND=x@sha256:bad\n")); err == nil {
+		t.Error("parsed a bad stack.env")
+	}
+}

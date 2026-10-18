@@ -2,8 +2,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
-import { continueServerChecks } from "./helpers/setup";
-import { RUN_STEPS } from "../src/lib/run-steps";
+import { continueServerChecks, reachReview } from "./helpers/setup";
+import { applyProgress, currentStep, failActiveStep, SETUP_STEPS, stepsForRetry } from "../src/lib/run-steps";
 import type { AppUpdate } from "../src/types";
 
 const password = "ClinicTest123";
@@ -12,16 +12,29 @@ const availableUpdate: AppUpdate = {
   current: "0.1.5", version: "0.1.6", available: true,
   notes_url: "", asset: "test-only", size: 50e6,
 };
-const nativeMilestones = [
-  "Backup encryption ready; only the public certificate is installed.",
-  "Generated a random DJANGO_SECRET_KEY in backend.env",
-  "Building CARE's images - the backend and app build in the background while setup continues...",
-  "Starting the secure gateway so this computer can be set up now...",
-  "Waiting for the backend and app images to finish building...",
-  "Starting CARE...",
-  "Applying database migrations...",
-  "Waiting for CARE to become healthy...",
+type Step = { step: string; state: "active" | "done" | "skipped"; detail?: string; done?: number; total?: number };
+// What the host sends for a fresh install that downloads CARE.
+const hostSteps: Step[] = [
+  { step: "service", state: "active" }, { step: "service", state: "done" },
+  { step: "engine", state: "active" },
+  { step: "engine", state: "active", detail: "Version 0.1.2", done: 0, total: 300e6 },
+  { step: "engine", state: "active", detail: "Version 0.1.2", done: 300e6, total: 300e6 },
+  { step: "engine", state: "done", detail: "Version 0.1.2" },
+  { step: "engine-ready", state: "active" }, { step: "engine-ready", state: "done" },
+  { step: "address", state: "active", detail: "care-hospital.local" }, { step: "address", state: "done", detail: "care-hospital.local" },
+  { step: "images", state: "active" },
+  { step: "images", state: "active", detail: "Downloading CARE server", done: 250e6, total: 1000e6 },
+  { step: "images", state: "done" },
+  { step: "configure", state: "active" }, { step: "configure", state: "done" },
+  { step: "database", state: "active" }, { step: "database", state: "done" },
+  { step: "start", state: "active" }, { step: "start", state: "done" },
+  { step: "admin", state: "active" }, { step: "admin", state: "done" },
+  { step: "computer", state: "active" },
 ];
+const downloading: Step = { step: "images", state: "active", detail: "Downloading CARE server", done: 250e6, total: 1000e6 };
+const send = (page: Page, ...steps: Step[]) => page.evaluate((list) => {
+  for (const ev of list) window.careTest.emit("setup-progress", ev);
+}, steps);
 const forward = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
 const install = (page: Page) => page.getByRole("button", { name: "Install", exact: true });
 const retry = (page: Page) => page.getByRole("button", { name: "Try again", exact: true });
@@ -36,25 +49,13 @@ test.beforeEach(async ({ page }) => {
   page.on("pageerror", (error) => { throw error; });
 });
 
-async function review(page: Page, { platform = "darwin", residue = false } = {}) {
-  await page.goto(`/tests/fixtures/index.html?scenario=${residue ? "setup-cleanup" : "current"}&role=server&platform=${platform}`);
-  await continueServerChecks(page, { removeResidue: residue });
-  await expect(page.getByRole("heading", { name: "Choosing the clinic address", exact: true })).toBeVisible();
-  await page.getByLabel("Clinic address", { exact: true }).fill(clinicName);
-  await forward(page).click();
-  await page.getByRole("button", { name: "Change folder", exact: true }).click();
-  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
-  await page.getByRole("button", { name: "Select saved file", exact: true }).click();
-  await forward(page).click();
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByLabel("Confirm password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
-  await forward(page).click();
-  await expect(page.getByRole("heading", { name: "Review before installing", exact: true })).toBeVisible();
+async function review(page: Page, { platform = "darwin" } = {}) {
+  await page.goto(`/tests/fixtures/index.html?scenario=current&role=server&platform=${platform}`);
+  await reachReview(page, { address: clinicName, password });
   await expect(install(page)).toBeEnabled();
 }
 
-async function begin(page: Page, options: { platform?: string; residue?: boolean } = {}) {
+async function begin(page: Page, options: { platform?: string } = {}) {
   await review(page, options);
   const labels = await railLabels(page);
   // RunSetup is a safe simulated acceptance; native installation never runs.
@@ -75,27 +76,22 @@ async function fail(page: Page, offerUpdate = false) {
   if (offerUpdate) await expect(page.getByRole("button", { name: "Update now", exact: true })).toBeEnabled();
 }
 
-async function retryableFailure(page: Page, download = true, offerUpdate = false) {
+async function retryableFailure(page: Page, offerUpdate = false) {
   if (offerUpdate) await page.evaluate((update) => window.careTest.setUpdate(update), availableUpdate);
-  await page.evaluate((interrupted) => {
+  await page.evaluate(() => {
     window.careTest.fixtures.setupStarted = true;
     window.careTest.emit("care-log", "error: download failed /private/diagnostics: exit status 1");
-    window.careTest.emit("setup-failed", { can_retry: true, download_interrupted: interrupted });
+    window.careTest.emit("setup-failed", { can_retry: true });
     window.careTest.emit("care-done", 1, "setup");
-  }, download);
-  await expect(page.getByRole("heading", {
-    name: download ? "The download was interrupted" : "Something went wrong during installation", exact: true,
-  })).toBeVisible();
+  });
+  await expect(failedHeading(page)).toBeVisible();
   await expect(retry(page)).toBeEnabled();
   if (offerUpdate) await expect(page.getByRole("button", { name: "Update now", exact: true })).toBeEnabled();
 }
 
 const savedSetup = (page: Page) => page.evaluate(() => ({
   address: window.careTest.state.mdns_name,
-  backupDir: window.careTest.fixtures.backupDir,
   password: window.careTest.fixtures.adminPassword,
-  recovery: window.careTest.fixtures.recovery,
-  backups: window.careTest.fixtures.backups,
 }));
 
 async function fits(page: Page) {
@@ -119,39 +115,55 @@ async function capture(page: Page, name: string) {
   await page.screenshot({ path: join(process.env.CARE_SCREENSHOTS_DIR, `${name}.png`), animations: "disabled" });
 }
 
-test("all eight milestones match actual native log lines, not error mentions", () => {
-  expect(RUN_STEPS).toHaveLength(8);
-  for (const [index, line] of nativeMilestones.entries()) {
-    expect(RUN_STEPS.findIndex((step) => step.re.test(line))).toBe(index);
-    expect(RUN_STEPS.some((step) => step.re.test(`error: ${line}`))).toBe(false);
-  }
-  for (const line of ["Starting one-time setup...", "error: database migrations failed", "CARE is up to date.", "backup encryption is not set up"]) {
-    expect(RUN_STEPS.some((step) => step.re.test(line))).toBe(false);
-  }
+test("setup steps follow host progress events in order", () => {
+  let steps = {};
+  expect(currentStep(steps)).toBe(0);
+  steps = applyProgress(steps, { step: "service", state: "active" });
+  steps = applyProgress(steps, { step: "engine", state: "active" });
+  expect(steps).toMatchObject({ service: { status: "done" }, engine: { status: "active" } });
+  steps = applyProgress(steps, { step: "engine", state: "skipped", detail: "Version 0.1.1 is already installed" });
+  steps = applyProgress(steps, { step: "nonsense", state: "active" });
+  expect(Object.keys(steps)).toEqual(["service", "engine"]);
+  expect(currentStep(steps)).toBe(2);
+  steps = applyProgress(steps, { step: "images", state: "active", done: 5, total: 10 });
+  steps = applyProgress(steps, { step: "images", state: "active", done: 7, total: 10 });
+  expect(steps).toMatchObject({ images: { status: "active", done: 7, total: 10 } });
+  steps = failActiveStep(steps);
+  expect(steps).toMatchObject({ images: { status: "failed" } });
+  expect(currentStep(steps)).toBe(SETUP_STEPS.findIndex((s) => s.id === "images"));
+  expect(Object.keys(stepsForRetry(steps))).toEqual(["service", "engine"]);
 });
 
-test("installation follows log milestones without percentages, controls, or update checks", async ({ page }) => {
+test("installation lists every host step in order with download progress", async ({ page }) => {
   await begin(page);
   const updateChecks = await calls(page, "CheckAppUpdate");
-  await expect(page.getByRole("heading", { name: "Preparing the installation", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: SETUP_STEPS[0].label, exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeFocused();
-  await expect(page.getByRole("progressbar", { name: "Installation progress", exact: true })).not.toHaveAttribute("aria-valuenow");
+  await expect(page.locator(".install-stage")).toHaveText(SETUP_STEPS.map((s) => new RegExp(s.label)));
+  await expect(page.locator(".install-stage-pending")).toHaveCount(SETUP_STEPS.length);
   await expect(page.getByRole("button")).toHaveCount(1);
-  for (const [index, line] of nativeMilestones.entries()) {
-    await page.evaluate((message) => window.careTest.emit("care-log", message), line);
-    await expect(page.getByRole("heading", { name: RUN_STEPS[index].label, exact: true })).toBeVisible();
-    await expect(page.locator(".install-stage[aria-current=step]")).toContainText(RUN_STEPS[index].label);
+  for (const ev of hostSteps) {
+    await send(page, ev);
+    if (ev.state !== "active") continue;
+    const label = SETUP_STEPS.find((s) => s.id === ev.step)!.label;
+    await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
+    await expect(page.locator(".install-stage[aria-current=step]")).toContainText(label);
+    if (ev.total) {
+      const pct = Math.floor((ev.done! / ev.total) * 100);
+      await expect(page.getByRole("progressbar", { name: label })).toHaveAttribute("aria-valuenow", String(pct));
+      await expect(page.locator(".install-stage-bytes")).toHaveText(`${(ev.done! / 1e6).toFixed(1)} MB of ${(ev.total / 1e6).toFixed(1)} MB · ${pct}%`);
+      await capture(page, `install-progress-${ev.step}-${pct}`);
+    }
   }
-  await expect(page.locator(".install-stage-state")).toHaveCount(0);
-  await expect(page.locator(".install-screen").getByText(/^(earlier|now|latest)$/i)).toHaveCount(0);
+  await expect(page.locator(".install-stage-done")).toHaveCount(SETUP_STEPS.length - 1);
+  await expect(page.getByText("Step 10 of 10", { exact: true })).toBeVisible();
+  await expect(page.locator(".install-stage-done").filter({ hasText: SETUP_STEPS[1].label })).toContainText("Version 0.1.2");
   await page.evaluate(() => {
     window.careTest.emit("care-log", "error: Applying database migrations failed: private diagnosis");
-    window.careTest.emit("care-log", "Generated a random DJANGO_SECRET_KEY in backend.env");
     window.careTest.emit("care-done", 0, "prerequisite");
     window.careTest.emit("care-done", 1, "app-update");
   });
-  await expect(page.getByRole("heading", { name: "Checking the clinic", exact: true })).toBeVisible();
-  await expect(page.locator(".install-screen")).not.toContainText(/\d+%|private diagnosis|Technical details|Your clinic is ready/);
+  await expect(page.locator(".install-screen")).not.toContainText(/private diagnosis|Technical details|Your clinic is ready/);
   await expect(page.getByRole("button", { name: /Back|Cancel|Update/ })).toHaveCount(0);
   expect(await calls(page, "CheckAppUpdate")).toBe(updateChecks);
   expect(await calls(page, "CleanupFailedInstall")).toBe(0);
@@ -159,19 +171,30 @@ test("installation follows log milestones without percentages, controls, or upda
   expect(await calls(page, "OpenLogFolder")).toBe(1);
 });
 
-for (const [platform, residue, count] of [["windows", false, 10], ["darwin", false, 8], ["darwin", true, 8]] as const) {
-  test(`installation and failure keep the ${count}-step rail ${residue ? "after cleanup" : "on a clean computer"} and fit both window sizes`, async ({ page }) => {
-    const labels = await begin(page, { platform, residue });
+test("a reused engine shows as skipped with its version", async ({ page }) => {
+  await begin(page);
+  await send(page, { step: "service", state: "active" }, { step: "service", state: "done" },
+    { step: "engine", state: "active" }, { step: "engine", state: "skipped", detail: "Version 0.1.1 is already installed" },
+    { step: "engine-ready", state: "active" });
+  await expect(page.locator(".install-stage-skipped")).toContainText("Version 0.1.1 is already installed");
+  await expect(page.getByRole("heading", { name: SETUP_STEPS[2].label, exact: true })).toBeVisible();
+  await capture(page, "install-engine-skipped");
+});
+
+for (const [platform, count] of [["windows", 5], ["darwin", 5]] as const) {
+  test(`installation and failure keep the ${count}-step rail on ${platform} and fit both window sizes`, async ({ page }) => {
+    const labels = await begin(page, { platform });
     expect(labels).toHaveLength(count);
     expect(await railLabels(page)).toEqual(labels);
     await expect(page.getByText(`Step ${count} of ${count}`, { exact: true })).toBeVisible();
-    await page.evaluate((line) => window.careTest.emit("care-log", line), nativeMilestones[4]);
+    await send(page, ...hostSteps.slice(0, 10), downloading);
     for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) {
       await page.setViewportSize(size);
       await fits(page);
-      await capture(page, `install-${count}-steps-${size.width}x${size.height}`);
+      await capture(page, `install-${platform}-${size.width}x${size.height}`);
     }
     await fail(page, true);
+    await expect(page.getByText("It stopped at “Downloading CARE”.", { exact: false })).toBeVisible();
     expect(await railLabels(page)).toEqual(labels);
     await expect(page.locator(".on-rail-step[aria-current=step]")).toContainText("Installation stopped");
     await expect(page.locator(".install-version")).toHaveText("Version 0.1.5");
@@ -180,30 +203,27 @@ for (const [platform, residue, count] of [["windows", false, 10], ["darwin", fal
       await page.setViewportSize(size);
       await fits(page);
       await expect(retry(page)).toBeInViewport();
-      await capture(page, `install-failed-${count}-steps-${size.width}x${size.height}`);
+      await capture(page, `install-failed-${platform}-${size.width}x${size.height}`);
     }
-    await page.locator("#install-retry-consequences").scrollIntoViewIfNeeded();
-    await expect(page.getByText(/Keep your old backup recovery files/)).toBeInViewport();
-    await fits(page);
   });
 }
 
 test("the warning measures 15 minutes without an actual care-log line, not total elapsed time", async ({ page }) => {
   await page.clock.install();
   await begin(page);
-  await page.evaluate((line) => window.careTest.emit("care-log", line), nativeMilestones[4]);
+  await send(page, downloading);
   const warning = page.getByText("This is taking longer than usual", { exact: true });
   await page.clock.fastForward(14 * 60 * 1000 + 59 * 1000);
   await expect(warning).toHaveCount(0);
   await page.clock.fastForward(1000);
   await expect(warning).toBeVisible();
-  await expect(page.getByText("Last reported stage", { exact: true })).toBeVisible();
+  await expect(page.getByText("Last reported step", { exact: true })).toBeVisible();
   await expect(page.locator(".install-screen")).not.toContainText(/Slow internet|still working|still progressing/);
   await capture(page, "install-no-log-warning");
   await page.evaluate(() => window.careTest.emit("care-log", "unmatched build output - still receiving host messages"));
   await page.clock.fastForward(1000);
   await expect(warning).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: RUN_STEPS[4].label, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Downloading CARE", exact: true })).toBeVisible();
   await page.clock.fastForward(14 * 60 * 1000 + 58 * 1000);
   await expect(warning).toHaveCount(0);
   await page.evaluate(() => window.runtime.LogPrint("a UI-originated log message is not a care-log event"));
@@ -264,9 +284,6 @@ test("failure is honest about partial setup, keeps diagnostics in the log, and p
   await expect(page.locator(".install-screen")).not.toContainText(/nothing is running|nothing was saved|throw.*away|exit status|\/private\/diagnostics|last output/i);
   await expect(page.locator(".install-screen pre")).toHaveCount(0);
   await expect(retry(page)).toHaveAttribute("aria-describedby", "install-retry-consequences");
-  await expect(page.locator("#install-retry-consequences")).toContainText("clinic address and existing backups are kept");
-  await expect(page.locator("#install-retry-consequences")).toContainText("old CARE Clinic admin codes stop working");
-  await expect(page.locator("#install-retry-consequences")).toContainText("Keep your old backup recovery files");
   expect(await calls(page, "CleanupFailedInstall")).toBe(0);
   await page.evaluate(() => window.careTest.failNext("OpenLogFolder", "open /private/diagnostics: exit status 1"));
   await page.getByRole("button", { name: "Open log file", exact: true }).click();
@@ -278,10 +295,9 @@ for (const [error, friendly] of [
   ["permission denied at /private/install: exit status 1", "The unfinished installation couldn't be cleared."],
   ["User cancelled the authorization dialog (-128)", "Cleanup was cancelled."],
 ] as const) {
-  test(`retry handles ${friendly.toLowerCase()} and preserves backups while resetting setup choices`, async ({ page }) => {
+  test(`retry handles ${friendly.toLowerCase()} and resets the password`, async ({ page }) => {
     await begin(page);
     await fail(page, true);
-    const backups = await page.evaluate(() => window.careTest.fixtures.backups);
     await page.evaluate((detail) => {
       window.careTest.hold("CleanupFailedInstall");
       window.careTest.failNext("CleanupFailedInstall", detail);
@@ -299,12 +315,6 @@ for (const [error, friendly] of [
     await continueServerChecks(page);
     await expect(page.getByRole("heading", { name: "Choosing the clinic address", exact: true })).toBeVisible();
     await expect(page.getByLabel("Clinic address", { exact: true })).toHaveValue(clinicName);
-    expect(await page.evaluate(() => window.careTest.fixtures.backups)).toEqual(backups);
-    expect(await page.evaluate(() => window.careTest.fixtures.recovery)).toMatchObject({ backup_saved: false, backup_verified: false, codes_saved: false });
-    await forward(page).click();
-    await expect(page.getByText("/test-fixtures/Desktop/care-db-backups", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
-    await page.getByRole("button", { name: "Select saved file", exact: true }).click();
     await forward(page).click();
     await expect(page.getByLabel("Password", { exact: true })).toHaveValue("");
     await expect(page.getByLabel("Confirm password", { exact: true })).toHaveValue("");
@@ -321,30 +331,7 @@ test("Back to setup returns quietly without cleanup or discarding saved choices"
   expect(await calls(page, "CleanupFailedInstall")).toBe(0);
   await expect(page.getByLabel("Clinic address", { exact: true })).toHaveValue(clinicName);
   await forward(page).click();
-  await expect(page.getByText("/test-fixtures/CLINIC-BACKUP/care-db-backups", { exact: true })).toBeVisible();
-  await forward(page).click();
   await expect(page.getByLabel("Password", { exact: true })).toHaveValue(password);
-  expect(await page.evaluate(() => window.careTest.fixtures.recovery.codes_saved)).toBe(true);
-});
-
-test("an interrupted download explains reconnecting without offering cleanup or an app update", async ({ page }) => {
-  await begin(page);
-  const updateChecks = await calls(page, "CheckAppUpdate");
-  await retryableFailure(page);
-  await expect(page.getByRole("heading", { name: "The download was interrupted", exact: true })).toBeFocused();
-  await expect(page.locator(".install-screen")).toContainText("Keep CARE Clinic open, reconnect to the internet, then try again.");
-  await expect(page.locator("#install-retry-consequences")).toContainText("clinic address, backup folder, admin password and saved recovery files");
-  await expect(page.locator(".install-screen")).not.toContainText(/exit status|\/private\/diagnostics|old CARE Clinic admin codes stop working|clears the unfinished install first/);
-  await page.mouse.move(0, 0);
-  await expect(retry(page)).toHaveCSS("background-color", "rgb(5, 122, 85)");
-  await expect(page.getByRole("button", { name: /Update now|Check again/ })).toHaveCount(0);
-  expect(await calls(page, "CheckAppUpdate")).toBe(updateChecks);
-  expect(await calls(page, "CleanupFailedInstall")).toBe(0);
-  for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) {
-    await page.setViewportSize(size);
-    await fits(page);
-    await expect(retry(page)).toBeInViewport();
-  }
 });
 
 test("repeated installation retries preserve the original setup until native success", async ({ page }) => {
@@ -379,7 +366,7 @@ test("a rejected installation retry stays recoverable and cannot run twice", asy
   const saved = await savedSetup(page);
   await page.evaluate(() => {
     window.careTest.hold("RetrySetup");
-    window.careTest.failNext("RetrySetup", "missing backup location /private/diagnostics");
+    window.careTest.failNext("RetrySetup", "missing clinic configuration /private/diagnostics");
   });
   await retry(page).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
   await expect.poll(() => calls(page, "RetrySetup")).toBe(1);
@@ -431,7 +418,7 @@ test("retry failure metadata survives acceptance before the completion event", a
   await retry(page).click();
   await expect.poll(() => calls(page, "RetrySetup")).toBe(1);
   await page.evaluate(() => {
-    window.careTest.emit("setup-failed", { can_retry: true, download_interrupted: false });
+    window.careTest.emit("setup-failed", { can_retry: true });
     window.careTest.release("RetrySetup");
   });
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
@@ -453,12 +440,12 @@ test("an early retry failure is not replaced by late acceptance or unrelated fai
   await retry(page).click();
   await expect.poll(() => calls(page, "RetrySetup")).toBe(1);
   await page.evaluate(() => {
-    window.careTest.emit("setup-failed", { can_retry: true, download_interrupted: true });
+    window.careTest.emit("setup-failed", { can_retry: true });
     window.careTest.emit("care-done", 1, "setup");
     window.careTest.release("RetrySetup");
-    window.careTest.emit("setup-failed", { can_retry: false, download_interrupted: false });
+    window.careTest.emit("setup-failed", { can_retry: false });
   });
-  await expect(page.getByRole("heading", { name: "The download was interrupted", exact: true })).toBeVisible();
+  await expect(failedHeading(page)).toBeVisible();
   await expect(retry(page)).toBeEnabled();
   await retry(page).click();
   await expect.poll(() => calls(page, "RetrySetup")).toBe(2);
@@ -468,7 +455,7 @@ test("an early retry failure is not replaced by late acceptance or unrelated fai
 for (const first of ["retry", "update"] as const) {
   test(`resuming setup, updating, and Back cannot race when ${first} is clicked first`, async ({ page }) => {
     await begin(page);
-    await retryableFailure(page, false, true);
+    await retryableFailure(page, true);
     await page.evaluate((action) => {
       window.careTest.hold("RetrySetup");
       const button = (label: string) => [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === label)!;
@@ -489,7 +476,7 @@ for (const first of ["retry", "update"] as const) {
       expect(await calls(page, "RetrySetup")).toBe(0);
       await expect(retry(page)).toBeDisabled();
       await page.evaluate(() => {
-        window.careTest.emit("setup-failed", { can_retry: false, download_interrupted: true });
+        window.careTest.emit("setup-failed", { can_retry: false });
         window.careTest.finishUpdate("preview update cancelled");
       });
       await expect(failedHeading(page)).toBeVisible();
@@ -586,9 +573,9 @@ test("reduced motion keeps the current stage readable without animation", async 
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 720, height: 560 });
   await begin(page);
-  await page.evaluate((line) => window.careTest.emit("care-log", line), nativeMilestones[4]);
+  await send(page, { step: "images", state: "active" });
   await expect(page.locator(".install-progress [data-slot=progress-indicator]")).toHaveCSS("animation-name", "none");
-  await expect(page.getByRole("heading", { name: RUN_STEPS[4].label, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Downloading CARE", exact: true })).toBeVisible();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Open log file", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Open log file", exact: true })).toBeInViewport();

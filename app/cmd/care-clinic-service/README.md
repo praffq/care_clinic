@@ -145,15 +145,15 @@ LaunchDaemon is not subject to it.
 
 Only one process may advertise the name. When two advertise it, whichever
 stops sends a goodbye and clients drop the name even though the other is
-still running. Until the desktop app stops advertising in-process, run the
-service with `--mdns=false` on a Mac where that app is in use, or quit the
-app.
+still running. The service is that one process: the desktop app no longer
+advertises and only checks a name is free before setup. Run the service with
+`--mdns=false` only next to an older app that still advertises in-process.
 
 ## Reboot test
 
 1. Install as above, install and activate an engine, and wait for
    `ctl watch` to show `"state": "ready"`.
-2. Quit the CARE Clinic app and make sure it does not start at login.
+2. Quit the CARE Clinic app.
 3. Reboot and do not log in (or log in without opening the app).
 4. From another device on the LAN: `ping care.local` and
    `curl -k https://care.local/` (needs a clinic stack).

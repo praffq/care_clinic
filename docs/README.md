@@ -1,6 +1,6 @@
 # CARE Clinic documentation
 
-CARE Clinic is a local control application for a clinic's CARE installation. Its Go backend installs and operates a Docker Compose stack, maintains the computer's local networking, and manages encrypted backups. Wails connects that backend to the desktop control panel.
+CARE Clinic is a local control application for a clinic's CARE installation. A boot-time root service, `care-clinic-service`, runs the clinic's Docker Compose stack inside an engine VM, forwards its ports and advertises its name. The Wails desktop app is only the user interface: it installs the service, sets up the clinic through it, and maintains the computer's local networking and trust.
 
 At first run, choose to host the clinic or connect to its `.local` address.
 The Start screen saves no role: Server is recorded when setup initializes,
@@ -16,23 +16,23 @@ application's own user or API documentation.
 
 | Guide | What you will understand |
 | --- | --- |
-| [Using CARE Clinic](desktop-workflows.md) | Start, client connection, the setup wizard, installation, permission prompts, every panel tab and safe recovery. |
+| [Using CARE Clinic](desktop-workflows.md) | Start, client connection, the setup wizard, installation, permission prompts and every panel tab. |
 | [Architecture and design choices](architecture.md) | The system boundary, layers, state, dependency direction, and the reasons behind the design. |
 | [Repository and file map](repository-map.md) | Where every Go component lives, what each file does, and which guide explains it. |
 | [Wails application and API](wails-application.md) | Process startup, background jobs, concurrency, authorization, all bound methods, and events. |
-| [Configuration and settings](configuration-and-settings.md) | The installed directory, persisted configuration, environment files, plugins, and settings changes. |
-| [Plugins](plugins.md) | How CARE loads backend and frontend plugins, the `catalog.yml` format, and how CARE Clinic installs and syncs them. |
-| [Clinic lifecycle and deployment](clinic-lifecycle.md) | Setup, image builds, starting, migrations, service relationships, and stopping. |
-| [Backups and restore](backups-and-restore.md) | Encryption, key preservation, scheduling, retention, staged restore, and interruption recovery. |
+| [Server onboarding](onboarding.md) | Computer checks, the one-prompt service install, engine install and clinic install. |
+| [Configuration and settings](configuration-and-settings.md) | The installed directory, persisted configuration, environment files, and settings changes. |
+| [Clinic lifecycle and deployment](clinic-lifecycle.md) | Setup through the stack runtime, images, starting, migrations, service relationships, and stopping. |
 | [Cleanup and uninstall](cleanup-and-uninstall.md) | What each removal operation deletes or preserves, ownership checks, and partial-cleanup recovery. |
-| [Native integrations](native-integrations.md) | Process execution, file persistence, logs, prerequisites, elevation, TLS trust, mDNS, and OS differences. |
-| [Development and release](development-and-release.md) | Local builds, embedded assets, release pins, CI, packaging, and changing the backend safely. |
+| [Native integrations](native-integrations.md) | Process execution, file persistence, logs, elevation, TLS trust, mDNS, and OS differences. |
+| [The care-clinic-service](../app/cmd/care-clinic-service/README.md) | The root host service: ports, control socket, `ctl`, developer install and reboot test. |
+| [Engine](../engine/README.md) | The engine VM image. |
+| [Development and release](development-and-release.md) | Local builds, the service, embedded assets, release pins, CI, packaging, and changing the backend safely. |
 | [Release pins](versions.md) | The `versions.yml` file that pins desktop, engine, CARE and image versions, and how it is validated. |
 | [Dev image tarballs](dev-images.md) | Building the engine's images locally into `dist/images/*.tar` with digests for the dev update path. |
 | [CI publishing](ci-publishing.md) | `images.yml`, `engine.yml` and `publish.yml`: multi-arch images on GHCR, engine releases, the signed feed on GitHub Pages, and the one-time key/Pages/package setup. |
 | [Update feed](updates-feed.md) | The signed `updates.json` feed clients read, its signature and trust model, and how it is verified. |
-| [Releasing CARE Clinic](releases.md) | Preparing a version, how merging a version bump starts the release, reviewing and publishing the draft, signing limitations, and retrying safely. |
-| [Facility setup](onboarding.md) | The CARE Onboarding frontend plugin, enabled by default for new installations, and its CARE startup requirements. |
+| [Releasing CARE Clinic](releases.md) | Preparing a version, starting the release, the macOS app bundle layout, reviewing and publishing the draft, signing limitations, and retrying safely. |
 | [Home access](home-access.md) | Letting doctors open CARE from home through Tailscale, without exposing the clinic to the internet. |
 
 For a first reading, follow the table from top to bottom. If you are fixing one behavior, use the task map below instead.
@@ -44,20 +44,22 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | "What actually runs on the clinic computer?" | [System architecture](architecture.md) and [deployment services](clinic-lifecycle.md). |
 | "Where does a button click enter Go?" | [Wails application and API](wails-application.md). |
 | "When do I enter my computer password, and what does Cancel do?" | [Permission prompts](desktop-workflows.md#permission-prompts) and [the confirmation protocol](wails-application.md#in-window-permission-confirmations). |
-| "Does Advanced really lock after 15 minutes?" | [Advanced's unlock window](desktop-workflows.md#advanceds-15-minute-unlock). |
-| "Why are actions still locked after the CARE Clinic installer opens?" | [Update handoff and running work](desktop-workflows.md#updates-and-running-work). |
+| "Does Advanced really lock after 15 minutes?" | [Advanced's unlock window](desktop-workflows.md#advanced). |
+| "Why are actions still locked after the CARE Clinic installer opens?" | [App update handoff](desktop-workflows.md#app-updates). |
+| "Why does setup ask for my Mac password, or to log out?" | [Installing the service](onboarding.md#installing-the-service). |
+| "Who keeps the clinic running when the app is closed?" | [The care-clinic-service](../app/cmd/care-clinic-service/README.md). |
 | "Why does an operation say something else is running?" | [Concurrency and job protocol](wails-application.md#concurrency-and-job-protocol). |
 | "Which `backend.env` does the editor read?" | [Configuration and settings](configuration-and-settings.md). |
-| "Why did a setting require a rebuild?" | [Applying settings](configuration-and-settings.md#applying-settings) and [the different builds](development-and-release.md#the-different-builds). |
-| "How are patient data and uploaded files stored?" | [Clinic lifecycle](clinic-lifecycle.md) and [backups](backups-and-restore.md). |
-| "What happens if restore or uninstall is interrupted?" | [Backups and restore](backups-and-restore.md) and [cleanup and uninstall](cleanup-and-uninstall.md). |
-| "How do I add a plugin to the catalog?" | [Plugins](plugins.md#adding-a-catalog-entry). |
+| "Why didn't a setting take effect?" | [Applying settings](configuration-and-settings.md#applying-settings). |
+| "How are patient data and uploaded files stored?" | [Clinic lifecycle](clinic-lifecycle.md). |
+| "What happens if uninstall is interrupted?" | [Cleanup and uninstall](cleanup-and-uninstall.md). |
 | "The app works here but not on another device." | [Native integrations](native-integrations.md). |
-| "How do staff computers connect without Docker or Git?" | [Native client setup and initial trust](native-integrations.md#native-client-setup-and-trust-on-first-use). |
+| "How do staff computers connect?" | [Native client setup and initial trust](native-integrations.md#native-client-setup-and-trust-on-first-use). |
 | "This client previously hosted CARE and now cannot reach another server." | [Client recovery and earlier-install cleanup](client-recovery.md). |
 | "How do I reproduce the installed version?" | [Release identity](development-and-release.md#release-identity-and-pins). |
 | "How do I release a new version?" | [Release runbook](releases.md). |
-| "How does a new clinic get its facility, staff and master data?" | [Facility setup](onboarding.md). |
+| "How does a new clinic get its facility, staff and master data?" | [Facility setup](onboarding.md#facility-setup). |
+| "What is inside the macOS `.app`?" | [Bundle layout](releases.md#macos-app-bundle-layout). |
 | "Which file should I change?" | [Repository map](repository-map.md). |
 
 ## Vocabulary
@@ -68,20 +70,18 @@ For a first reading, follow the table from top to bottom. If you are fixing one 
 | Desktop frontend | `app/frontend/`: the interface inside the Wails window. It is not the CARE web application. |
 | CARE frontend | The separately built `care_fe` web application served to clinic staff by the Compose stack. |
 | `App` | The Wails-facing object in `app/*.go`; owns application state, authorization, jobs, confirmation requests and native integrations. |
-| `Clinic` | The orchestration object in `app/internal/clinic/`; operates the installed stack without importing Wails. |
-| Deployment kit | The files in `deployments/`, embedded into the desktop executable and unpacked for Docker Compose. |
+| `Clinic` | The orchestration object in `app/internal/clinic/`; operates the installed stack through the stack runtime without importing Wails. |
+| Service | `care-clinic-service`, the root LaunchDaemon that owns the engine VM, port forwarding, mDNS and boot-time start. The app reaches it on `/var/run/care-clinic/control.sock`. |
+| Engine | The Linux VM (Apple Virtualization.framework) in which the agent runs the Compose stack. |
+| Stack runtime | `app/internal/stack`: renders the kit, uploads it to the engine and runs typed agent ops. |
+| Deployment kit | The files in `deployments/`, embedded into the desktop executable, unpacked locally and uploaded to the engine. |
 | Installed kit | The runtime copy of that kit on the clinic computer; distinct from source and build staging. |
 | Compose project | The named set of containers, networks, and volumes belonging to `care-clinic`. |
-| Named volume | Docker-managed persistent storage, separate from the desktop executable and source checkout. |
+| Named volume | Docker-managed persistent storage inside the engine VM's data disk. |
 | Pin | A version, image reference, repository URL, or source commit describing what a desktop release expects. |
-| Sidecar | A supporting container; here, notably the container running scheduled backups. |
 | mDNS | Multicast DNS, used to advertise the clinic's `.local` name to nearby devices. |
 | Root CA | The local certificate authority used to establish trust in the clinic's HTTPS certificate. |
-| Backup recovery file | The exported private key required to decrypt encrypted backups. It is not encrypted with the CARE Clinic password; keep it separate from backup data. |
-| CARE Clinic recovery code | A single-use code that resets the local CARE Clinic password, not the CARE web login or backup encryption key. |
-| CARE web password | The password staff type to sign in to CARE in the browser. Separate from the CARE Clinic password after setup; reset it from Advanced with **Reset a CARE web password**. |
-| Restore journal | Durable metadata used to recognize and recover an interrupted staged restore. |
-| Residue | Resources left by an earlier or partially removed CARE Clinic installation. |
+| CARE web password | The password staff type to sign in to CARE in the browser. Separate from the CARE Clinic password after setup. |
 
 ## How to read the diagrams
 
@@ -91,22 +91,24 @@ An arrow in an architecture diagram means "calls or depends on" unless stated ot
 
 ## Scope and source of truth
 
-These guides describe the code in this checkout, including the shared read lock for environment/plugin reads, staged restore recovery, plugin-load rollback and transient failed drafts, recovery-key-safe cleanup, and the Silo-backed storage service.
+These guides describe the code in this checkout: the UI-only app, the
+`care-clinic-service`, the engine VM and the Silo-backed storage service.
+Backups and restore, plugins, storage monitoring, CARE software updates,
+recovery codes, web password reset, start at login and residue cleanup were
+removed in v2; they return later via engine agent ops.
 
 The implementation and these guides are the source of truth; removed design
-boards and historical notes are not runtime specifications. Settings reads use
-shared locks, backups use an exported recovery file rather than a password, and
-restore stages replacement data instead of directly dropping the live database.
+boards and historical notes are not runtime specifications.
 
 File links lead to the implementation rather than fixed line numbers. When changing a component, update its guide, affected flowcharts, and the API or file map if the contract changed. Do not treat a diagram as a substitute for error handling in the code.
 
 ## Operational caution
 
-Running the desktop application is not a read-only demonstration: it can refresh an existing installed kit, start the clinic, and advertise its name. Setup, restore, networking repair, and removal have real effects on the current computer. Use a disposable development environment for end-to-end experiments.
+Running the desktop application is not a read-only demonstration: it can refresh an existing installed kit and drive the installed service, which runs the real clinic. Setup, networking repair, and removal have real effects on the current computer. Use a disposable development environment for end-to-end experiments.
 
 For safe UI regression work, use the [Playwright test fixture](development-and-release.md#safe-desktop-ui-tests).
 It requires Vite test mode and does not operate a native clinic. Ordinary
 `wails dev` uses the real backend; removed design boards and preview pages are
 not application entry points.
 
-The presence of regression tests is not a claim that every operating system, power-loss scenario, or production backup has been exercised. The subsystem guides distinguish implemented recovery behavior from what their tests actually cover.
+The presence of regression tests is not a claim that every operating system or power-loss scenario has been exercised. The subsystem guides distinguish implemented recovery behavior from what their tests actually cover.

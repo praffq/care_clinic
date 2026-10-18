@@ -1,8 +1,12 @@
 # Update feed: `updates.json`
 
-Desktop clients never read [`versions.yml`](versions.md). They read a signed
-`updates.json` feed, generated from it by the release tooling, that lists every
-desktop, engine and CARE release a client may move to. The format and its
+Desktop clients never read [`versions.yml`](versions.md). They are meant to
+read a signed `updates.json` feed, generated from it by the release tooling,
+that lists every desktop, engine and CARE release a client may move to.
+
+> Not consumed by the app yet. Today the app updates itself from GitHub's latest
+> release ([app updates](desktop-workflows.md#app-updates)); engine and CARE
+> updates were removed in v2 and return later via engine agent ops. The format and its
 verification live in `app/internal/feed`; a complete example is
 [`app/internal/feed/testdata/updates.json`](../app/internal/feed/testdata/updates.json),
 which the tests sign and verify.

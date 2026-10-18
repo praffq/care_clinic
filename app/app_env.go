@@ -45,7 +45,7 @@ func (a *App) WriteEnv(name, content, adminPassword string) error {
 		if err := a.requireAdmin(adminPassword); err != nil {
 			return err
 		}
-		if err := a.requireStableClinic(); err != nil {
+		if err := a.requireSetup(); err != nil {
 			return err
 		}
 		p, err := a.envPath(name)

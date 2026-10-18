@@ -2,7 +2,7 @@
 
 [Documentation index](README.md)
 
-This guide explains how backend source becomes a desktop application and how that desktop application later builds the clinic. Those are separate build systems.
+This guide explains how backend source becomes a desktop application, the host service it ships, and the engine and images that run the clinic. Those are separate build systems.
 
 ## The different builds
 
@@ -10,13 +10,12 @@ This guide explains how backend source becomes a desktop application and how tha
 | --- | --- | --- | --- |
 | Desktop frontend | `app/frontend/src/`, package lock, Vite configuration | `app/frontend/dist/` | Developer or release build. |
 | Desktop executable | `app/*.go`, `app/internal/`, Go dependencies, both embedded trees | Wails application under `app/build/bin/` | Developer or release build. |
+| Host service | `app/cmd/care-clinic-service`, `app/internal/service/`, `app/internal/engine/` | `care-clinic-service` inside the macOS `.app` | macOS Wails post-build hook. See [bundle layout](releases.md#macos-app-bundle-layout). |
+| Engine bundle | [`engine/`](../engine/README.md) | `dist/care-engine-<version>-arm64.tar.gz` | Developer build; shipped in the `.app` when present. |
+| Clinic images | CARE sources, deployment Dockerfiles, image pins | `dist/images/*.tar` | [`scripts/dev-images.sh`](dev-images.md) on a developer machine. |
 | Installer/package | Wails application, platform metadata, optional signing configuration | macOS `.dmg` or Windows NSIS setup executable | Release workflow. |
-| Clinic infrastructure images | Deployment Dockerfiles and base-image/module pins | Backup and Caddy/Coraza images | Clinic setup or when their inputs change. |
-| CARE backend/frontend images | Pinned upstream source, generated build inputs, clinic settings/plugins | Images tagged for this clinic installation | Setup, required refresh, or explicit rebuild. |
 
-Changing Go code, such as the settings read lock, requires rebuilding and relaunching the desktop executable. It does not require reinstalling the clinic or rebuilding every Docker image.
-
-The control panel's "rebuild frontend" action builds the **CARE web application**, not the React interface embedded in the desktop executable.
+Changing app Go code requires rebuilding and relaunching the desktop executable. Changing service or engine code (`cmd/care-clinic-service`, `internal/service/`, `internal/engine/`) also requires reinstalling the service; see [the care-clinic-service](#the-care-clinic-service). Neither requires reinstalling the clinic.
 
 ## Source layout and tools
 
@@ -29,14 +28,15 @@ The direct Go dependencies have narrow jobs:
 | Module | Why the backend uses it |
 | --- | --- |
 | `github.com/wailsapp/wails/v2` | Native application runtime, webview binding, events and dialogs at the application boundary. |
-| `github.com/compose-spec/compose-go/v2` | Dotenv parsing. Stack control still goes through the Docker Compose executable, not a programmatic Compose service API. |
+| `github.com/Code-Hex/vz/v3` | Apple Virtualization.framework bindings for the engine VM (service only). |
+| `github.com/compose-spec/compose-go/v2` | Dotenv parsing. Compose itself runs inside the engine VM. |
 | `github.com/hashicorp/mdns` | DNS-SD record construction; CARE owns the interface-bound responder transport. |
 | `github.com/miekg/dns` | DNS packet encoding/decoding for the responder and direct hostname probes. |
 | `golang.org/x/net` | Interface-bound IPv4/IPv6 multicast sockets. |
 | `golang.org/x/crypto` | Bcrypt hashing and comparison for CARE Clinic administrator authorization. |
 | `golang.org/x/sys` | Low-level platform operations, including Windows durable file replacement. |
 
-The desktop's build prerequisites are Go, Node/npm, the Wails CLI, and the native tools required by Wails on the build OS. macOS packaging uses Apple's developer tools; Windows installer creation needs NSIS (`makensis`). Docker and Git are needed for actually setting up and operating a clinic, not merely for every small Go unit test.
+The desktop's build prerequisites are Go, Node/npm, the Wails CLI, and the native tools required by Wails on the build OS. macOS packaging uses Apple's developer tools (the service needs CGO and `codesign`); Windows installer creation needs NSIS (`makensis`). Docker, Git and jq are needed only on a developer machine that builds images with [`scripts/dev-images.sh`](dev-images.md); a clinic computer needs none of them.
 
 For a CLI version matching the current Go dependency:
 
@@ -73,11 +73,11 @@ node frontend/scripts/stage-install.mjs
 wails build
 ```
 
-Wails invokes the configured frontend install/build commands as part of its build workflow. Outputs go under `app/build/bin/`; platform packaging details are covered below.
+Wails invokes the configured frontend install/build commands as part of its build workflow. Outputs go under `app/build/bin/`. On macOS the post-build hook then adds the service and, if one is available, an engine bundle to the `.app`; see [bundle layout](releases.md#macos-app-bundle-layout). Platform packaging details are covered below.
 
 A running executable does not acquire source changes or merged branches
 automatically. Rebuild the desktop app to include updated retry, native folder,
-or launcher behavior; rebuilding CARE's container images does not update the
+or launcher behavior; rebuilding the clinic images does not update the
 desktop executable. Do not replace or close a desktop process during a retained
 installation retry: that attempt exists only in that process.
 
@@ -94,16 +94,45 @@ is a standalone local executable, not a signed release installer.
 
 ### A running development app has real effects
 
-`wails dev` is not a fake bridge. It can find the current user's saved clinic configuration, refresh installed files, advertise the name, and ask the backend to start the stack. Use an isolated machine/user and Docker environment for destructive end-to-end work.
+`wails dev` is not a fake bridge. It can find the current user's saved clinic configuration, refresh installed files, and talk to the installed service, which starts and stops the real stack. Use an isolated machine/user for destructive end-to-end work.
+
+Under `wails dev` there is no `.app` bundle, so point the app at the files it would ship:
+
+```sh
+CARE_CLINIC_SERVICE_BINARY=$PWD/../dist/care-clinic-service \
+CARE_CLINIC_ENGINE_BUNDLE=$PWD/../dist/care-engine-<version>-arm64.tar.gz \
+CARE_CLINIC_DEV_IMAGES=$PWD/../dist/images \
+wails dev
+```
+
+Build the first with `app/cmd/care-clinic-service/build.sh` and the images with [`scripts/dev-images.sh`](dev-images.md). Each is optional when the service, an engine or a clinic is already installed.
 
 If the dev runner has stopped but its Desktop window remains open, that window
 can still be running an older Go backend. Frontend refreshes do not replace it.
 Fully quit that Desktop process (hiding the macOS window is not quitting), then
 rerun `wails dev` from `app/` before testing backend changes. Do not run a second
-independent engine against the same installed clinic while the old app can
-still mutate its configuration.
+app against the same installed clinic while the old app can still mutate its
+configuration.
 
-Changing the repository directory does not create a separate clinic: installation paths and the Compose project identity are deliberately stable. Do not experiment with restore or uninstall against a production clinic just because the desktop executable is a development build.
+Changing the repository directory does not create a separate clinic: there is one service and one engine per Mac. Do not experiment with uninstall against a production clinic just because the desktop executable is a development build.
+
+## The care-clinic-service
+
+The service is a separate binary with its own install, independent of the app.
+Onboarding installs the copy shipped in the `.app` only when no service is
+installed; it never replaces one. For development use
+[`scripts/service-macos.sh`](../scripts/service-macos.sh), run as your admin
+user (it calls `sudo` itself):
+
+| Command | Effect |
+| --- | --- |
+| `install` | Builds and ad-hoc signs the service from source, then installs it. |
+| `install-built <binary>` | Installs a prebuilt binary (needs root). Use it to replace an installed service with a changed one. |
+| `status` | launchd and service status. |
+| `uninstall [--purge]` | Stops and removes the service; `--purge` also deletes the engine data disk. |
+
+Paths, the control socket, `ctl` and the reboot test are described in the
+[service README](../app/cmd/care-clinic-service/README.md).
 
 ### Safe desktop UI tests
 
@@ -130,7 +159,7 @@ There is no public preview page or design-board server to launch.
 [`host.ts`](../app/frontend/tests/fixtures/host.ts) provides explicit test
 scenarios, bridge-call recording, held/rejected requests and emitted native
 events through `window.careTest`. It never runs installers, alters trust or
-networking, restores records, or removes a clinic. Keep it test-only; never add
+networking, installs a service, or removes a clinic. Keep it test-only; never add
 production fallbacks that report simulated native success.
 
 Use the smallest related group while changing a feature:
@@ -138,24 +167,23 @@ Use the smallest related group while changing a feature:
 ```sh
 cd app/frontend
 npm run test:ui -- tests/lifecycle.spec.ts tests/install.spec.ts
-npm run test:ui -- tests/backups.spec.ts -g 'handoff|restore'
+npm run test:ui -- tests/onboarding.spec.ts
 ```
 
 | Test file | Main coverage |
 | --- | --- |
 | `start-screen.spec.ts` | No premature role persistence, update phases, navigation, keyboard focus and window sizes. |
-| `onboarding.spec.ts` | Client discovery/connection, setup prerequisites, recovery exports, Review and native acceptance gates. |
+| `onboarding.spec.ts` | Client discovery/connection, computer checks and service install, setup steps and native acceptance gates. |
 | `install.spec.ts` | Actual log milestones, indeterminate progress, no-log warning and failure/retry behavior. |
 | `lifecycle.spec.ts` | Permission/quit requests, stale IDs, single-flight answers, paired setup/uninstall completion and global update guards. |
-| `panel.spec.ts` | Overview, Storage, Home access, requirements, mobile QR and truthful status/error handling. |
-| `backups.spec.ts` | Policy/destination, restore consent, cancellation and stale selections across updates. |
-| `advanced.spec.ts` | Fixed 15-minute unlock, tab-leave clearing, passwords/recovery and safe environment editing. |
-| `plugins.spec.ts` | Catalog/custom validation, typed settings, save/apply outcomes, failed-batch tab discard, successful-list retention, recovery controls, and update/job exclusion. |
+| `panel.spec.ts` | Overview, service status, Home access, mobile QR and truthful status/error handling. |
+| `advanced.spec.ts` | Fixed 15-minute unlock, tab-leave clearing, password change and safe environment editing. |
+| `app-updater.spec.ts`, `update-checks.spec.ts` | Desktop update flow and the update-check switch. |
 
 The suite checks layouts at 1100 by 700 and 720 by 560. Failure traces go to the
 ignored `app/frontend/test-results/` directory. Browser tests are evidence of UI
 and bridge-contract behavior, not proof that native elevation, an external
-installer or a real clinic restore succeeded. Use an isolated native environment
+installer or a real service install succeeded. Use an isolated native environment
 for those checks and state that distinction in review notes.
 
 ## Embedding pipeline
@@ -239,7 +267,7 @@ run without real elevation:
 
 ```sh
 cd app
-go test -race . -run 'Test(Confirmation|Onboarding|.*Recovery)'
+go test -race . -run 'Test(Confirmation|HostChecks|InstallService|RunSetup)'
 golangci-lint run --timeout=5m
 ```
 
@@ -252,7 +280,7 @@ UI suite because all screens share them.
 
 ## Release identity and pins
 
-[`deployments/.env`](../deployments/.env) is the common release manifest consumed by Compose, Go, and packaging. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
+[`deployments/.env`](../deployments/.env) is the common release manifest consumed by Go and packaging. [`release.Load()`](../app/internal/release/pins.go) parses it using dotenv and requires the following non-empty values:
 
 | Group | Required keys |
 | --- | --- |
@@ -260,23 +288,14 @@ UI suite because all screens share them.
 | Third-party bases | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE`, `CORAZA_VERSION`. |
 | Built-image names | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE`. |
 | CARE sources | `CARE_BE_REPO`, `CARE_FE_REPO`, `CARE_BE_REF`, `CARE_FE_REF`. |
-| Prerequisite installers | `RANCHER_VERSION`, `RANCHER_MACOS_ARM64_SHA256`, `RANCHER_MACOS_X86_64_SHA256`, `RANCHER_WINDOWS_SHA256`, `GIT_WINDOWS_VERSION`, `GIT_WINDOWS_SHA256`, `DOCKER_LINUX_VERSION`, `DOCKER_LINUX_X86_64_SHA256`, `DOCKER_LINUX_AARCH64_SHA256`, `COMPOSE_LINUX_VERSION`, `COMPOSE_LINUX_X86_64_SHA256`, `COMPOSE_LINUX_AARCH64_SHA256`. |
 
-The version format is `X.Y.Z` or `X.Y.Z-dev`. `RANCHER_VERSION`,
-`DOCKER_LINUX_VERSION`, and `COMPOSE_LINUX_VERSION` are `X.Y.Z`,
-`GIT_WINDOWS_VERSION` is `X.Y.Z.windows.N`, and each `*_SHA256` is 64 lowercase
-hex characters; see [pinned prerequisite downloads](native-integrations.md#pinned-prerequisite-downloads).
+The version format is `X.Y.Z` or `X.Y.Z-dev`.
 
-`CARE_BE_REF` and `CARE_FE_REF` name the **branch** a release follows, not a
-commit. Releases normally track `develop`: a branch of verified commits, so
-bug fixes reach installed clinics without a desktop release. An installed
-clinic resolves that branch to a commit once, records it, and only moves
-forward when a background check has already built the newer commit. A full
-40-character commit ID is still accepted and opts that service out of
-following the branch. A tag is not accepted, and a ref that resolves to
-nothing fails the build rather than being passed along as if it were a commit.
-See [clinic lifecycle](clinic-lifecycle.md) for how a
-resolved commit is chosen, staged, and applied.
+`CARE_BE_REF` and `CARE_FE_REF` name the CARE branch (normally `develop`) or a
+full 40-character commit that [`scripts/dev-images.sh`](dev-images.md) builds.
+A tag is not accepted. The app does not fetch or build CARE sources; the
+installed clinic runs the digest-pinned images it was given (see
+[clinic lifecycle](clinic-lifecycle.md)).
 
 At runtime, `GetState().version` comes from these embedded pins, not a separate
 linker-injected version variable.
@@ -289,11 +308,10 @@ into `main`, or the commit selected for a manual run):
 | `CARE_CLINIC_VERSION` | Numeric `X.Y.Z`, without `-dev`. |
 | `app/wails.json` -> `info.productVersion` | Derived as `X.Y.Z` before building. |
 | Automatically created tag | `vX.Y.Z`, pointing to the workflow's source commit. |
-| CARE backend and frontend refs | A branch name to follow, or a full commit hash to pin. |
+| CARE backend and frontend refs | A branch name or a full commit hash. |
 
-The workflow rejects missing/duplicate manifest identity values, an existing
-release version, and any pinned prerequisite whose download is missing or whose
-SHA-256 differs before building installers. Maintainers do not need to edit
+The workflow rejects missing/duplicate manifest identity values and an existing
+release version before building installers. Maintainers do not need to edit
 Wails metadata or create tags. See the [release runbook](releases.md) for preparing,
 building, reviewing, publishing, and recovering a release.
 
@@ -301,17 +319,16 @@ building, reviewing, publishing, and recovering a release.
 
 A `-dev` build compares as older than the published release of the same `X.Y.Z`, so a development install can exercise the desktop updater against a real release rather than a fixture.
 
-Build tests use local Git fixtures rather than the real CARE repository URLs. Resolving a branch runs `git ls-remote`, and a unit test that reaches GitHub is slow, flaky, and on a machine with a credential helper installed will ask the developer for a password.
-
-For the same reason no test may elevate. Privileged work goes through [`sys/elevate`](../app/internal/sys/elevate/elevate.go), which runs `osascript` on macOS and `pkexec` elsewhere, so a test that calls it puts a real password dialog in front of whoever ran `go test` and fails on CI, where no one can answer it. Faking the command on `PATH` is not enough, because `elevate` picks the command by platform and the Windows path is the one those tests describe. `netfix` therefore exposes its elevation as a package variable that tests replace, and asserts on the script it was handed; the elevated wrapper around that script is covered separately in `elevate`'s own tests, where it is only a string.
+No test may elevate. Privileged work goes through [`sys/elevate`](../app/internal/sys/elevate/elevate.go), which runs `osascript` on macOS and `pkexec` elsewhere, so a test that calls it puts a real password dialog in front of whoever ran `go test` and fails on CI, where no one can answer it. Faking the command on `PATH` is not enough, because `elevate` picks the command by platform and the Windows path is the one those tests describe. `netfix` therefore exposes its elevation as a package variable that tests replace, and asserts on the script it was handed; the elevated wrapper around that script is covered separately in `elevate`'s own tests, where it is only a string.
 
 ### Reproducibility boundaries
 
-A release no longer fixes which CARE commit a clinic runs; the tracked branch does, and installed clinics move forward with it. What a given clinic is running is recorded in its `channel.lock` and stamped into each image's `built-from` label, so an install can always be asked rather than assumed. Image fingerprints also include build inputs, as explained in [clinic lifecycle](clinic-lifecycle.md).
-
-This is a deliberate trade: branch tracking is what lets a verified fix reach clinics that nobody will manually update, and it is only safe because the branch admits verified commits only. Pinning a commit in `deployments/.env` remains available for a release that must not move.
-
-An image tag is not an immutable registry digest, however, and build-time package downloads can have their own availability and reproducibility constraints. "Pinned source" should not be expanded into a claim that every external dependency is content-addressed forever.
+A clinic runs digest-pinned images recorded in the engine's `stack.env`, so an
+install can always be asked rather than assumed. An image tag is not an
+immutable registry digest, however, and build-time package downloads can have
+their own availability and reproducibility constraints. "Pinned source" should
+not be expanded into a claim that every external dependency is content-addressed
+forever.
 
 The current storage image pin points to Silo while the key remains `MINIO_IMAGE`. Do not rename the Compose service or data volume as a routine pin update.
 
@@ -326,9 +343,9 @@ missing, and a PR branch push does not trigger a duplicate push workflow.
 | Job/check | What it does |
 | --- | --- |
 | Lint | Formatting, the Wails/internal boundary, pinned Actionlint workflow validation, and golangci-lint v2.13.2 through its v9 action. |
-| Go tests | Clean-checkout `go build ./...` and the full race-enabled test suite, including the release identity/CI gate contracts. Node, PostgreSQL fixture tools, OpenSSL, Python, Git, and Compose must be available rather than silently skipping their tests. |
+| Go tests | Clean-checkout `go build ./...` and the full race-enabled test suite, including the release identity/CI gate contracts. Required tools must be available rather than silently skipping their tests. |
 | Frontend | Node 22, `npm ci`, binding checks, TypeScript, and the Vite production build. Uploads the built frontend for native builds. |
-| Native builds | After the first three jobs pass: actual Wails macOS universal and Windows/amd64 builds for CARE Clinic. Windows must produce an NSIS installer with NSIS 3.12 from [`install-nsis`](../.github/actions/install-nsis/action.yml), and its version metadata must match `wails.json` and `.env`; the bare application and the generated installer inputs are uploaded separately so a release can sign the application before rebuilding the installer. |
+| Native builds | After the first three jobs pass: actual Wails macOS universal (with the bundled service, no engine bundle) and Windows/amd64 builds for CARE Clinic. Windows must produce an NSIS installer with NSIS 3.12 from [`install-nsis`](../.github/actions/install-nsis/action.yml), and its version metadata must match `wails.json` and `.env`; the bare application and the generated installer inputs are uploaded separately so a release can sign the application before rebuilding the installer. |
 | CI | Stable aggregate check; fails if any required job failed, was cancelled, or was skipped. Configure this check in branch protection. |
 
 Go comes from `app/go.mod`, and module writes are disallowed. Native jobs reuse
@@ -351,9 +368,9 @@ kept for one day.
 
 The Go suite runs on Linux. Native builds prove compilation and packaging on the
 other platforms, not successful administrator prompts, certificate installation,
-browser trust, or real clinic Wi-Fi behavior. Network mDNS tests remain opt-in.
-PostgreSQL tests create an isolated fixture; CI does not start the clinic's
-Compose stack, build upstream CARE images, or contact a production database.
+browser trust, a service install, or real clinic Wi-Fi behavior. Network mDNS
+tests remain opt-in. CI does not boot the engine VM, start the clinic stack,
+build upstream CARE images, or contact a production database.
 Publishing images, engine bundles and the signed feed is done by separate
 workflows; see [CI publishing](ci-publishing.md).
 
@@ -371,7 +388,7 @@ npm run build
 
 Use Actionlint v1.7.12 and golangci-lint v2.13.2, matching CI. Actionlint checks
 workflow syntax and expressions; it does not invoke ShellCheck or Pyflakes.
-Database/Compose tests need the same local prerequisites as the Go job.
+Local tests need the same tools as the Go job.
 
 ### Pre-commit fixes
 
@@ -402,28 +419,27 @@ Tests sit beside their packages. They use Go's standard test runner and existing
 | Area | Representative coverage |
 | --- | --- |
 | App/settings | Shared authenticated reads, write exclusion, lifecycle guards, and retention persistence. |
-| Clinic | Domain rewriting, worker-stop/migration ordering, native-access outcomes, cleanup ownership, and backup script behavior. |
-| Backup | Encryption/key handling, staged restore control flow, archive validation, and interruption recovery. |
-| Compose | Build freshness, image inputs, deployment routing, and storage bootstrap contracts. |
+| Clinic/stack | Rendering and uploads, stack op ordering against a fake agent, deployment contracts, native-access outcomes and cleanup ownership. |
+| Service/engine | Control API, slots, supervisor, forwarding, advertising, agent ops and the VM (with fakes). |
+| Host checks/install | Probe results and the one-prompt install script. |
 | Native helpers | Process handling, atomic replacement, elevation quoting, hosts/trust parsing, mDNS, and Windows networking. |
-| Prerequisites/residue | Bounded provisioning paths and truthful resource inspection with isolated fixtures. |
 | Release | Manifest validation, source ref syntax, installer-version agreement, and the workflow's identity validator. |
 
-Some integration tests require external executables or have platform/user restrictions; a skipped case is not a successful production restore. Read the package test and the subsystem guide before running those fixtures.
+Some integration tests require external executables or have platform/user restrictions; a skipped case is not a successful native run. Read the package test and the subsystem guide before running those fixtures.
 
 For the shared settings behavior, a targeted invocation is:
 
 ```sh
 cd app
-go test -mod=readonly -race . ./internal/plugins
+go test -mod=readonly -race .
 ```
 
 For another change, select the package/test covering that behavior first. The full CI suite exists, but is not necessary for every documentation or single-package edit. Avoid running native-changing integration tests on a machine that holds the only copy of clinic data.
 
 ## Packaging and publication
 
-The release workflow runs when a push to `main` changes `CARE_CLINIC_VERSION`
-in `deployments/.env`, or when started by hand, and reuses the native artifacts
+The release workflow runs when started by hand (the push trigger is disabled
+in this fork during the v2 work) and reuses the native artifacts
 built by CI in the same workflow run:
 
 | Platform | Wails target | Artifact |
@@ -431,7 +447,10 @@ built by CI in the same workflow run:
 | macOS | `darwin/universal` | `CARE-Clinic-X.Y.Z-macos.dmg`. |
 | Windows | `windows/amd64` with `-nsis` | `CARE-Clinic-X.Y.Z-windows-amd64-setup.exe`. |
 
-Linux has backend/native helper implementations but no published desktop installer.
+Linux has backend/native helper implementations but no published desktop installer. Windows releases contain only the app; there is no Windows service yet, so server setup is macOS-only.
+
+The macOS `.app` contains the service and optionally an engine bundle; see
+[bundle layout](releases.md#macos-app-bundle-layout).
 
 The workflow packages a DMG and the Windows NSIS installer, adds the exact
 configuration, build identity, and checksums, creates `vX.Y.Z` at the selected
@@ -439,7 +458,9 @@ source commit, and creates a **draft prerelease**. Published assets are never
 replaced. Only the draft job has write permission.
 
 macOS preserves the existing optional Developer ID signing/notarization flow and
-secret names; without credentials it retains Wails' ad-hoc signature. Windows
+secret names, signing the nested service (hardened runtime, virtualization
+entitlement) before the app; without credentials it retains the ad-hoc
+signatures from the bundle hook. Windows
 application, uninstaller and installer are signed through SignPath when its configuration is
 present, otherwise left unsigned. The release manifest records each platform's
 actual status; these remain preview releases.
@@ -455,7 +476,7 @@ and safe retry rules.
 ### In-place desktop updates
 
 `app_update.go`, `app_selfupdate.go`, and `app_update_helpers.go` implement the
-desktop updater independently of CARE's container/image updates. Releases keep
+desktop updater. Releases keep
 the existing DMG and NSIS assets and `SHA256SUMS`; no additional executable helper
 or unsigned remote script is downloaded. Locally generated helpers wait for the
 desktop process to exit, replace the installed application, and reopen it.
@@ -464,7 +485,7 @@ macOS extracts and verifies the bundle before handoff, then stages a complete
 copy beside the current bundle before renaming it. Windows releases must retain
 the `/S /CAREUPDATE=1 /D=<existing directory>` path in `project.nsi`: it stages
 the new executable, keeps the previous one until replacement succeeds, and does
-not run the uninstaller or reinstall prerequisites. `/D` must be last and must
+not run the uninstaller. `/D` must be last and must
 not be quoted (NSIS consumes the remaining command line, including spaces).
 The update branch intentionally keeps the existing uninstaller and shortcuts.
 Both the ordinary and signed-uninstaller packaging variants use this same path.
@@ -483,7 +504,7 @@ and a root-owned macOS bundle inside an admin-group-writable `/Applications`
 (ownership preservation must still request administrator permission),
 cancelled elevation/UAC, corrupt downloads, full disks, Windows file locks,
 failed final replacement, and relaunch failure. Confirm the old copy survives
-failed replacement and the clinic remains running. Test signed-to-signed and
+failed replacement and the clinic remains running (the service keeps it running; an app update does not update the service). Test signed-to-signed and
 unsigned preview paths separately. Bare executables, `-dev` builds, and macOS
 DMG/translocated copies must refuse in-place updating instead of opening a disk
 image and claiming success. Installation from a DMG is still required once.
@@ -503,11 +524,11 @@ success; native upgrade acceptance remains required.
 | --- | --- |
 | Wails method or result shape | Go method/JSON tags, `wails.d.ts`, `types.ts`, call sites, API guide. |
 | Long-running job behavior | `run()` contract, lifecycle guards, event consumers, progress-message expectations. |
-| Environment setting | Installed-file semantics, schema if exposed, appropriate apply/rebuild path, configuration guide. |
-| Image/build input | Release pin or builder input, freshness calculation, deployment contract and relevant tests. |
-| Restore sequence | Journal/state recovery, staging cleanup, worker callbacks, interruption cases, restore diagrams. |
-| Native resource identity | Creation, inspection, cleanup, residue classification, platform-specific tests. |
-| Kit file | `deployments/` source, readers/mounts, staging/runtime preservation assumptions, file map. |
+| Environment setting | Installed-file semantics, schema if exposed, apply path, configuration guide. |
+| Image/build input | Release pin or `dev-images.sh` input, deployment contract and relevant tests. |
+| Service or control API | `internal/service/api` types, server and client, `ctl`, app callers, service README; reinstall the service to test. |
+| Native resource identity | Creation, inspection, cleanup, platform-specific tests. |
+| Kit file | `deployments/` source, readers/mounts, `internal/stack` render/upload list, staging/runtime preservation assumptions, file map. |
 | Release version | `deployments/.env`; build metadata and tags are derived. Update release documentation if behavior changes. |
 
 Keep code and diagrams synchronized. A documentation-only change does not require rebuilding CARE Clinic.

@@ -2,15 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
-
-	"github.com/ohcnetwork/care_desktop/app/internal/plugins"
-	"github.com/ohcnetwork/care_desktop/app/internal/prereq"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
+	"errors"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,21 +15,9 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.refreshInstallDir()
-	a.advStop = make(chan struct{})
-	_ = a.startAdvertise()
-	go a.watchAdvertise()
-	// Before the role check: a first-run setup records the server role later in
-	// this same process. engineBroken stays inert until setup is done.
-	go a.watchEngine()
-	if a.loadConfig().Role != roleServer {
-		return
-	}
-	go func() {
-		a.log.Writef("docker: %s", prereq.DockerCheck(a.engine().Runner()).Message)
-		prereq.EnsureRancherSettings()
-	}()
-	go a.watchForCareUpdates()
-	go a.watchStorage()
+	// The service owns the engine, forwarding, mDNS and the watchdog; the
+	// app only watches its status for the control panel.
+	a.startServiceWatch()
 }
 
 const screenMargin = 80
@@ -80,93 +60,35 @@ func currentScreen(screens []wruntime.Screen) (wruntime.Screen, bool) {
 	return fallback, found
 }
 
+// refreshInstallDir brings the local copy of the deployment kit up to date
+// with this version. It takes effect the next time the clinic is
+// configured (setup or Start).
 func (a *App) refreshInstallDir() {
-	updated := false
 	if err := a.withJob(func() error {
 		cfg := a.loadConfig()
 		if cfg.Role != roleServer || !cfg.SetupDone || cfg.Removing {
 			return nil
 		}
-		if pending, err := a.engine().PendingPluginRecovery(); err != nil {
-			return err
-		} else if pending {
-			a.logln("An unfinished plugin rollback was found; start CARE to recover it. Installed configuration was left unchanged.")
-			return nil
-		}
-		pending, err := a.engine().Backups().PendingRestore()
-		if err != nil {
-			return err
-		}
-		if pending {
-			a.logln("An unfinished restore was found; its installed configuration was left unchanged for recovery.")
-			return nil
-		}
-		if err := a.syncInstallKit(); err != nil {
-			return err
-		}
-		settings, err := a.engine().AddMissingBackendSettings()
-		if err != nil {
-			return err
-		}
-		for _, key := range settings {
-			a.logln("Added " + key + " to backend.env. It applies the next time CARE starts.")
-		}
-		updated = updated || len(settings) > 0
-		added, err := plugins.New(a.engine().InstallDir).AddNewDefaults()
-		if err != nil {
-			return err
-		}
-		for _, p := range added {
-			a.logln("Added the " + p.Label + " plugin. It is installed the next time CARE starts.")
-		}
-		updated = true
-		return nil
+		_, err := a.ensureInstallDir()
+		return err
 	}); err != nil {
 		a.logln("error: couldn't update the installed configuration (" + err.Error() + ")")
-		return
 	}
-	if updated {
-		a.logln("Install files are up to date with this version.")
-	}
-}
-
-// syncInstallKit refreshes the install kit. Clinic.Start renders and
-// uploads the engine config from it.
-func (a *App) syncInstallKit() error {
-	_, err := a.ensureInstallDir()
-	return err
 }
 
 func (a *App) shutdown(context.Context) {
 	a.closeConfirmations()
-	if a.advStop != nil {
-		close(a.advStop)
-	}
-	a.advMu.Lock()
-	if a.adv != nil {
-		a.adv.Stop()
-	}
-	a.adv = nil
-	a.advMu.Unlock()
+	a.stopServiceWatch()
 }
 
 const (
 	singleInstanceID = "ohc.care-clinic"
 
-	quitPromptTimeout = 30 * time.Second
-
-	stopDeadline = 90 * time.Second
-
-	jobPrereq = "prereq"
+	jobService = "service"
+	jobNetwork = "network"
 )
 
-type quitChoice int
-
-const (
-	quitLeaveClinicRunning quitChoice = iota
-	quitStayOpen
-	quitStopClinic
-)
+var errStartedSetup = errors.New("the clinic address can only be chosen before installation")
 
 func (a *App) onSecondInstance(options.SecondInstanceData) {
 	if a.ctx == nil {
@@ -185,34 +107,9 @@ func (a *App) beforeClose(context.Context) (prevent bool) {
 		return true
 	}
 	defer a.jobMu.Unlock()
-	if a.closing {
-		return false
-	}
-	if a.osUninstall || a.loadConfig().Role != roleServer {
-		a.closing = true
-		return false
-	}
-	answer := make(chan quitChoice, 1)
-	go func() { answer <- a.askBeforeQuit() }()
-
-	select {
-	case sel := <-answer:
-		switch sel {
-		case quitStayOpen:
-			return true
-		case quitStopClinic:
-			if err := a.stopForQuit(); err != nil {
-				a.logln("error: " + err.Error())
-				a.alertDialog(failureTitle("stop"), err.Error())
-				return true
-			}
-		}
-		a.closing = true
-		return false
-	case <-time.After(quitPromptTimeout):
-		a.closing = true
-		return false
-	}
+	// The clinic runs in the service, so quitting the app leaves it as is.
+	a.closing = true
+	return false
 }
 
 func (a *App) runningJob() string {
@@ -247,32 +144,24 @@ type quitPrompt struct {
 	message string
 }
 
-const leftRunning = "Commands that already started may keep running in the background for a few minutes."
+const leftRunning = "The clinic itself keeps running in the CARE Clinic service."
 
 func jobQuitPrompt(label string) quitPrompt {
 	switch label {
 	case "setup":
 		return quitPrompt{"setup", "Quit while setup is running?",
-			"Setup stops where it is. The next time you open CARE Clinic you'll be back " +
-				"on the setup screen, which will ask you to remove the unfinished install before " +
-				"setting up again.\n\n" + leftRunning}
-	case jobPrereq:
-		return quitPrompt{"a requirement install", "Quit while this computer is being prepared?",
-			"CARE Clinic is still installing or starting something this computer needs, " +
-				"such as Rancher Desktop. That step stops where it is. The next time you open " +
-				"CARE Clinic the computer check runs again and shows what is left to do.\n\n" +
-				"An installer that already started may keep running in the background for a few minutes."}
+			"Setup stops where it is. The next time you open CARE Clinic you can continue " +
+				"setting up or remove the unfinished install."}
+	case jobService:
+		return quitPrompt{"the service install", "Quit while the CARE Clinic service is being installed?",
+			"If the administrator prompt was already accepted, the install finishes on its own. " +
+				"Open CARE Clinic again to check it."}
 	case "start", "restart":
 		return quitPrompt{"starting CARE", "Quit while CARE is starting?",
-			"CARE is still starting. This can take several minutes while Docker (Rancher Desktop) " +
-				"comes up. Starting stops where it is; open CARE Clinic again to try once more.\n\n" + leftRunning}
+			"The service keeps starting the clinic in the background. Open CARE Clinic again to see how it went."}
 	case "stop":
 		return quitPrompt{"stopping CARE", "Quit while CARE is stopping?",
-			"CARE is still stopping. Open CARE Clinic again to check that it stopped.\n\n" + leftRunning}
-	case "restore":
-		return quitPrompt{"a restore", "Quit during a restore?",
-			"A restore is in progress. Quitting now can leave the clinic's data half-replaced. " +
-				"If you quit, open CARE Clinic again and restore the same backup before anyone uses the clinic."}
+			"The service keeps stopping the clinic in the background. Open CARE Clinic again to check that it stopped."}
 	case "uninstall":
 		return quitPrompt{"removal", "Quit while CARE is being removed?",
 			"CARE is being removed from this computer. Quitting now can leave it partly removed; " +
@@ -281,80 +170,7 @@ func jobQuitPrompt(label string) quitPrompt {
 		return quitPrompt{"the CARE Clinic update", "Quit during the CARE Clinic update?",
 			"The update stops and the version you have keeps working; you can update again later. " +
 				"If macOS is already replacing the app, that finishes on its own."}
-	case "update":
-		return quitPrompt{"the CARE update", "Quit during the CARE update?",
-			"CARE is being updated. Quitting can leave it partly updated; open CARE Clinic again " +
-				"and run the update once more.\n\n" + leftRunning}
-	case "backup-now":
-		return quitPrompt{"a backup", "Quit during a backup?",
-			"The backup in progress won't be finished or usable. Earlier backups are not affected.\n\n" + leftRunning}
-	case "apply-plugins":
-		return quitPrompt{"a plugin change", "Quit while applying plugins?",
-			"Quitting can interrupt plugin loading or recovery. Reopen CARE Clinic and start CARE " +
-				"to recover the previous plugin configuration.\n\n" + leftRunning}
-	case "rebuild-all", "rebuild-backend", "rebuild-frontend":
-		return quitPrompt{"a rebuild", "Quit during a rebuild?",
-			"CARE is being rebuilt. Quitting can leave the clinic stopped; open CARE Clinic again " +
-				"and run the rebuild once more.\n\n" + leftRunning}
 	}
 	return quitPrompt{"an operation", "Quit while CARE Clinic is working?",
 		"CARE Clinic is in the middle of an operation (see the log). It stops where it is.\n\n" + leftRunning}
-}
-
-func (a *App) askBeforeQuit() quitChoice {
-	if !a.clinicRunning() {
-		return quitLeaveClinicRunning
-	}
-	name := a.loadConfig().MDNSName
-	quit, err := a.askToProceed("Quit CARE Clinic?",
-		"The clinic keeps running, but "+name+" will stop working for other devices "+
-			"on the clinic's WiFi until this app is open again.\n\nQuit anyway?", "Yes")
-	if err != nil {
-		return quitLeaveClinicRunning
-	}
-	if !quit {
-		return quitStayOpen
-	}
-	stop, err := a.askToProceed("Shut the clinic down as well?",
-		"Shutting down stops the clinic on this computer completely, so nobody can "+
-			"use it until it is started again.\n\nChoose No to leave it running.", "Yes")
-	if err != nil || !stop {
-		return quitLeaveClinicRunning
-	}
-	return quitStopClinic
-}
-
-func (a *App) clinicRunning() bool {
-	cfg := a.loadConfig()
-	if cfg.Role != roleServer || !cfg.SetupDone || cfg.Removing {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(a.installDir(), "docker-compose.yml")); err != nil {
-		return false
-	}
-	out, err := a.engine().Status()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), " running") {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *App) stopForQuit() error {
-	if err := a.requireServer(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), stopDeadline)
-	defer cancel()
-	run := a.engine().Runner()
-	cmd := proc.CommandContext(ctx, "docker", "compose", "stop")
-	cmd.Dir, cmd.Env = run.Dir, run.Env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Docker did not finish stopping; CARE Clinic was kept open: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }

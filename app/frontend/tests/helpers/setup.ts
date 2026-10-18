@@ -1,26 +1,24 @@
 import { expect, type Page } from "@playwright/test";
 import type {} from "../fixtures/host";
 
-export async function continueServerChecks(page: Page, { removeResidue = false } = {}) {
-  await expect(page.locator("#setup-title")).toHaveText("Room for the clinic");
-  const platform = await page.evaluate(() => window.careTest.state.platform);
-  const titles = [
-    "Room for the clinic",
-    ...(platform === "windows" ? ["Getting Windows ready"] : []),
-    "Installing what CARE needs",
-    "Removing stale files from an earlier setup",
-    ...(platform === "windows" ? ["Setting this network to Private"] : []),
-  ];
-  const next = page.getByRole("button", { name: "Continue", exact: true });
-  for (const title of titles) {
-    await expect(page.locator("#setup-title")).toHaveText(title);
-    if (removeResidue && title === "Removing stale files from an earlier setup") {
-      await expect(next).toBeDisabled();
-      await page.getByRole("button", { name: "Remove it all", exact: true }).click();
-    }
-    await expect(next).toBeEnabled();
-    await expect(page.locator("#setup-title")).toHaveText(title);
-    await next.click();
-  }
+const next = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
+
+export async function continueServerChecks(page: Page) {
+  await expect(page.locator("#setup-title")).toHaveText("Checking this computer");
+  await expect(next(page)).toBeEnabled();
+  await next(page).click();
   await expect(page.locator("#setup-title")).toHaveText("Choosing the clinic address");
+}
+
+export async function reachReview(page: Page, { address = "care-hospital", password = "ClinicTest123" } = {}) {
+  await continueServerChecks(page);
+  await page.getByLabel("Clinic address", { exact: true }).fill(address);
+  await expect(next(page)).toBeEnabled();
+  await next(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Creating the admin password");
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password", { exact: true }).fill(password);
+  await expect(next(page)).toBeEnabled();
+  await next(page).click();
+  await expect(page.locator("#setup-title")).toHaveText("Review before installing");
 }

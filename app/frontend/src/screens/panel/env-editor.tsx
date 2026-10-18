@@ -64,7 +64,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   onPendingFilesChange?: (files: Section[]) => void;
   onApplicationAccepted?: () => void;
 }) {
-  const { busy, restorePending, runAction, operationError } = useCare();
+  const { busy, runAction, operationError, service } = useCare();
   const lock = useAdvancedLock();
   const [localGroup, setLocalGroup] = useState<string | null>(null);
   const selected = groupId === undefined ? localGroup : groupId;
@@ -92,7 +92,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   const pendingGroup = useRef<string | null>(null);
   const take = () => nextUid.current++;
   const editing = selected !== null;
-  const working = busy || saving || applying || restorePending;
+  const working = busy || saving || applying;
   const locked = working || lock.disabled;
 
   const changePage = (next: string | null) => {
@@ -205,9 +205,6 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   const hasErrors = Object.keys(errors).some((key) => selected === "other" ? key.startsWith("custom:") : !key.startsWith("custom:"));
   const disabled = locked || loading || !files;
   const canSave = !disabled && (changeCount > 0 || needsApply.length > 0) && !hasErrors;
-  const touched = new Set([...dirtyKeys.map((key) => SETTING_BY_KEY.get(key)!.file),
-    ...customDelta.changed.map((row) => row.file), ...customDelta.removed.map((row) => row.file), ...needsApply]);
-  const frontendOnly = touched.size > 0 ? !touched.has("backend") : !!group && group.settings.every((setting) => setting.file === "frontend");
 
   const commitFile = (file: Section, text: string) => {
     const next = { text, lines: editableEnvLines(text) };
@@ -261,9 +258,8 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
         setNotice("The saved settings already match these values.");
         return;
       }
-      const action = savedFiles.current.has("backend") ? "start" : "rebuild-frontend";
       requireUnlocked();
-      const accepted: unknown = await runAction(action, adminPassword);
+      const accepted: unknown = await runAction(service?.summary.running ? "restart" : "start");
       if (accepted !== true) {
         setSaveProblem({ title: "Settings were saved, but applying them didn't start",
           message: "Your changes are still saved. Wait for any other task to finish, then retry applying them." });
@@ -337,7 +333,7 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
     <footer className="advanced-settings-foot">
       <p role="status">{saving ? "Saving settings…" : applying ? "Applying settings — staff may need to wait." :
         needsApply.length > 0 && !changeCount ? "Saved changes still need to be applied." :
-          frontendOnly ? "CARE may be unavailable for a few minutes while changes are applied." : "CARE may be unavailable for about a minute while changes are applied."}</p>
+          "CARE may be unavailable for about a minute while changes are applied."}</p>
       <div className="advanced-actions">
         <Button type="button" disabled={disabled || changeCount === 0} onClick={discard}>Discard</Button>
         <Button type="button" variant="primary" disabled={!canSave} onClick={() => void save()}>
@@ -348,9 +344,6 @@ export function EnvEditor({ adminPassword, groupId, onGroupChange, onWorkingChan
   </>;
 
   return <div className="advanced-env" data-editing={editing}>
-    {restorePending ? <AdvancedNotice title="Finish the earlier restore first">
-      Start CARE from Overview to recover the unfinished restore. Settings can be read, but not saved or applied yet.
-    </AdvancedNotice> : null}
     {loading ? <div className="advanced-busy" role="status"><Spinner />Reading clinic settings…</div> : null}
     <AdvancedError problem={loadProblem} />
     {loadProblem ? <Button type="button" className="self-start" disabled={busy || loading} onClick={() => void load()}>Try reading settings again</Button> : null}

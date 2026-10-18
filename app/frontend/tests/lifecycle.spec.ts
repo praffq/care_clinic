@@ -18,14 +18,16 @@ async function panel(page: Page) {
   await expect(page.locator(".care-panel")).toBeVisible();
 }
 
-async function backup(page: Page) {
+const restartButton = (page: Page) => page.getByRole("button", { name: "Restart", exact: true });
+
+async function restart(page: Page) {
   await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
-  await page.getByRole("button", { name: "Back up now", exact: true }).click();
+  await restartButton(page).click();
   await expect.poll(async () => (await calls(page, "ClinicAction")).length).toBe(1);
-  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
+  await expect(restartButton(page)).toBeDisabled();
 }
 
-async function quit(page: Page, action = "backing up") {
+async function quit(page: Page, action = "restarting") {
   await page.evaluate((name) => window.careTest.requestQuit(name), action);
   await expect(dialog(page).getByRole("heading", { name: "CARE is still working", exact: true })).toBeVisible();
 }
@@ -80,12 +82,12 @@ test.describe("permission confirmations", () => {
 
   test("Escape declines permission without finishing the running job", async ({ page }) => {
     await panel(page);
-    await backup(page);
+    await restart(page);
     await permission(page);
     await page.keyboard.press("Escape");
     await expect(dialog(page)).toBeHidden();
     expect((await calls(page, "RespondToConfirmation")).map((call) => call.args)).toEqual([[1, false]]);
-    await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
+    await expect(restartButton(page)).toBeDisabled();
   });
 
   test("answers are single-flight and a stale response cannot close the next request", async ({ page }) => {
@@ -149,7 +151,7 @@ test.describe("permission confirmations", () => {
 
   test("keeping the app open returns to the pending permission request", async ({ page }) => {
     await panel(page);
-    await backup(page);
+    await restart(page);
     await permission(page);
     await quit(page);
     await dialog(page).getByRole("button", { name: "Keep waiting", exact: true }).click();
@@ -164,7 +166,7 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
   test(`busy quit defaults to waiting and fits ${size.width}x${size.height}`, async ({ page }) => {
     await page.setViewportSize(size);
     await panel(page);
-    await backup(page);
+    await restart(page);
     await quit(page);
     const keepWaiting = dialog(page).getByRole("button", { name: "Keep waiting", exact: true });
     await expect(keepWaiting).toBeFocused();
@@ -178,21 +180,21 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     await expect(dialog(page)).toBeHidden();
     expect((await calls(page, "RespondToQuit")).map((call) => call.args)).toEqual([[1, false]]);
     expect(await page.evaluate(() => window.careTest.fixtures.quitAccepted)).toBe(false);
-    await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
-    await page.evaluate(() => window.careTest.finishJob("backup-now"));
-    await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeEnabled();
+    await expect(restartButton(page)).toBeDisabled();
+    await page.evaluate(() => window.careTest.finishJob("restart"));
+    await expect(restartButton(page)).toBeEnabled();
   });
 }
 
 test("Escape cancels the close request without stopping the accepted job", async ({ page }) => {
   await panel(page);
-  await backup(page);
+  await restart(page);
   await quit(page);
   await page.keyboard.press("Escape");
   await expect(dialog(page)).toBeHidden();
   expect((await calls(page, "RespondToQuit")).map((call) => call.args)).toEqual([[1, false]]);
-  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
-  expect((await calls(page, "ClinicAction")).map((call) => call.args[0])).toEqual(["backup-now"]);
+  await expect(restartButton(page)).toBeDisabled();
+  expect((await calls(page, "ClinicAction")).map((call) => call.args[0])).toEqual(["restart"]);
 });
 
 test("quit confirmation is single-flight and uses the native request ID", async ({ page }) => {
@@ -255,7 +257,7 @@ test("a delayed registration snapshot cannot hide a newer close request", async 
   await panel(page);
   await quit(page);
   await page.evaluate(() => window.careTest.release("SetQuitDialogReady"));
-  await expect(dialog(page)).toContainText("still backing up");
+  await expect(dialog(page)).toContainText("still restarting");
   await dialog(page).getByRole("button", { name: "Keep waiting", exact: true }).click();
   await expect(dialog(page)).toBeHidden();
 });
@@ -287,7 +289,7 @@ for (const first of ["uninstalled", "care-done"] as const) {
     await page.getByRole("button", { name: "Uninstall…", exact: true }).click();
     await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
     await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-    await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+    await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
     await expect(dialog(page)).toBeHidden();
     const progress = page.getByRole("status", { name: "Removing CARE from this computer", exact: true });
     await expect(progress).toBeVisible();
@@ -327,7 +329,7 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
       window.careTest.hold("RunUninstall");
     });
     await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-    await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+    await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
     const progress = page.getByRole("status", { name: "Removing CARE from this computer", exact: true });
     await expect(progress).toBeVisible();
     await expect(dialog(page)).toBeHidden();
@@ -377,7 +379,7 @@ test("removal progress survives the optional app handoff and clears on its failu
   await page.getByRole("button", { name: "Uninstall…", exact: true }).click();
   await dialog(page).getByRole("checkbox", { name: /Also remove the CARE Clinic app/ }).check();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   await page.evaluate(() => window.careTest.finishJob("uninstall"));
   const progress = page.getByRole("status", { name: "Removing CARE Clinic", exact: true });
   await expect(progress).toBeVisible();
@@ -402,7 +404,7 @@ test("Windows clinic removal keeps progress through the native exit handoff and 
     window.careTest.failNext("ExitUninstall", "private exit diagnostic");
   });
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   const progress = page.getByRole("status", { name: "Removing CARE from this computer", exact: true });
   await expect(progress).toBeVisible();
   await page.evaluate(() => window.careTest.emit("care-done", 0, "uninstall"));
@@ -423,13 +425,8 @@ async function installDemo(page: Page, fail = false) {
   await continueServerChecks(page);
   await page.getByLabel("Clinic address", { exact: true }).fill("preview-clinic");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Change folder", exact: true }).click();
-  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
-  await page.getByRole("button", { name: "Select saved file", exact: true }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByLabel("Password", { exact: true }).fill("TestChosen789");
   await page.getByLabel("Confirm password", { exact: true }).fill("TestChosen789");
-  await page.getByRole("button", { name: "Choose where to save", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Install", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
@@ -439,25 +436,22 @@ test("the safe full demo reaches Overview and retains the chosen CARE Clinic pas
   await installDemo(page);
   await expect(page.locator(".care-panel")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
-  expect(await calls(page, "SelectRole")).toHaveLength(0);
   expect(await calls(page, "BeginServerSetup")).toHaveLength(1);
   expect(await calls(page, "RunSetup")).toHaveLength(1);
   await page.getByRole("button", { name: "Advanced", exact: true }).click();
   await page.getByLabel("CARE Clinic admin password", { exact: true }).fill("TestChosen789");
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Clinic settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Lock Advanced settings" })).toBeVisible();
 });
 
-test("the simulated failed install retries setup without silently starting another installation", async ({ page }) => {
+test("the simulated retryable failure resumes the saved setup instead of starting another installation", async ({ page }) => {
   await installDemo(page, true);
   await expect(page.getByRole("heading", { name: "Something went wrong during installation", exact: true })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Try again", exact: true }).click();
-  await continueServerChecks(page);
-  await expect(page.getByLabel("Clinic address", { exact: true })).toHaveValue("preview-clinic");
-  expect(await calls(page, "CleanupFailedInstall")).toHaveLength(1);
+  await expect(page.locator(".care-panel")).toBeVisible({ timeout: 15_000 });
+  expect(await calls(page, "RetrySetup")).toHaveLength(1);
+  expect(await calls(page, "CleanupFailedInstall")).toHaveLength(0);
   expect(await calls(page, "RunSetup")).toHaveLength(1);
-  expect(await page.evaluate(() => window.careTest.fixtures.recovery.backup_verified)).toBe(false);
-  expect(await page.evaluate(() => window.careTest.fixtures.recovery.codes_saved)).toBe(false);
 });
 
 test("Desktop installer handoff guards mutations across the entire panel", async ({ page }) => {
@@ -466,18 +460,13 @@ test("Desktop installer handoff guards mutations across the entire panel", async
     window.careTest.progress({ phase: "installer", done: 0, total: 0 });
     window.careTest.finishUpdate();
   });
-  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
-  await expect(page.getByRole("switch")).toBeDisabled();
-  await page.getByRole("button", { name: "Backups", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Back up now", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Change folder", exact: true })).toBeDisabled();
+  await expect(restartButton(page)).toBeDisabled();
   await page.getByRole("button", { name: "Advanced", exact: true }).click();
   await expect(page.getByLabel("CARE Clinic admin password", { exact: true })).toBeDisabled();
   await page.evaluate(() => window.careTest.emit("care-done", 0, "status"));
   await expect(page.getByLabel("CARE Clinic admin password", { exact: true })).toBeDisabled();
   expect(await calls(page, "WriteEnv")).toHaveLength(0);
   expect(await calls(page, "RunUninstall")).toHaveLength(0);
-  expect(await calls(page, "SetBackupDir")).toHaveLength(0);
   expect(await calls(page, "ClinicAction")).toHaveLength(0);
 });
 
@@ -509,7 +498,7 @@ test("failed optional app removal leaves Start usable and explains what remains"
   await page.getByRole("button", { name: "Uninstall…", exact: true }).click();
   await dialog(page).getByRole("checkbox", { name: /Also remove the CARE Clinic app/ }).check();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   await page.evaluate(() => window.careTest.finishJob("uninstall"));
   await expect(page.getByRole("button", { name: "Start setup", exact: true })).toBeEnabled();
   const error = page.locator("[data-sonner-toast][data-type=error]");

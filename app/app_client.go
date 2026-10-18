@@ -10,7 +10,6 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/elevate"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/hosts"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/mdns"
-	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 )
 
@@ -27,10 +26,9 @@ type ClinicInfo struct {
 // ClientPreflight is what connecting would clean up on this computer. It is
 // read-only and needs no administrator approval.
 type ClientPreflight struct {
-	HostsEntry            bool   `json:"hosts_entry"`
-	OldCertificate        bool   `json:"old_certificate"`
-	UnfinishedServerSetup bool   `json:"unfinished_server_setup"`
-	EngineLeftovers       string `json:"engine_leftovers"`
+	HostsEntry            bool `json:"hosts_entry"`
+	OldCertificate        bool `json:"old_certificate"`
+	UnfinishedServerSetup bool `json:"unfinished_server_setup"`
 }
 
 const selfAddressedClinic = "this computer is sending the clinic address to itself; connect to fix it"
@@ -187,32 +185,9 @@ func (a *App) ClientPreflight() (result ClientPreflight, err error) {
 			return err
 		}
 		result.UnfinishedServerSetup = cfg.Role == roleServer || installed
-		result.EngineLeftovers = a.engineLeftovers()
 		return nil
 	})
 	return result, err
-}
-
-// engineLeftovers is best effort and deliberately narrow: only what the
-// container engine still holds. A computer without Docker has none, an engine
-// that cannot answer is not worth blocking a client connection over, and the
-// hosts entry and old certificates have fields of their own.
-func (a *App) engineLeftovers() string {
-	if !dockerInstalled() {
-		return ""
-	}
-	report, err := a.scanResidue()
-	if err != nil {
-		return ""
-	}
-	var labels []string
-	for _, trace := range report.Traces {
-		switch trace.ID {
-		case "containers", "volumes", "networks", "images":
-			labels = append(labels, trace.Label)
-		}
-	}
-	return strings.Join(labels, ", ")
 }
 
 func (a *App) ConnectClient(address string) error {
@@ -344,8 +319,4 @@ func (a *App) DisconnectClient() error {
 		a.logln("Removed this client's saved clinic access and role. No clinic data was changed.")
 		return nil
 	})
-}
-
-func dockerInstalled() bool {
-	return proc.Command("docker", "--version").Run() == nil
 }

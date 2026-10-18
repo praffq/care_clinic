@@ -1,32 +1,21 @@
 package clinic
 
 import (
-	"os"
-	"strings"
+	"context"
+	"time"
+
+	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 )
 
-const caddyRootPath = "/data/caddy/pki/authorities/local/root.crt"
-
+// caddyRootPEM fetches the clinic's root CA from Caddy's /root.crt over the
+// service's forwarded port 80 on this computer, or "" if it can't.
 func (e *Clinic) caddyRootPEM() string {
-	if out, err := e.capture("docker", "compose", "exec", "-T", "caddy",
-		"cat", caddyRootPath); err == nil && strings.Contains(out, "BEGIN CERTIFICATE") {
-		return out
-	}
-	f, err := os.CreateTemp("", "care-root-*.crt")
+	ctx, cancel := context.WithTimeout(e.context(), 15*time.Second)
+	defer cancel()
+	pem, err := trust.FetchClientCertificate(ctx, e.host(), "127.0.0.1")
 	if err != nil {
+		e.logln("Couldn't read the clinic's certificate: " + err.Error())
 		return ""
 	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if err := f.Close(); err != nil {
-		return ""
-	}
-	if _, err := e.capture("docker", "compose", "cp", "caddy:"+caddyRootPath, tmp); err != nil {
-		return ""
-	}
-	b, err := os.ReadFile(tmp)
-	if err != nil || !strings.Contains(string(b), "BEGIN CERTIFICATE") {
-		return ""
-	}
-	return string(b)
+	return pem
 }

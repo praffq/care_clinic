@@ -74,8 +74,8 @@ export function RemoveScreen() {
 
   const removeLeftovers = () =>
     attempt(async () => {
-      const after = await bridge.PurgeResidue(true);
-      return after.clean;
+      await bridge.CleanupFailedInstall();
+      return true;
     });
 
   const locked = busy || working;
@@ -151,7 +151,6 @@ export function RemoveScreen() {
             <h2 className="advanced-card-title">Remove the unfinished setup</h2>
             <p className="advanced-card-description">
               This computer has files and settings from a clinic setup that did not finish.
-              Backups are kept. Keep your separately saved backup recovery file to restore them.
             </p>
             <Button
               variant="destructive"
@@ -186,7 +185,7 @@ export function RemoveScreen() {
           onOpenAutoFocus={(event) => { event.preventDefault(); cancelRef.current?.focus(); }}
           onEscapeKeyDown={(event) => { if (working) event.preventDefault(); }}>
           <AlertDialogTitle>Remove the unfinished clinic setup?</AlertDialogTitle>
-          <AlertDialogDescription>This removes the old clinic files and settings. Backups and your separately saved recovery file are kept.</AlertDialogDescription>
+          <AlertDialogDescription>This removes the unfinished clinic files and settings from this computer.</AlertDialogDescription>
           <div className="advanced-dialog-body">
             <AdvancedError problem={problem} />
             <div className="advanced-confirm"><TriangleAlert aria-hidden="true" /><div className="advanced-field">

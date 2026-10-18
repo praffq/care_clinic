@@ -4,33 +4,17 @@
 import type {
   AppState,
   AppUpdate,
-  Backup,
-  BackupPolicy,
-  BackupSpace,
-  CarePlugin,
-  PluginCatalogEntry,
-  QuitRequest,
-  ChannelStatus,
   ClientPreflight,
   ClientReachability,
   ClinicInfo,
   ConfirmationRequest,
-  DiskStatus,
-  DockerStatus,
-  DownloadInfo,
-  Health,
   HomeAccess,
-  ImportedBackup,
+  HostReport,
   NameStatus,
   NetworkStatus,
-  ResidueReport,
-  RestartPlan,
-  SetupIssue,
-  SetupRecoveryStatus,
-  StorageReport,
-  ToolPlan,
+  QuitRequest,
+  ServiceState,
   UpdateChecks,
-  WSLStatus,
 } from "./types";
 
 declare global {
@@ -39,7 +23,6 @@ declare global {
       main: {
         App: {
           GetState(): Promise<AppState>;
-          SelectRole(role: "server" | "client"): Promise<void>;
           BeginServerSetup(): Promise<void>;
           ClearRole(): Promise<void>;
           FindClinic(address: string): Promise<ClinicInfo>;
@@ -47,92 +30,39 @@ declare global {
           ClientReachable(): Promise<ClientReachability>;
           ConnectClient(address: string): Promise<void>;
           DisconnectClient(): Promise<void>;
-          DockerStatus(): Promise<DockerStatus>;
-          GitStatus(): Promise<DockerStatus>;
           MDNSStatus(name: string): Promise<NameStatus>;
           NetworkStatus(): Promise<NetworkStatus>;
           FixNetwork(): Promise<void>;
           HomeAccessStatus(): Promise<HomeAccess>;
           EnableHomeAccess(): Promise<boolean>;
           DisableHomeAccess(): Promise<void>;
-          WSLStatus(): Promise<WSLStatus>;
-          InstallWSL(): Promise<string>;
-          DockerPlan(): Promise<ToolPlan>;
-          RancherDownloadInfo(): Promise<DownloadInfo>;
-          GitPlan(): Promise<ToolPlan>;
-          InstallDocker(): Promise<string>;
-          InstallGit(): Promise<string>;
-          OpenDocker(): Promise<void>;
-          ScanResidue(): Promise<ResidueReport>;
-          PurgeResidue(confirmed: boolean): Promise<ResidueReport>;
-          RestartPlan(): Promise<RestartPlan>;
-          RestartNow(): Promise<void>;
-          ClinicHealth(): Promise<Health>;
+          HostChecks(): Promise<HostReport>;
+          InstallService(): Promise<void>;
+          ServiceStatus(): Promise<ServiceState>;
           ValidatePassword(pw: string): Promise<string>;
           ValidateDomain(name: string): Promise<string>;
-          ValidateBackupDir(dir: string): Promise<string>;
-          BackupDirSpace(dir: string): Promise<BackupSpace>;
-          DiskStatus(): Promise<DiskStatus>;
-          StorageStatus(): Promise<StorageReport>;
-          RecheckStorage(): Promise<StorageReport>;
           SetMDNSName(name: string): Promise<void>;
           VerifyAdminPassword(pw: string): Promise<boolean>;
-          GetSetupRecoveryStatus(): Promise<SetupRecoveryStatus>;
-          GetAdminRecoveryCodeCount(): Promise<number>;
-          SaveSetupBackupRecovery(backupDir: string): Promise<boolean>;
-          ReplaceSetupBackupRecovery(backupDir: string): Promise<boolean>;
-          VerifySetupBackupRecovery(backupDir: string): Promise<boolean>;
-          ChooseRecoveryFile(): Promise<string>;
-          SaveAdminRecoveryCodes(adminPassword: string, backupDir: string): Promise<boolean>;
-          OpenSetupRecoveryCodes(): Promise<void>;
-          OpenSetupRecoveryFolder(codes: boolean): Promise<void>;
-          ValidateSetup(name: string, password: string, backupDir: string): Promise<SetupIssue[]>;
           ChangeAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
-          ResetAdminPassword(code: string, newPassword: string): Promise<void>;
-          ResetWebPassword(username: string, newPassword: string, adminPassword: string): Promise<void>;
-          ClinicAction(action: string, adminPassword: string): Promise<void>;
+          ClinicAction(action: "start" | "stop" | "restart"): Promise<void>;
           ClinicStatus(): Promise<string>;
-          RunSetup(
-            mdnsName: string,
-            adminPassword: string,
-            backupDir: string,
-          ): Promise<void>;
+          RunSetup(mdnsName: string, adminPassword: string): Promise<void>;
           RetrySetup(): Promise<void>;
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;
           WriteEnv(name: string, content: string, adminPassword: string): Promise<void>;
-          ReadPlugins(): Promise<CarePlugin[]>;
-          SavePlugins(plugins: CarePlugin[]): Promise<void>;
-          PluginCatalog(): Promise<PluginCatalogEntry[]>;
-          ListBackups(): Promise<Backup[]>;
-          GetBackupDir(): Promise<string>;
-          ExportBackupRecovery(adminPassword: string, recoveryFile: string): Promise<boolean>;
-          GetBackupPolicy(): Promise<BackupPolicy>;
-          SetBackupDir(dir: string): Promise<string>;
-          ChooseBackupFile(): Promise<string>;
-          InspectBackupFile(path: string): Promise<ImportedBackup>;
-          RestoreFromFile(path: string, recoveryFile: string, adminPassword: string): Promise<void>;
-          RestoreBackup(dbDump: string, filesArchive: string, recoveryFile: string, adminPassword: string): Promise<void>;
-          RancherDesktopInstalled(): Promise<boolean>;
-          RunUninstall(removeImages: boolean, removeBackups: boolean, removeRancher: boolean, adminPassword: string): Promise<void>;
+          RunUninstall(removeData: boolean, adminPassword: string): Promise<void>;
           OpenURL(url: string): Promise<void>;
-          ChooseFolder(title: string): Promise<string>;
           LogPath(): Promise<string>;
           OpenLogFolder(): Promise<void>;
-          WasAutostartLaunched(): Promise<boolean>;
           UninstallRequested(): Promise<boolean>;
           ExitUninstall(): Promise<void>;
           CanRemoveApp(): Promise<boolean>;
           RemoveApp(): Promise<void>;
-          AutostartEnabled(): Promise<boolean>;
-          SetAutostart(on: boolean): Promise<void>;
-          CareUpdateStatus(): Promise<ChannelStatus>;
-          CheckCareUpdate(): Promise<void>;
-          DismissCareUpdate(): Promise<void>;
           CheckAppUpdate(): Promise<AppUpdate>;
           InstallAppUpdate(): Promise<void>;
           GetUpdateChecks(): Promise<UpdateChecks>;
-          SetUpdateChecks(app: boolean, care: boolean, adminPassword: string): Promise<void>;
+          SetUpdateChecks(app: boolean, adminPassword: string): Promise<void>;
           SetQuitDialogReady(ready: boolean): Promise<QuitRequest | null>;
           RespondToQuit(id: number, quit: boolean): Promise<void>;
           SetConfirmationDialogReady(ready: boolean): Promise<ConfirmationRequest | null>;

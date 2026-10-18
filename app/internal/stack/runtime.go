@@ -18,6 +18,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
 
@@ -37,7 +38,12 @@ type Runtime struct {
 	StateDir string
 	// Log receives progress lines; nil discards them.
 	Log func(string)
+	// Progress receives byte counts for the "images" step.
+	Progress progress.Func
 }
+
+// StepImages is the progress step Images reports.
+const StepImages = "images"
 
 // DefaultStateDir is where the app and ctl keep host-side clinic state.
 func DefaultStateDir() (string, error) {
@@ -137,12 +143,33 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 }
 
 // Images loads (tarball) or pulls each image; the agent verifies digests.
+// Loads report their bytes as one total; pulls report each image's download.
 func (r *Runtime) Images(ctx context.Context, images []Image) error {
 	ag := r.Service.Agent()
+	var total int64
 	for _, img := range images {
 		if img.Tarball == "" {
+			continue
+		}
+		info, err := os.Stat(img.Tarball)
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+	}
+	load := r.Progress.Meter(StepImages, "", total)
+	for i, img := range images {
+		detail := fmt.Sprintf("%s (%d of %d)", imageTitle(img), i+1, len(images))
+		if img.Tarball == "" {
 			r.logf("Pulling %s", img.Ref())
-			if err := ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, r.frames); err != nil {
+			frames := func(f protocol.Frame) {
+				if p := f.Progress; p != nil && p.Total > 0 {
+					r.Progress.Bytes(StepImages, "Downloading "+detail, p.Bytes, p.Total)
+				}
+				r.frames(f)
+			}
+			r.Progress.Start(StepImages, "Downloading "+detail)
+			if err := ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, frames); err != nil {
 				return err
 			}
 			continue
@@ -152,13 +179,32 @@ func (r *Runtime) Images(ctx context.Context, images []Image) error {
 		if err != nil {
 			return err
 		}
-		err = ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, f, nil)
+		load.SetDetail("Loading " + detail)
+		err = ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, load.Reader(f), nil)
 		_ = f.Close()
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+var imageTitles = map[protocol.ImageRole]string{
+	protocol.ImageRoleBackend:  "CARE server",
+	protocol.ImageRoleFrontend: "CARE web app",
+	protocol.ImageRoleCaddy:    "web proxy",
+	protocol.ImageRoleBackup:   "backup tools",
+	protocol.ImageRolePostgres: "database",
+	protocol.ImageRoleRedis:    "task queue",
+	protocol.ImageRoleSilo:     "file storage",
+}
+
+// imageTitle names an image for people.
+func imageTitle(img Image) string {
+	if t, ok := imageTitles[img.Role]; ok {
+		return t
+	}
+	return img.Repo
 }
 
 // Install loads the images, configures the clinic for host and brings the
@@ -196,6 +242,47 @@ func (r *Runtime) Up(ctx context.Context) error {
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.logf("Stopping CARE (data kept)")
 	return r.Service.Agent().Op(ctx, protocol.StackStop{}, nil, r.frames)
+}
+
+// Down removes the stack's containers. With purge it also deletes every
+// clinic volume, the uploaded config (so the service stops bringing the
+// stack up after boot) and the host copy of the secrets.
+func (r *Runtime) Down(ctx context.Context, purge bool) error {
+	op := protocol.StackDown{}
+	if purge {
+		op = protocol.StackDown{RemoveVolumes: true, ConfirmPurge: protocol.PurgeConfirmation}
+		r.logf("Removing CARE and all of its data")
+	} else {
+		r.logf("Removing CARE's containers (data kept)")
+	}
+	if err := r.Service.Agent().Op(ctx, op, nil, r.frames); err != nil {
+		return err
+	}
+	if !purge {
+		return nil
+	}
+	ag := r.Service.Agent()
+	// The host keeps the backup recovery key: exported backups still need it.
+	names := []string{StackEnv, ClinicEnv, SecretsEnv, BackupCert}
+	for _, f := range kitFiles {
+		names = append(names, f.dst)
+	}
+	for _, name := range names {
+		if err := ag.DeleteFile(ctx, protocol.FileAreaConfig, name); err != nil && !isNotFound(err) {
+			return fmt.Errorf("delete %s: %w", name, err)
+		}
+	}
+	dir := r.StateDir
+	if dir == "" {
+		var err error
+		if dir, err = DefaultStateDir(); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, SecretsEnv)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Status reports per-service state.
@@ -242,4 +329,41 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// InstalledImages returns the images the engine's stack.env pins, without
+// tarballs, so an installed clinic can be reconfigured without the image
+// archives. It returns client.ErrNotFound when no clinic is configured.
+func (r *Runtime) InstalledImages(ctx context.Context) ([]Image, error) {
+	rc, err := r.Service.Agent().GetFile(ctx, protocol.FileAreaConfig, StackEnv)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(rc, 64<<10))
+	_ = rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	return ParseStackImages(data)
+}
+
+// ParseStackImages reads the IMAGE_<ROLE>=repo@digest lines Render writes.
+func ParseStackImages(data []byte) ([]Image, error) {
+	refs := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && strings.HasPrefix(k, "IMAGE_") {
+			refs[k] = v
+		}
+	}
+	var out []Image
+	for _, role := range RequiredRoles {
+		key := "IMAGE_" + strings.ToUpper(string(role))
+		repo, dg, ok := strings.Cut(refs[key], "@")
+		if !ok || repo == "" || !protocol.Digest(dg).Valid() {
+			return nil, fmt.Errorf("%s: no digest-pinned %s", StackEnv, key)
+		}
+		out = append(out, Image{Role: role, Repo: repo, Digest: protocol.Digest(dg)})
+	}
+	return out, nil
 }

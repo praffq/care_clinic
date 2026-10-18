@@ -1,4 +1,4 @@
-import { Hammer, LockKeyhole, LockKeyholeOpen, ScrollText, Trash2, TriangleAlert } from "lucide-react";
+import { LockKeyhole, LockKeyholeOpen, ScrollText, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
@@ -8,19 +8,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { toast } from "@/components/ui/sonner";
 import { bridge } from "@/lib/bridge";
 import { useCare } from "@/state/care-store";
 import type { Section } from "@/types";
-import { AdminPasswordForm, AdminRecoverySettings } from "./admin-recovery";
+import { AdminPasswordSettings } from "./admin-password";
 import {
   AdvancedError, AdvancedLockProvider, AdvancedLogButton, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
 } from "./advanced-ui";
 import { EnvEditor } from "./env-editor";
-import { ExportBackupRecovery } from "./export-backup-recovery";
 import { PanelPageHeader } from "./panel-ui";
 import { UpdateCheckSettings } from "./update-checks";
-import { WebPasswordReset } from "./web-password-reset";
 
 const UNLOCK_MS = 15 * 60 * 1000;
 
@@ -30,7 +27,7 @@ export function AdvancedTab({ disabled = false }: { disabled?: boolean } = {}) {
 
 function AdvancedContent() {
   const { disabled } = useAdvancedLock();
-  const { tab, flow, busy, restorePending, operationError } = useCare();
+  const { tab, flow, busy, operationError } = useCare();
   const active = flow === "panel" && tab === "advanced";
   const [adminPassword, setAdminPassword] = useState<string | null>(null);
   const [unlockedAt, setUnlockedAt] = useState(0);
@@ -93,9 +90,7 @@ function AdvancedContent() {
       {expired ? <AdvancedNotice title="Advanced has locked" tone="neutral">Enter the CARE Clinic password again. Unsaved settings and sensitive fields have been cleared.</AdvancedNotice> : null}
       <AdminGate onUnlock={unlock} />
     </> : <>
-      <AdminRecoverySettings adminPassword={adminPassword} onPasswordChanged={unlock} />
-      <WebPasswordReset adminPassword={adminPassword} />
-      <ExportBackupRecovery adminPassword={adminPassword} />
+      <AdminPasswordSettings adminPassword={adminPassword} onPasswordChanged={unlock} />
       <UpdateCheckSettings adminPassword={adminPassword} />
       <EnvEditor adminPassword={adminPassword} groupId={groupId} onGroupChange={setGroupId} onWorkingChange={setWorking}
         pendingFiles={pendingSettings} onPendingFilesChange={setPendingSettings} onApplicationAccepted={() => setApplyingSettings(true)} />
@@ -103,20 +98,10 @@ function AdvancedContent() {
         <LogRow />
         <section className="advanced-card advanced-card-pad advanced-danger" aria-labelledby="advanced-careful-title">
           <h2 className="advanced-danger-kicker" id="advanced-careful-title">Careful</h2>
-          {restorePending ? <AdvancedNotice title="Finish the earlier restore first">
-            Start CARE from Overview to recover it before rebuilding or removing this installation.
-          </AdvancedNotice> : null}
-          <div className="advanced-danger-row">
-            <div className="advanced-grow">
-              <h3>Rebuild everything</h3>
-              <p className="advanced-card-description">Re-creates CARE from this app's files. Patient data is kept; CARE is unavailable for a few minutes.</p>
-            </div>
-            <RebuildControl adminPassword={adminPassword} />
-          </div>
           <div className="advanced-danger-row">
             <div className="advanced-grow">
               <h3>Remove CARE from this computer</h3>
-              <p className="advanced-card-description">Deletes the clinic and all patient data here. Backups can be kept.</p>
+              <p className="advanced-card-description">Removes CARE from this computer. Clinic data can be kept or deleted.</p>
             </div>
             <UninstallPanel adminPassword={adminPassword} />
           </div>
@@ -133,7 +118,6 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
   const [password, setPassword] = useState("");
   const [problem, setProblem] = useState<AdvancedProblem | null>(null);
   const [checking, setChecking] = useState(false);
-  const [recovering, setRecovering] = useState(false);
   const pending = useRef(false);
   const live = useRef(true);
   useEffect(() => {
@@ -156,7 +140,7 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
       setPassword("");
       if (lock.isLocked()) return;
       if (matches) onUnlock(submitted);
-      else setProblem({ title: "That's not the CARE Clinic admin password", message: "Try again, or use an unused recovery code from your latest sheet." });
+      else setProblem({ title: "That's not the CARE Clinic admin password", message: "Check the password and try again." });
     } catch (cause) {
       if (!live.current) return;
       setPassword("");
@@ -166,17 +150,10 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
       if (live.current) setChecking(false);
     }
   };
-  if (recovering) return <section className="advanced-card advanced-gate-recovery">
-    <h2>Reset the CARE Clinic admin password</h2>
-    <AdminPasswordForm onCancel={() => { setRecovering(false); setProblem(null); }} onSuccess={(next) => {
-      toast("CARE Clinic password reset. Mark that recovery code used. CARE web passwords are unchanged; reset one from Advanced if needed. Re-enroll a surviving backup PEM under Backup recovery key in Advanced before using password-only key downloads.");
-      onUnlock(next);
-    }} />
-  </section>;
   return <section className="advanced-card advanced-gate" aria-labelledby="advanced-gate-title">
     <span className="advanced-icon advanced-gate-icon"><LockKeyhole aria-hidden="true" /></span>
     <h2 id="advanced-gate-title">Enter the admin password</h2>
-    <p>These settings can change, rebuild or remove the clinic.</p>
+    <p>These settings can change or remove the clinic.</p>
     <form noValidate onSubmit={(event) => { event.preventDefault(); void unlock(); }}>
       <AdvancedSecretInput label="CARE Clinic admin password" value={password} onChange={(next) => { setPassword(next); setProblem(null); }}
         placeholder="CARE Clinic admin password" disabled={blocked || checking} invalid={!!problem} autoFocus />
@@ -185,75 +162,17 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
         {checking ? <Spinner /> : null}{checking ? "Checking…" : "Unlock"}
       </Button>
     </form>
-    <Button type="button" variant="ghost" className="advanced-forgot" disabled={blocked || checking}
-      onClick={() => { if (!lock.isLocked() && !busy && !pending.current) { setPassword(""); setProblem(null); setRecovering(true); } }}>
-      {problem ? "Use a recovery code instead" : "Forgot CARE Clinic password?"}
-    </Button>
   </section>;
 }
 
-function RebuildControl({ adminPassword }: { adminPassword: string }) {
-  const { busy, restorePending, runAction } = useCare();
-  const lock = useAdvancedLock();
-  const blocked = busy || lock.disabled;
-  const [open, setOpen] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [problem, setProblem] = useState<AdvancedProblem | null>(null);
-  const pending = useRef(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const close = () => { if (!pending.current) { setOpen(false); setProblem(null); } };
-  const rebuild = async () => {
-    if (busy || lock.isLocked() || restorePending || pending.current) return;
-    pending.current = true;
-    setWorking(true);
-    setProblem(null);
-    try {
-      const accepted: unknown = await runAction("rebuild-all", adminPassword);
-      if (accepted === true) setOpen(false);
-      else setProblem({ title: "The rebuild didn't start", message: "Wait for any other task to finish, then try again. Open the log file if it still won't start." });
-    } catch (cause) {
-      setProblem(advancedProblem(cause, "The rebuild didn't start", "Try again when CARE Clinic is ready."));
-    } finally {
-      pending.current = false;
-      setWorking(false);
-    }
-  };
-  return <>
-    <Button type="button" ref={triggerRef} className="advanced-outline-danger" disabled={blocked || restorePending || working}
-      onClick={() => { if (!lock.isLocked() && !busy && !restorePending && !pending.current) setOpen(true); }}>
-      <Hammer aria-hidden="true" className="size-4" />Rebuild
-    </Button>
-    <AlertDialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
-      <AlertDialogContent className="advanced-dialog advanced-dialog-narrow"
-        onOpenAutoFocus={(event) => { event.preventDefault(); cancelRef.current?.focus(); }}
-        onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus(); }}
-        onEscapeKeyDown={(event) => { if (working) event.preventDefault(); }}>
-        <span className="advanced-icon advanced-icon-danger"><Hammer aria-hidden="true" /></span>
-        <AlertDialogTitle className="advanced-dialog-title">Rebuild CARE?</AlertDialogTitle>
-        <AlertDialogDescription>CARE will be unavailable for a few minutes while it is re-created from this app's files and current settings. Patient data and backups are kept.</AlertDialogDescription>
-        <div className="advanced-dialog-body"><AdvancedError problem={problem} /></div>
-        <div className="advanced-dialog-foot">
-          <Button type="button" ref={cancelRef} disabled={working} onClick={close}>Cancel</Button>
-          <Button type="button" variant="destructive" disabled={blocked || restorePending || working} onClick={() => void rebuild()}>
-            {working ? <Spinner /> : <Hammer aria-hidden="true" className="size-4" />}Rebuild CARE
-          </Button>
-        </div>
-      </AlertDialogContent>
-    </AlertDialog>
-  </>;
-}
-
 export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
-  const { busy, restorePending, uninstall, clearOperationError } = useCare();
+  const { busy, uninstall, clearOperationError } = useCare();
   const lock = useAdvancedLock();
   const blocked = busy || lock.disabled;
   const [open, setOpen] = useState(false);
-  const [removeBackups, setRemoveBackups] = useState(false);
-  const [removeImages, setRemoveImages] = useState(false);
-  const [removeRancher, setRemoveRancher] = useState(false);
+  const [removeData, setRemoveData] = useState(false);
   const [removeApp, setRemoveApp] = useState(false);
-  const [capabilities, setCapabilities] = useState<{ rancher: boolean; app: boolean } | null>(null);
+  const [capabilities, setCapabilities] = useState<{ app: boolean } | null>(null);
   const [checking, setChecking] = useState(false);
   const [working, setWorking] = useState(false);
   const [confirmation, setConfirmation] = useState("");
@@ -269,8 +188,8 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     setProblem(null);
     setCapabilities(null);
     try {
-      const [rancher, app] = await Promise.all([bridge.RancherDesktopInstalled(), bridge.CanRemoveApp()]);
-      if (version === checkVersion.current) setCapabilities({ rancher, app });
+      const app = await bridge.CanRemoveApp();
+      if (version === checkVersion.current) setCapabilities({ app });
     } catch (cause) {
       if (version === checkVersion.current) setProblem(advancedProblem(cause, "Removal options couldn't be checked",
         "No removal has started. Try checking again before continuing."));
@@ -280,9 +199,7 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
   };
   const clear = () => {
     setConfirmation("");
-    setRemoveBackups(false);
-    setRemoveImages(false);
-    setRemoveRancher(false);
+    setRemoveData(false);
     setRemoveApp(false);
     setCapabilities(null);
     setProblem(null);
@@ -296,12 +213,12 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
   };
   useEffect(() => () => { checkVersion.current++; }, []);
   const begin = () => {
-    if (busy || lock.isLocked() || restorePending || pending.current) return;
+    if (busy || lock.isLocked() || pending.current) return;
     clear();
     setOpen(true);
     void readOptions();
   };
-  const canRemove = !blocked && !restorePending && !working && !checking && !!capabilities && confirmation === "DELETE";
+  const canRemove = !blocked && !working && !checking && !!capabilities && confirmation === "DELETE";
   const remove = async () => {
     if (!canRemove || lock.isLocked() || pending.current || !capabilities) return;
     pending.current = true;
@@ -310,8 +227,7 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     clearOperationError();
     setOpen(false);
     try {
-      const accepted: unknown = await uninstall(removeImages, removeBackups, capabilities.rancher && removeRancher,
-        adminPassword, capabilities.app && removeApp);
+      const accepted: unknown = await uninstall(removeData, adminPassword, capabilities.app && removeApp);
       setConfirmation("");
       if (accepted === true) { setOpen(false); clear(); }
       else {
@@ -328,7 +244,7 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
     }
   };
   return <>
-    <Button type="button" ref={triggerRef} className="advanced-outline-danger" disabled={blocked || restorePending || working} onClick={begin}>
+    <Button type="button" ref={triggerRef} className="advanced-outline-danger" disabled={blocked || working} onClick={begin}>
       <Trash2 aria-hidden="true" className="size-4" />Uninstall…
     </Button>
     <AlertDialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
@@ -337,41 +253,25 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
         onCloseAutoFocus={(event) => { event.preventDefault(); if (!pending.current) triggerRef.current?.focus(); }}
         onEscapeKeyDown={(event) => { if (working) event.preventDefault(); }}>
         <span className="advanced-icon advanced-icon-danger"><Trash2 aria-hidden="true" /></span>
-        <AlertDialogTitle className="advanced-dialog-title">Remove CARE and all patient data from this computer?</AlertDialogTitle>
-        <AlertDialogDescription>This deletes the clinic and everything in it. Backups are kept unless you tick the box below.</AlertDialogDescription>
+        <AlertDialogTitle className="advanced-dialog-title">Remove CARE from this computer?</AlertDialogTitle>
+        <AlertDialogDescription>This stops the clinic and removes CARE. Clinic data is kept unless you tick the box below.</AlertDialogDescription>
         <div className="advanced-dialog-body">
           {checking ? <div className="advanced-busy" role="status"><Spinner />Checking removal options…</div> : null}
           <AdvancedError problem={problem} />
           {!checking && !capabilities ? <Button type="button" className="self-start" disabled={working || blocked} onClick={() => void readOptions()}>Check removal options again</Button> : null}
-          {restorePending ? <AdvancedNotice title="Finish the earlier restore first">
-            Start CARE from Overview before removing this installation.
-          </AdvancedNotice> : null}
           <div className="advanced-removal-options">
             <label className="advanced-check">
-              <Checkbox checked={removeBackups} disabled={working || blocked || checking}
-                onCheckedChange={(checked) => setRemoveBackups(checked === true)} />
-              <span>Also delete the backups — nothing can be recovered afterwards</span>
-            </label>
-            <label className="advanced-check">
-              <Checkbox checked={removeImages} disabled={working || blocked || checking}
-                onCheckedChange={(checked) => setRemoveImages(checked === true)} />
-              <span>Also remove downloaded images and clear the shared build cache
-                <small>Other projects on this computer may need to download or build their files again.</small>
+              <Checkbox checked={removeData} disabled={working || blocked || checking}
+                onCheckedChange={(checked) => setRemoveData(checked === true)} />
+              <span>Also delete clinic data (database and files)
+                <small>Patient records can't be recovered afterwards.</small>
               </span>
             </label>
-            {capabilities?.rancher ? <label className="advanced-check">
-              <Checkbox checked={removeRancher} disabled={working || blocked}
-                onCheckedChange={(checked) => setRemoveRancher(checked === true)} />
-              <span>Also remove Rancher Desktop and its settings
-                <small>Leave this off if other programs on this computer use Rancher Desktop.</small>
-              </span>
-            </label> : null}
             {capabilities?.app ? <label className="advanced-check">
               <Checkbox checked={removeApp} disabled={working || blocked} onCheckedChange={(checked) => setRemoveApp(checked === true)} />
               <span>Also remove the CARE Clinic app</span>
             </label> : null}
           </div>
-          {!removeBackups ? <p className="advanced-field-hint">Keep your separately saved backup recovery file. You will need it to restore encrypted backups.</p> : null}
           <div className="advanced-confirm">
             <TriangleAlert aria-hidden="true" />
             <div className="advanced-field">
@@ -385,7 +285,7 @@ export function UninstallPanel({ adminPassword }: { adminPassword: string }) {
           <Button type="button" ref={cancelRef} disabled={working} onClick={close}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={!canRemove} onClick={() => void remove()}>
             {working ? <Spinner /> : <Trash2 aria-hidden="true" className="size-4" />}
-            {working ? "Starting removal…" : "Delete everything"}
+            {working ? "Starting removal…" : removeData ? "Delete everything" : "Remove CARE"}
           </Button>
         </div>
       </AlertDialogContent>

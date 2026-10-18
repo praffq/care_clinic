@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
-	"github.com/ohcnetwork/care_desktop/app/internal/service/control"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 )
 
@@ -61,13 +60,8 @@ func (a *App) ensureInstallDir() (string, error) {
 		}
 		return os.WriteFile(target, data, mode)
 	})
-	if err != nil {
-		return dest, err
-	}
-	return dest, os.MkdirAll(filepath.Join(dest, backupStateDir), 0o755)
+	return dest, err
 }
-
-const backupStateDir = "backup-state"
 
 func (a *App) engine() *clinic.Clinic {
 	cfg := a.loadConfig()
@@ -76,33 +70,18 @@ func (a *App) engine() *clinic.Clinic {
 		a.logln("warning: " + err.Error())
 	}
 	return &clinic.Clinic{
-		Stack:       &stack.Runtime{Service: a.stackService(), Log: a.logln},
+		Stack:       &stack.Runtime{Service: a.svc(), StateDir: a.stateDir, Log: a.logln},
 		StackImages: images,
 		InstallDir:  a.installDir(),
 		MDNSName:    strings.TrimSuffix(strings.TrimSpace(cfg.MDNSName), ".local"),
-		BackupDir:   cfg.BackupDir,
-		Pins:        a.pins,
 		Log:         a.logln,
 		Confirm:     a.confirmDialog,
-		HoldUpdates: cfg.CareUpdateChecksOff,
 	}
-}
-
-func (a *App) engineForUpdate() *clinic.Clinic {
-	e := a.engine()
-	e.Abandon = func() bool { return !a.updatesAllowed() }
-	return e
-}
-
-func (a *App) stackService() stack.Service {
-	if a.service != nil {
-		return a.service
-	}
-	return control.NewClient(control.SystemSocket)
 }
 
 // devImages reads the image tarballs from scripts/dev-images.sh named by
-// CARE_CLINIC_DEV_IMAGES. Release images come from the update feed later.
+// CARE_CLINIC_DEV_IMAGES. Without them the clinic reuses the images the
+// engine already has (clinic.Setup); release images come in a later slice.
 func devImages() ([]stack.Image, error) {
 	dir := os.Getenv("CARE_CLINIC_DEV_IMAGES")
 	if dir == "" {

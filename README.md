@@ -1,14 +1,15 @@
 # CARE Clinic
 
 Self-contained, offline [CARE](https://github.com/ohcnetwork/care) for a small clinic.
-One installer on one computer runs the whole EMR — backend, web app, database, file
-storage and automatic daily encrypted backups — and staff connect from other computers
-using CARE Clinic in client mode on the clinic Wi-Fi. The core clinic can run
-without internet after installation. Updates, externally hosted plugins such
-as CARE Onboarding, and configured online services still need connectivity.
+One installer on one computer runs the whole EMR — backend, web app, database and file
+storage — and staff connect from other computers using CARE Clinic in client mode on
+the clinic Wi-Fi. The core clinic can run without internet after installation.
+App updates and configured online services still need connectivity.
 
 **Download:** [releases](https://github.com/ohcnetwork/care_desktop/releases)
-— `.dmg` for macOS (Apple Silicon and Intel), `-setup.exe` for Windows 64-bit.
+— `.dmg` for macOS, `-setup.exe` for Windows 64-bit. Setting up a clinic server
+needs a Mac with Apple silicon; Windows can connect as a client but cannot host
+a clinic yet.
 
 **Previously hosted CARE on this computer, but now cannot open another clinic?**
 See [client recovery and earlier-install cleanup](docs/client-recovery.md).
@@ -20,27 +21,26 @@ See [client recovery and earlier-install cleanup](docs/client-recovery.md).
   nothing: the server role is recorded when the setup screen begins, before any
   setup settings are saved. The client role is recorded only when a connection
   is attempted. Once written, ordinary use does not switch roles.
-- **Server setup wizard** — platform-aware, sequential computer checks, clinic
-  address, backup location and verified recovery file, admin password and six
-  recovery codes, then Review. Review rechecks all requirements before accepting
-  Install. Installation shows real activity rather than an invented percentage
-  and opens the control panel directly when it succeeds.
-- **Interrupted installation** — reconnect and retry without clearing setup
-  while the original desktop process remains open and its saved recovery files
-  are available. Completed downloads and images can be reused; this is not
-  byte-level download resumption. If that attempt is no longer available, CARE
-  explains the cleanup required before starting again.
-- **Windows save locations** — the default backup folder and native save dialogs
-  use the Desktop Windows actually displays, including OneDrive redirection.
-  Saved recovery files have an **Open folder** action. Explicitly configured
-  backup locations are kept; other operating systems retain their folder behavior.
-- **Server control panel** — start/stop/restart, start at login, clinic address and
-  phone/tablet setup QR, with dedicated Backups, Storage, Updates and Advanced
-  pages. Plugins retains its reviewed catalog/table layout.
+- **Server setup wizard** — computer checks (virtualization, memory, disk and
+  the CARE Clinic service), clinic address and admin password, then install. If
+  the background service is missing, CARE installs it with one macOS
+  administrator prompt. Installation shows real activity rather than an
+  invented percentage and opens the control panel directly when it succeeds.
+  See [server onboarding](docs/onboarding.md).
+- **Runs without the app** — a boot-time service, `care-clinic-service`, runs the
+  clinic in a small Linux virtual machine, forwards its ports, announces
+  `<clinic>.local` and starts the clinic after a reboot. The app is only the
+  user interface; closing it leaves the clinic running.
+- **Interrupted installation** — **Try again** retries while the original
+  desktop process remains open. If that attempt is no longer available, CARE
+  removes the unfinished clinic and setup starts over.
+- **Server control panel** — clinic status from the service, start/stop/restart,
+  clinic address and phone/tablet setup QR, with Home access, Updates and
+  Advanced pages.
 - **Native client setup** — enter the clinic's `.local` address shown on its
   server. **Find clinic** checks it and changes nothing on the computer;
-  **Connect** is the step that does. No Docker, Git, or mDNS advertising runs on
-  the client. CARE downloads and validates the public certificate, verifies the
+  **Connect** is the step that does. Nothing runs or advertises on the client.
+  CARE downloads and validates the public certificate, verifies the
   server's TLS hostname before installation, requests OS administrator approval
   when needed, and automatically checks HTTPS before opening CARE. Later
   connections use the saved certificate pin rather than silently downloading a
@@ -59,7 +59,7 @@ See [client recovery and earlier-install cleanup](docs/client-recovery.md).
 - **Back** — walks through earlier setup steps; from the first step it can undo
   an unused setup. Client Back remains available until connected. Running work
   blocks navigation; the backend rejects clearing a setup or connection already
-  in use. Review's Edit/Fix actions return directly to Review.
+  in use.
 - **Disconnect** — disconnect a client and remove only the certificate
   it installed, without touching server data. Successful uninstall clears its role
   and returns to the Server/Client choice, as does successful server uninstall.
@@ -67,17 +67,15 @@ See [client recovery and earlier-install cleanup](docs/client-recovery.md).
   app through the operating system. Trusted certificates that did not come from
   CARE remain and may still permit browser access. Uninstall the setup in CARE
   Clinic before removing the executable through the operating system.
-- **Backups** — encrypted backups every night at 12 AM (or when the computer is next on), with actual configured retention,
-  backup-now and one explicit **Restore from a backup file** path for local or
-  imported files. Restoring requires the CARE Clinic admin password, a recovery file
-  for encrypted backups, and acknowledgement that clinic records will be replaced.
-- **Advanced** — ten everyday choices grouped into Clinic details, Patients and
-  visits, Billing, Backups and Staff access, plus CARE Clinic password recovery,
-  log, rebuild and uninstall. Less-used local options keep their defaults or saved
-  values and can be overridden in **Extra settings (for support)**.
-  Advanced locks 15 minutes after unlocking, or sooner
-  when you leave the tab; protected native actions still check the password.
-  Email, SMS/patient sign-in and MFA configuration are not exposed in this editor.
+- **Advanced** — clinic settings, CARE Clinic password change, log and
+  uninstall. Less-used local options keep their defaults or saved values and
+  can be overridden in **Extra settings (for support)**. Advanced locks 15
+  minutes after unlocking, or sooner when you leave the tab; protected native
+  actions still check the password. Email, SMS/patient sign-in and MFA
+  configuration are not exposed in this editor.
+- **Removed in v2** — backups and restore, plugins, storage monitoring, CARE
+  software updates, recovery codes, web password reset and start at login.
+  They return later via engine agent ops.
 - **Short permission prompts** — CARE's in-window confirmations explain the
   next action without a technical checklist. System password and certificate
   approvals still appear in the operating system's own dialogs.
@@ -95,26 +93,30 @@ clients keep using the desktop app; downloadable scripts remain retired. Separat
 servers with unique names remain valid; CARE does not enforce a signed,
 network-wide single-clinic rule.
 
-A Go / [Wails](https://wails.io) desktop app with a React UI drives a Docker Compose
-stack: the CARE backend and workers, the CARE frontend, PostgreSQL, Redis, Silo for
-files, and Caddy with the Coraza WAF as the HTTPS front door. Both CARE images are
-built on the clinic's machine from the upstream commits pinned in `deployments/.env`.
+A Go / [Wails](https://wails.io) desktop app with a React UI talks to the root
+`care-clinic-service` over a local control socket. The service runs an engine VM
+(Apple Virtualization.framework) whose agent runs the Docker Compose stack: the
+CARE backend and workers, the CARE frontend, PostgreSQL, Redis, Silo for files,
+and Caddy with the Coraza WAF as the HTTPS front door. Nothing else needs to be
+installed on the clinic computer. See [architecture](docs/architecture.md).
 
 | Path | What lives there |
 |---|---|
-| `app/` | The desktop app: Go engine in `internal/`, Wails bindings in `*.go`, React UI in `frontend/` |
-| `deployments/` | The server kit: compose file, Caddyfile, env files, backup script, and public certificate bootstrap route |
-| `.github/workflows/` | CI, and releases started when `CARE_CLINIC_VERSION` in `deployments/.env` changes on `main` |
+| `app/` | The desktop app (Wails bindings in `*.go`, React UI in `frontend/`), the service and engine agent in `cmd/`, shared Go packages in `internal/` |
+| `engine/` | The engine VM image build |
+| `deployments/` | The server kit: compose file, Caddyfile, env files and public certificate bootstrap route |
+| `scripts/` | macOS bundle hook, developer service install, dev image builds |
+| `.github/workflows/` | CI and releases |
 
 **Using the app:** [Desktop workflows](docs/desktop-workflows.md) covers setup,
 connection, installation, each control-panel tab and update handoffs.
 
 **Technical documentation:** [Start with `docs/README.md`](docs/README.md) for
-the architecture, file map, Wails API, configuration, lifecycle, backups, native
+the architecture, file map, Wails API, configuration, lifecycle, native
 integrations, safe UI tests and release workflow.
 
 **Releases:** [Preparing and publishing a version](docs/releases.md), including
-releases started on merge, automatic tags, and macOS and Windows signing configuration.
+automatic tags, the macOS app bundle layout, and macOS and Windows signing configuration.
 
 ## Code signing policy
 
@@ -137,39 +139,35 @@ CARE Clinic has no telemetry, analytics or crash reporting. Network requests
 are made for setup, configured features and updates, including automatic update
 checks:
 
-- **Server setup** installs Docker (Rancher Desktop on macOS/Windows) and Git if they are missing (pinned,
-  checksum-verified installers from github.com, or the operating system's own
-  package tools), clones the CARE backend
-  and frontend from github.com, pulls the PostgreSQL, Redis, Silo and Caddy images
-  from Docker Hub, and builds the CARE images, fetching their package dependencies.
+- **Server setup** installs the service and engine shipped inside the app and
+  loads the clinic images supplied to it; it downloads nothing itself.
 - **The Windows installer** contains Microsoft's WebView2 bootstrapper, which
   downloads the WebView2 runtime from Microsoft if the computer lacks it.
 - **Clinic features** the operator turns on, such as SMS sign-in codes and email,
   send data to the provider the operator configured.
-- **Updates** check GitHub release metadata for CARE Clinic. While the clinic
-  is serving, CARE's background update checker can resolve its configured source
-  branches and build newer images; those builds fetch dependencies.
-- **Hosted plugins**, including the default CARE Onboarding plugin for new
-  clinics, are downloaded by staff browsers from their configured hosts.
+- **Updates** check GitHub release metadata for CARE Clinic.
 
-On the clinic network the server announces `https://<clinic>.local` with mDNS so
+On the clinic network the server's service announces `<clinic>.local` with mDNS so
 staff computers can find it; clients do not advertise a clinic. Clients retrieve
 the public certificate over local HTTP and check the clinic over HTTPS. That
-traffic stays on the local network. Rancher
-Desktop, the container images and WebView2 are covered by their own privacy
-policies.
+traffic stays on the local network. The container images and WebView2 are
+covered by their own privacy policies.
 
 Build with `cd app && node frontend/scripts/stage-install.mjs && wails build`
-(needs Go, Node 22 and the Wails CLI).
+(needs Go, Node 22 and the Wails CLI). On macOS the build also puts the service,
+and an engine bundle if one is available, inside the `.app`; see
+[bundle layout](docs/releases.md#macos-app-bundle-layout).
 
 Run `cd app && wails dev` to review the real desktop application. This uses the
 native backend and can operate an existing clinic on this computer; use an
-isolated environment for destructive installation, restore and removal tests.
+isolated environment for destructive installation and removal tests. See
+[development](docs/development-and-release.md#a-running-development-app-has-real-effects)
+for the environment variables that stand in for the bundled files.
 
 Run `cd app/frontend && npm run test:ui` for the Playwright scenarios
 (requires Playwright's Chromium browser; install it with `npx playwright install chromium`
-if it is missing). They cover navigation, native-contract gates, recovery,
-installation and update events, panel actions, settings/plugins, errors,
+if it is missing). They cover navigation, native-contract gates,
+installation and update events, panel actions, settings, errors,
 keyboard access, and layout at 1100×700 and 720×560 using a simulated host under
 `app/frontend/tests/fixtures/`. The runner starts its own loopback server on port
 41783. These fixtures require Vite test mode, perform no native operations, and

@@ -2,7 +2,7 @@
 
 [Documentation index](README.md)
 
-The backend has several configuration layers. Understanding their ownership prevents a common mistake: changing a source template while expecting an already installed clinic to read it.
+The app has several configuration layers. Understanding their ownership prevents a common mistake: changing a source template while expecting an already installed clinic to read it.
 
 ## Configuration layers
 
@@ -10,201 +10,156 @@ The backend has several configuration layers. Understanding their ownership prev
 flowchart LR
     Source["deployments: versioned kit templates"] --> Stage["app/install: build staging"]
     Stage --> Binary["Embedded installFS in desktop executable"]
-    Binary --> Installed["Installed kit on clinic computer"]
-    Config["config.json: local installation identity"] --> Engine["App.engine configuration snapshot"]
-    Binary --> Pins["release.Pins: embedded release identity"]
-    Pins --> Engine
-    Engine --> Compose["Compose environment and orchestration"]
-    Installed --> Compose
-    Editor["Settings and plugin editors"] --> RuntimeEnv["Installed backend.env, frontend.env and plugins.json"]
-    RuntimeEnv --> Compose
+    Binary --> Installed["Install folder on the clinic computer"]
+    Editor["Settings editor"] --> Installed
+    Config["config.json: local installation identity"] --> Clinic["App.engine(): clinic.Clinic"]
+    Installed --> Clinic
+    Clinic --> Generated["Generated stack.env, clinic.env, secrets.env"]
+    Clinic --> EngineCfg["Engine config area (inside the VM)"]
+    Generated --> EngineCfg
 ```
 
 | Layer | Owner | Purpose |
 | --- | --- | --- |
-| `deployments/.env` | Maintainer | Desktop version, upstream repositories/commits, and image pins. |
-| Other `deployments/` files | Maintainer | The Compose stack, initial environment templates, proxy and helper programs. |
+| `deployments/.env` | Maintainer | Desktop version, upstream repositories/commits and image pins. |
+| Other `deployments/` files | Maintainer | The compose file, initial environment templates, proxy configuration and setup page. |
 | `app/install/` | Build process | Staging for Go embedding; not the place for source edits. |
 | Embedded `installFS` | Desktop executable | Immutable copy of the kit used by that build. |
-| Installed kit | Application | Runtime files used by Docker Compose. |
-| Installed `backend.env` / `frontend.env` | Clinic operator and application-managed fields | Clinic-specific settings preserved during kit refresh. |
-| `config.json` | `App` | Local setup/removal state, name, backup path, and CARE Clinic administrator hash. |
-| Exported recovery materials | Clinic manager | Private backup recovery file and printable CARE Clinic admin recovery codes, kept outside the installation and backup folder. |
+| Install folder | Application | The kit uploaded to the engine by `Configure`. |
+| Installed `backend.env` / `frontend.env` | Clinic operator | Clinic-specific settings preserved during kit refresh. |
+| Engine config area | `internal/stack` | What compose in the VM reads. See [clinic lifecycle](clinic-lifecycle.md#2-three-copies-of-the-deployment-kit). |
+| `config.json` | `App` | Role, client connection, setup/removal state, clinic name, CARE Clinic administrator hash and the app update-check switch. |
 
 ## Local paths
 
 [`configPath()`](../app/app_config.go) starts with Go's `os.UserConfigDir()`, falls back to `os.UserHomeDir()` on failure, requires an absolute result, and appends `care-clinic/config.json`.
 
-[`installDir()`](../app/app_installdir.go) normally places `install` beside that configuration file. On Windows, when an absolute home directory is available, the installed kit instead lives under the user's home directory. This avoids making the potentially roaming application-configuration directory the normal home for source checkouts and Docker bind mounts.
+[`installDir()`](../app/app_installdir.go) normally places `install` beside that configuration file. On Windows, when an absolute home directory is available, it lives under the user's home directory instead.
 
-| Platform | Typical configuration file | Typical installed kit |
+| Platform | Typical configuration file | Typical install folder |
 | --- | --- | --- |
 | macOS | `~/Library/Application Support/care-clinic/config.json` | `~/Library/Application Support/care-clinic/install/` |
 | Windows | `%AppData%\care-clinic\config.json` | `%UserProfile%\care-clinic\install\` |
 | Linux | `$XDG_CONFIG_HOME/care-clinic/config.json`, normally `~/.config/care-clinic/config.json` | `install/` beside `config.json`. |
 
-These are conventions, not hard-coded assumptions about every user's home or environment. The actual paths come from the functions above.
+The clinic's generated secrets are kept in `clinic/secrets.env` beside
+`config.json`. The engine, its slots and VM disks belong to the service under
+`/Library/Application Support/care-clinic`; patient data lives in volumes inside
+the VM. The diagnostic log location is described in
+[native integrations](native-integrations.md).
 
-The effective backup destination comes from `GetBackupDir()` / `Clinic.BackupDirPath()`, not by appending a directory to the executable's location. Without a configured override, Windows uses `care-db-backups` inside its Desktop known folder (including OneDrive redirection); other platforms use `<user home>/Desktop/care-db-backups`. A failed Windows known-folder lookup logs a warning before using the legacy home-relative Desktop path. Saved overrides remain unchanged. Its data layout is described in [backups and restore](backups-and-restore.md). The diagnostic log has its own OS-specific location, described in [native integrations](native-integrations.md).
-
-The installed kit contains the following recognizable parts:
+The install folder contains:
 
 ```text
 install/
 |-- .env
-|-- channel.lock
 |-- docker-compose.yml
 |-- backend.env
 |-- frontend.env
-|-- plugins.json
-|-- plugins-pending.json       # inactive draft, until apply consumes it
-|-- plugins-offered.json       # catalog defaults already offered to this clinic
-|-- plugin-recovery.json      # only while apply or recovery is unfinished
 |-- Caddyfile
-|-- backup.Dockerfile
 |-- caddy.Dockerfile
+|-- backup.Dockerfile      # shipped but not uploaded in v2
 |-- scripts/
-|   `-- backup.sh
+|   `-- backup.sh          # shipped but not uploaded in v2
 |-- minio/
 |   `-- entrypoint.sh
-`-- keys/
-    `-- backup-cert.pem
+`-- setup/
+    `-- index.html
 ```
 
-Image building and restore add their own working material. See the relevant guides for source-checkout and restore-staging paths. Patient database and object-storage data live in Docker volumes, not in this source/configuration tree. Keys and configuration are nevertheless sensitive and must not be treated as disposable cache.
+Keys and configuration are sensitive and must not be treated as disposable cache.
 
 ## Persisted `Config`
 
-Entering actual setup persists the choice to host a clinic (**Server**); attempting
-a connection persists the choice to use a clinic (**Client**). The Start screen
-itself only navigates and does not save a role. Clients retain the clinic address and use native certificate
-bootstrap, without provisioning Docker/Git or advertising mDNS. Role selection
-is not an ordinary settings toggle; it remains locked until successful uninstall.
+Entering actual setup persists the choice to host a clinic (**Server**);
+attempting a connection persists the choice to use a clinic (**Client**). The
+Start screen itself only navigates and does not save a role. Clients retain the
+clinic address and use native certificate bootstrap. Role selection is not an
+ordinary settings toggle; it remains locked until successful uninstall.
 Failed-install cleanup/retry preserves it. The one exception is the **Back**
 button on the setup and client screens, which undoes a choice nothing has been
-built on yet (see `ClearRole` below). The server-specific fields below still govern hosted clinics.
+built on yet (see `ClearRole` below).
 
 Client connection state includes the saved clinic URL, the public pinned
 certificate (`client_certificate`), and whether this client installed it
 (`client_certificate_owned`). Certificate ownership is used for exact-certificate
 cleanup, not broad removal of every CARE root. Neither the PEM nor ownership
 flag is exposed in `AppState`; its client fields are `role` and `client_url`.
-The pin and ownership state are
-persisted before OS elevation to preserve retry and cleanup information.
-Subsequent connects use the saved pin rather than silently accepting a new
-HTTP certificate. **Disconnect** clears
-the connection, certificate state and role after successful removal;
-failures keep retry state. It does not uninstall the executable.
-Certificates not installed by this client remain trusted and may still permit
-browser access. Uninstall the setup before removing the executable through the OS.
-See [client removal](native-integrations.md#removing-client-access).
+The pin and ownership state are persisted before OS elevation to preserve retry
+and cleanup information. Subsequent connects use the saved pin rather than
+silently accepting a new HTTP certificate. **Disconnect** clears the
+connection, certificate state and role after successful removal; failures keep
+retry state. See [client removal](native-integrations.md#removing-client-access).
 
 [`app_config.go`](../app/app_config.go) defines a small JSON object:
 
 | JSON field | Go field | Meaning |
 | --- | --- | --- |
-| `role` | `Role` (`string`) | Persisted `server` or `client`; empty before setup/connection begins and after successful uninstall. Failed-install cleanup does not reset it. |
-| `client_url` | `ClientURL` (`string`) | Normalized HTTPS clinic address for a client, empty when disconnected. |
-| `client_certificate` | `ClientCertificate` (`string`) | Pinned public root PEM; omitted when empty. |
-| `client_certificate_owned` | `ClientCertificateOwned` (`bool`) | Whether this client owns certificate installation/cleanup; omitted when false. |
-| `setup_done` | `SetupDone` | The full setup callback, including starting CARE, succeeded and that result was saved. |
+| `role` | `Role` | Persisted `server` or `client`; empty before setup/connection begins and after successful uninstall. Failed-install cleanup does not reset it. |
+| `client_url` | `ClientURL` | Normalized HTTPS clinic address for a client, empty when disconnected. |
+| `client_certificate` | `ClientCertificate` | Pinned public root PEM; omitted when empty. |
+| `client_certificate_owned` | `ClientCertificateOwned` | Whether this client owns certificate installation/cleanup; omitted when false. |
+| `setup_done` | `SetupDone` | Setup, including starting CARE, succeeded and that result was saved. |
 | `removing` | `Removing` | Destructive cleanup began but may not have completed. Omitted when false. |
-| `mdns_name` | `MDNSName` | Saved clinic name, normally such as `care.local`. |
-| `backup_dir` | `BackupDir` | Effective selected backup directory, not just the picker parent. Empty means use the engine default. |
+| `mdns_name` | `MDNSName` | Saved clinic name label, such as `care`. |
 | `admin_pw_hash` | `AdminPwHash` | Bcrypt hash for local CARE Clinic administrative authorization. |
-| `admin_recovery_hashes` | `AdminRecoveryHashes` | Six SHA-256 code-hash slots; a used slot is cleared. No plaintext codes. |
-| `admin_recovery_path` | `AdminRecoveryPath` | Exported CARE Clinic recovery-code sheet location. Setup checks that a regular, readable file still contains the six distinct saved codes; symlinks and oversized sheets are rejected. |
-| `recovery_failures` / `recovery_retry_after` | `RecoveryFailures` / `RecoveryRetryAfter` | Persisted failed-attempt count and Unix timestamp for offline recovery throttling. |
-| `backup_certificate` | `BackupCertificate` | Public encryption certificate prepared before installation. Never the private key. |
-| `backup_recovery_path` / `backup_recovery_verified` | `BackupRecoveryPath` / `BackupRecoveryVerified` | Export location and successful setup verification; not used as an automatic restore-key fallback. |
-| `app_update_checks_off` / `care_update_checks_off` | `AppUpdateChecksOff` / `CareUpdateChecksOff` | Set from Advanced with the admin password to stop CARE Clinic app or CARE software update checks. Omitted when false; missing means checks are on. See [Turning update checks off](#turning-update-checks-off). |
+| `app_update_checks_off` | `AppUpdateChecksOff` | Set from Advanced with the admin password to stop CARE Clinic app update checks. Omitted when false. See [Turning update checks off](#turning-update-checks-off). |
 
-The plaintext administrator password and private recovery file are not stored in this object. There is no backup password. Setup passes the administrator password into CARE administrator creation, but subsequent CARE Clinic changes and recovery affect only the local bcrypt hash, not the CARE web login. To change a CARE web password, use **Reset a CARE web password** in Advanced; see [Resetting a CARE web password](backups-and-restore.md#resetting-a-care-web-password).
+The plaintext administrator password is not stored. Setup passes it into CARE
+administrator creation; later CARE Clinic password changes affect only the
+local bcrypt hash, not the CARE web login.
 
 ### Load rules
 
-A missing file is the only ordinary first-run fallback. Other read errors propagate. Invalid JSON, JSON `null`, a non-object value, a non-absolute saved backup path, and an invalid saved hostname stop initialization with a descriptive error.
+A missing file is the only ordinary first-run fallback. Other read errors propagate. Invalid JSON, JSON `null`, a non-object value and an invalid saved clinic name stop initialization with a descriptive error. Server fields with a client role are a conflict error; server fields without a role infer Server.
 
-There is no versioned configuration migration framework. JSON decoding uses the current struct and tolerates unknown object fields; it does not make missing fields evidence that external clinic resources are absent.
+There is no versioned configuration migration framework. JSON decoding uses the current struct and ignores unknown fields, so fields written by older versions are dropped on the next save.
 
-Existing server settings or a partial installation infer the Server role.
-The first-run question itself writes nothing: `BeginServerSetup() error`
-persists the Server role when the operator enters setup, and `ConnectClient`
-persists the Client role when a connection is attempted. `SelectRole(role
-string) error` remains for an interface that still announces the choice up
-front; it delegates to the same work. Either way the role is rejected once it is
-set and a different one is asked for. `ClearRole() error` is the escape hatch
-for a misclick: it writes an empty `Config` and returns to the role choice, but
-only while the file holds nothing beyond `role`, `mdns_name` and preparatory
-recovery-kit fields and the install directory is empty. The `mdns_name` allowance exists because the setup form
-pushes the default clinic address as soon as it opens, so a server choice that
-was never installed still carries one. Any other field — an admin hash, backup
-directory, `setup_done`, `removing`, a client URL, pinned certificate or
-certificate ownership — or a populated install directory means the role is in
-use and `ClearRole` refuses with the uninstall-first message. A client that has
-connected therefore has no Back button; **Disconnect** is its way
-out. Client and unchosen state queries avoid Docker and backup inspection.
+The first-run question itself writes nothing: `BeginServerSetup()` persists the
+Server role when the operator enters setup, and `ConnectClient` persists the
+Client role when a connection is attempted. A different role is rejected once
+one is set. A populated install folder without a role also infers Server.
+`ClearRole()` is the escape hatch for a misclick: it writes an empty `Config`
+only while nothing is set up, meaning the install folder is empty and the file
+holds nothing beyond `role` and `mdns_name` (the setup form saves the default
+name as soon as it opens). Otherwise it refuses with the uninstall-first
+message. A client that has connected therefore has no Back button;
+**Disconnect** is its way out.
 
-`App` loads the file once into a cache guarded by `cfgMu`. `App.loadConfig()` returns a struct copy. Editing `config.json` externally does not update the running cache; it is not a watched configuration file.
+`App` loads the file once into a cache guarded by `cfgMu`. `App.loadConfig()` returns a struct copy. Editing `config.json` externally does not update the running cache.
 
 ### Write and forget rules
 
-`saveConfig()` serializes indented JSON and uses `atomicfile.Write` with mode `0600`. It updates the in-memory copy only after the write succeeds. The atomic helper uses a temporary file in the destination directory, syncing and replacing it through platform-specific code.
+`saveConfig()` serializes indented JSON and uses `atomicfile.Write` with mode `0600`. It updates the in-memory copy only after the write succeeds.
 
 `forgetConfig()` retains the role: for a server it writes a role-only
-configuration after cleanup; for a client it preserves the current
-configuration. Client connection/certificate cleanup belongs to
-`DisconnectClient()`. Successful client/server uninstall calls
-`resetConfigAfterUninstall()` to atomically clear all configuration, including the
-role. Retained backups do not re-infer a server role. Cleanup must not discard
-state needed to retry incomplete resource removal.
+configuration after failed-install cleanup; for a client it preserves the
+current configuration. Successful uninstall calls `resetConfigAfterUninstall()`
+to clear everything, including the role.
 
-Atomic replacement protects a single file. It is not a transaction across Docker resources, exported recovery files, two environment files, and `config.json`.
+Atomic replacement protects a single file. It is not a transaction across the engine, the two environment files and `config.json`.
 
 ## Setup configuration order
 
-[`ValidateSetup()`](../app/app_setup_check.go) returns actionable issues against
-their wizard steps. [`RunSetup()`](../app/app_actions.go) repeats the complete
-preflight under the exclusive job lock before accepting asynchronous work. It
-checks disk space, platform prerequisites, residue, the network profile, the
-clinic address, the backup destination, both recovery exports, and the CARE Clinic
-password. Export paths must remain outside CARE's own folders. Validation
-rejection leaves the operator on Review rather than starting an installation
-that is already known to fail.
+[`RunSetup(name, adminPassword)`](../app/app_onboarding.go) validates the name
+and password, rejects an installed or removing clinic, saves the name and the
+administrator's bcrypt hash (`SetupDone` still false), refreshes the install
+folder, installs the engine if needed, then runs `Clinic.Setup()` and
+`Clinic.Start()`. Only the job's successful completion persists
+`SetupDone=true`. See [server onboarding](onboarding.md).
 
-The wizard checks the entered name without advertising it, and advertising
-performs another conflict check after setup. Keep other clinic servers awake
-during setup: an offline or multicast-isolated device cannot be detected.
-
-Inside the protected job, it rejects an installed or removing clinic, creates the administrator's bcrypt hash, computes and validates the backup destination, and persists the initial configuration. `SetupDone` is still false at this point.
-
-It then unpacks the kit, checks port availability, runs `Clinic.Setup()` with the public backup certificate, restarts name advertising, and runs `Clinic.Start()`. Only the job runner's successful completion path persists `SetupDone=true`.
-
-A failure after configuration or files were created is therefore a partial setup,
-not proof that nothing was installed. While the original process retains the
-attempt, `RetrySetup()` preserves its choices and recovery materials, revalidates
-their availability, and skips preparation if it already completed. It does not
-accept replacement settings. After a full app restart, or when that attempt is
-no longer available, the UI explains the destructive
-[failed-install cleanup](cleanup-and-uninstall.md) fallback before retrying.
+A failure after configuration or files were created is a partial setup, not
+proof that nothing was installed. While the app stays open, `RetrySetup()`
+repeats the same attempt; otherwise the UI offers
+[failed-install cleanup](cleanup-and-uninstall.md).
 
 ## Embedded-kit refresh
 
-`ensureInstallDir()` walks the embedded `install` tree. It skips the placeholder, creates directories, writes shell scripts as executable, and copies other kit files with ordinary file modes.
+`ensureInstallDir()` walks the embedded `install` tree. It skips the placeholder, creates directories, writes shell scripts as executable, and copies other kit files with ordinary file modes. It runs during setup and, for a set-up server not being removed, at each launch.
 
-Its preservation allow-list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other kit files are refreshed from the executable. This includes `.env`, so the shipped pins do not become an independently editable runtime release mechanism.
+Its preservation list contains exactly `backend.env` and `frontend.env`: existing copies are not overwritten. Other kit files are refreshed from the executable, including `.env`, so the shipped pins do not become an independently editable runtime release mechanism. A new template key is not merged into an existing environment file.
 
-This is why the commit a clinic currently runs is kept in `channel.lock` rather than in `.env`. `channel.lock` is not part of the embedded tree, so the refresh neither creates nor overwrites it; it is removed with the installed kit during uninstall. A corrupt or missing lock is treated as "nothing known yet" rather than an error: the clinic resolves the branch again. So is a lock naming something that is not a commit, which is the one case where "nothing known yet" is a guess worth making rather than a value worth trusting.
-
-Writes go through a process-wide mutex and a temporary file renamed into place, because the background check and an operator pressing "Install now" can reach the lock at the same time, and a half-written lock would lose the record of what the clinic is running.
-
-Facility setup lives in the [CARE Onboarding frontend plugin](onboarding.md); its assets are not bundled into the kit. Existing `plugins.json` choices are preserved. Catalog defaults are initialized during new-clinic setup; only entries marked `add_to_existing` are added to existing clinics, once, on start ([details](plugins.md#defaults-for-existing-clinics)).
-
-Refresh copies the current kit but is not a general recursive deletion or a migration framework for all generated files. Similarly, preserving environments means a new template key is not automatically merged into an existing environment.
-
-The one exception is the short list in `addedBackendSettings` (`internal/clinic/backend_settings.go`). After the kit refresh, `AddMissingBackendSettings` appends each listed key to an existing `backend.env` only if the key is absent, and the change applies the next time CARE starts. It appends to the file in place rather than writing a replacement, so the file keeps its permissions and, on Windows, the owner-only access-control list that plugin rollback sets on it. It never changes a value already in the file, so a clinic that wants a setting off writes `KEY=False` rather than deleting the line. The list currently holds `MAINTAIN_PATIENT_NAME_IDENTIFIER=True` and `MAINTAIN_PATIENT_PHONE_NUMBER_IDENTIFIER=True`, which make CARE keep searchable name and phone-number identifiers on every patient (CARE's own default for both is off), and `DJANGO_EMAIL_BACKEND` set to Django's dummy backend. The shipped [`backend.env`](../deployments/backend.env) sets both for new clinics, and a test fails if it is missing a listed key.
-
-The startup refresh is skipped for incomplete setup, incomplete removal, and pending restore. A pending restore must keep the configuration its recovery metadata expects.
+The refreshed kit reaches the engine the next time the clinic is configured (setup, or `ctl clinic install`).
 
 ## Advanced access and authorization
 
@@ -220,14 +175,14 @@ Already written files and accepted native jobs are not rolled back; saved
 settings that still need applying remain distinguishable from an unsaved draft.
 
 This timer exists in React. Go does not issue a 15-minute session token or
-remember a globally unlocked administrator. `ReadEnv`, `WriteEnv`, protected
-rebuilds, recovery administration and uninstall validate the supplied CARE Clinic
-password through their native guards. Ordinary clinic controls, Updates and
-Plugins have their own lifecycle rules and do not acquire this Advanced unlock.
+remember a globally unlocked administrator. `ReadEnv`, `WriteEnv`,
+`ChangeAdminPassword`, `SetUpdateChecks` and `RunUninstall` validate the
+supplied CARE Clinic password through their native guards. Start, Stop and
+Restart need no password.
 
 The CARE Clinic password is distinct from the operating-system password used for
-privilege prompts and from the CARE web login after initial setup. See
-[recovery materials](backups-and-restore.md#3-backup-recovery-file-and-care-clinic-admin-recovery).
+privilege prompts and from the CARE web login after initial setup. There are no recovery codes for the CARE Clinic
+password.
 
 ## Environment-file API
 
@@ -235,9 +190,9 @@ privilege prompts and from the CARE web login after initial setup. See
 
 `ReadEnv` checks the CARE Clinic administrator password and setup state under a shared read lock, then reads the entire installed file. File errors are returned; there is no fallback to the repository template or an empty settings object.
 
-`WriteEnv` checks the administrator password and stable-clinic state under the exclusive lock. It validates syntax using `compose-go/dotenv`, then atomically writes the selected file as `0600`.
+`WriteEnv` checks the administrator password and setup state under the exclusive lock. It validates syntax using `compose-go/dotenv`, then atomically writes the selected file as `0600`.
 
-This syntax check is not full application-specific validation. The friendly editor adds field-level constraints; a direct caller can submit settings the dotenv parser accepts but CARE later rejects. The backend also uses this same syntax parser for the frontend file, although the CARE frontend ultimately consumes its environment through its own build tooling.
+This syntax check is not full application-specific validation. The friendly editor adds field-level constraints; a direct caller can submit settings the dotenv parser accepts but CARE later rejects.
 
 ## Applying settings
 
@@ -245,58 +200,25 @@ The desktop's settings integration uses these modules:
 
 | File | Role |
 | --- | --- |
-| [`env-editor.tsx`](../app/frontend/src/screens/panel/env-editor.tsx) | Loads both files, tracks changed fields, validates the draft, writes changes, and requests apply/rebuild. |
+| [`env-editor.tsx`](../app/frontend/src/screens/panel/env-editor.tsx) | Loads both files, tracks changed fields, validates the draft, writes changes, and requests Start or Restart. |
 | [`env-file.ts`](../app/frontend/src/lib/env-file.ts) | Parses line records, reads values, quotes changes, and serializes the result. |
 | [`advanced-env.ts`](../app/frontend/src/screens/panel/advanced-env.ts) | Validates values, summarizes groups, and merges only changed keys into freshly read files while preserving unrelated bytes. |
 | [`env-schema.ts`](../app/frontend/src/screens/panel/env-schema.ts) | Maps user-facing fields to keys, files, control types, defaults, bounds, and managed-key notes. |
 | [`env-controls.tsx`](../app/frontend/src/screens/panel/env-controls.tsx) | Converts the raw string/undefined draft into a suitable control without replacing explicit zero with an empty value. |
 
-```mermaid
-sequenceDiagram
-    participant E as Settings editor
-    participant A as App
-    participant F as Installed environment files
-    E->>A: ReadEnv backend and frontend concurrently
-    A->>A: Shared locks, admin and setup checks
-    A->>F: Read current files
-    F-->>E: Contents
-    E->>E: Parse, populate initial values, track changed keys
-    E->>A: Re-read both files before saving
-    A-->>E: Fresh contents
-    E->>E: Apply only edited keys to fresh lines
-    loop Files with changed content, one at a time
-        E->>A: WriteEnv with admin password
-        A->>A: Exclusive lock, stable-clinic check, syntax validation
-        A->>F: Atomic replacement
-        A-->>E: Write completed
-    end
-    E->>A: Reload values
-    alt A backend file was written
-        E->>A: ClinicAction start
-    else Only frontend file was written
-        E->>A: ClinicAction rebuild-frontend
-    end
-```
+Saving re-reads both files, applies only the edited keys to the fresh lines,
+writes each changed file with `WriteEnv` and reloads. It then requests
+`ClinicAction("restart")` when the clinic is running, otherwise `start`.
 
-A backend change uses Start to reapply configuration; Start also accounts for a changed CARE frontend environment through image freshness. A frontend-only change uses the narrower frontend rebuild action.
+`WriteEnv` alone does not restart anything; saving and applying are two
+operations. Start and Restart run `Up` with the configuration already in the
+engine; they do not upload the install folder again. A changed `backend.env`
+therefore reaches the engine only when the clinic is configured again, for
+example with `care-clinic-service ctl clinic install`. See
+[clinic lifecycle](clinic-lifecycle.md#5-panel-actions-and-boot).
 
-`WriteEnv` alone does not restart a container or rebuild an image. Saving a file and applying it are two operations. The editor only requests the apply action after its write loop and reload.
-
-Re-reading before writing avoids deliberately applying an old full-file snapshot over newer plugin edits. This Advanced environment-editor flow is not a multi-file transaction or compare-and-swap protocol. If a later file write fails, earlier successful writes remain; if an apply action fails, the saved settings are still saved. The separate Plugins editor uses the [rollback transaction](plugins.md#save-and-apply) instead.
-
-### Retention as an example
-
-The shipped [`backend.env`](../deployments/backend.env) sets:
-
-```dotenv
-DB_BACKUP_RETENTION_PERIOD=14
-```
-
-The editor reads this value from the installed file. Its schema puts it in the backend, gives it an integer control, requires a value, and allows 0 through 3650 days. The control has no hard-coded retention fallback.
-
-`0` is an explicit value meaning keep all backups. It must remain the string `"0"` through parsing, draft state, saving, and reloading; absence and zero have different meanings. The scheduled writer implements the actual pruning rules described in the [backup guide](backups-and-restore.md).
-
-Both files must load before the editor accepts a draft. A failed frontend read can therefore also leave a backend field such as retention unloaded. The shared read gate is essential: parallel file reads must not produce an exclusive-job conflict on an idle application.
+This flow is not a multi-file transaction. If a later file write fails, earlier
+successful writes remain; if applying fails, the saved settings stay saved.
 
 ### Parsing and customization boundaries
 
@@ -309,14 +231,13 @@ assignments are quoted and normalized individually; new values use the file's
 existing line-ending convention. Friendly controls and new custom edits require
 single-line values. This is still not a replacement for the native dotenv parser.
 
-The normal clinic editor exposes ten everyday choices:
+The normal clinic editor exposes these everyday choices:
 
 | Group | Settings |
 | --- | --- |
 | Clinic details | Clinic display name and languages for staff. |
 | Patients and visits | Usual visit type and a shorter registration form. |
 | Billing | Usual payment method, payment instructions, tax-inclusive prices and opening a bill after dispensing. |
-| Backups | How long to keep backups. |
 | Staff access | How long inactive staff stay signed in. |
 
 Less-used local options, such as logos, country defaults, enabled visit types,
@@ -341,17 +262,14 @@ CARE Clinic sends no email or SMS:
 
 | Channel | Setting | Effect |
 | --- | --- | --- |
-| Email | `DJANGO_EMAIL_BACKEND=django.core.mail.backends.dummy.EmailBackend` | Django's dummy backend discards every message. Password reset by email, new-user "set your password" email and two-factor notices report success instead of failing against a mail server. New clinics get it from the shipped `backend.env`; existing clinics get it added on start when the key is missing (see [Embedded-kit refresh](#embedded-kit-refresh)). |
+| Email | `DJANGO_EMAIL_BACKEND=django.core.mail.backends.dummy.EmailBackend` | Django's dummy backend discards every message. Password reset by email, new-user "set your password" email and two-factor notices report success instead of failing against a mail server. The shipped `backend.env` sets it. |
 | SMS | `USE_SMS=False` | No SMS is sent. Patient sign-in by code is the one CARE flow that fails without SMS, so it stays hidden with `REACT_DISABLE_PATIENT_LOGIN=true`. |
 
 The old `EMAIL_HOST`/`EMAIL_USER`/`EMAIL_PASSWORD` and `SNS_*` placeholders are
 no longer shipped; CARE has defaults for all of them. Existing files that still
 contain them are left alone. The "Forgot password" link on CARE's sign-in page
-cannot be hidden through settings; staff who forget a password are reset from
-Advanced (see [Resetting a CARE web password](backups-and-restore.md#resetting-a-care-web-password)).
-This is an editor restriction, not a change to CARE's authentication or existing
-MFA configuration. Local password rate limiting, idle sign-out, request
-protection and offline CARE Clinic recovery remain available. Branding URLs can
+cannot be hidden through settings. This is an editor restriction, not a change
+to CARE's authentication or existing MFA configuration. Branding URLs can
 point to assets hosted on the clinic's local network.
 
 Undescribed non-hidden keys appear in "Extra settings (for support)." New
@@ -364,7 +282,7 @@ Protected keys cannot be changed through this editor, including
 The editor preserves their latest file contents when saving other changes.
 This is an interface policy, not a new native security boundary: authenticated
 `WriteEnv` still validates syntax rather than an application-specific key
-allow-list, and engine-owned values may be rewritten by the engine.
+allow-list.
 
 ### Defaults and manual overrides
 
@@ -374,8 +292,9 @@ configuration layer. Friendly controls replace their own keys, and the support
 editor can add or change other permitted keys. Before saving, both paths read
 the latest files and merge only the operator's edits.
 
-Frontend values are copied into CARE's `.env.local` when its image is built.
-They take effect after applying the changes and rebuilding the frontend.
+Frontend values are baked into the frontend image when it is built
+([dev images](dev-images.md)); the installed `frontend.env` is not uploaded to
+the engine, so editing it does not change a running clinic.
 Clearing an optional friendly control removes its assignment and lets CARE's
 default apply. In the support editor, an explicitly blank `KEY=` stays blank;
 blank and missing values can behave differently depending on the CARE setting.
@@ -400,77 +319,41 @@ not replace an existing clinic's choices or migrate missing keys automatically.
 
 ## Managed values
 
-The engine manages the clinic's domain wiring, including trusted origins, the external bucket endpoint, and the CARE frontend API address. It also provisions the Django secret during setup and passes selected bucket/WAF settings into the proxy configuration.
+`internal/stack` generates the clinic's domain wiring in `clinic.env` (trusted
+origins, CORS origins and the external bucket endpoint), image references and
+host in `stack.env`, and the Django secret and service credentials in
+`secrets.env`. Compose reads them after `backend.env`, so their values win. Read the
+[clinic lifecycle](clinic-lifecycle.md) before changing how the hostname or
+public bucket URLs are derived.
 
-Do not change these values independently and expect the engine to stop managing them. Read the [domain and deployment flow](clinic-lifecycle.md) before changing how the hostname or public bucket URLs are derived.
+The storage configuration retains `MINIO_IMAGE`, `MINIO_ROOT_*`, the service name `minio`, and its existing data volume even though the server executable is Silo. Those identifiers are compatibility and ownership contracts.
 
-The storage configuration retains `MINIO_IMAGE`, `MINIO_ROOT_*`, the service name `minio`, and its existing data volume even though the server executable is Silo. Those identifiers are compatibility and ownership contracts, not evidence that the old executable should be launched.
-
-Treat both environment files as sensitive. The backend file contains service credentials; frontend values can be incorporated into browser-delivered assets and must not be used to hide a secret from staff browsers.
+Treat both environment files as sensitive. Frontend values are incorporated into browser-delivered assets and must not be used to hide a secret from staff browsers.
 
 ## Updates
 
-The **Updates** tab shows both update mechanisms without a CARE Clinic admin password prompt. The **Plugins** tab also allows viewing, saving and applying plugins without that prompt. Advanced retains password-protected environment settings and administration; its red rebuild card sits immediately above uninstall at the bottom.
-
-| Card | Shows | Actions |
-| --- | --- | --- |
-| CARE | The tracked branch, the commits in use, and checking, up-to-date, staged-update or failed-check state. | Check now; retry a failed check; install a staged update now. |
-| CARE Clinic | The installed version against the newest published GitHub release, with its notes. | Download the verified installer for this platform and launch it. |
-
-CARE Clinic's shared controller remains guarded after native completion while
-an installer/restart handoff is unresolved. Only a completed external-installer
-handoff can be acknowledged with Done in Updates (OK before installation or on
-clients). A restarting phase waits for reopening. Acknowledgement does not
-update the running version or claim the external installer succeeded.
-Interrupted picker/preflight work is invalidated rather than resumed when the
-guard is released; see [the update protocol](wails-application.md).
-
-The panel also raises a banner when a CARE update finishes building, so operators need not keep the Updates tab open. Declining the banner is not declining the update: it stops the prompt for that commit, and the staged build is applied at the next start, when no clinic is running and applying it costs a retag instead of a restart.
-
-The app checks hourly, but only while the clinic is actually serving. Until then it re-examines every thirty seconds and checks nothing, because a check competing with the start it is racing helps nobody. A clinic that later stops serving drops back to that thirty-second wait, so a check is never made against a clinic that is down. The loop ends only when the app closes, the desktop is switched to a client, or the clinic is being removed. These desktops stay on for weeks, so a check that only ran at launch would leave a verified fix unreachable until somebody restarted the app.
-
-"Check now" does not start a second check when one is already running; it joins
-the one in flight. The card follows the `care-check` event, so it reports
-automatic and requested checks. "Checking" lasts until any found commit has
-finished building, not only until the branch head is resolved. Checks are
-skipped without a working network, during setup/removal, and while another job
-holds the clinic. Reported failures carry `care-check.error` and appear with a
-friendly retry action; they never become a false "Up to date" result. An offline
-clinic can continue working without updating.
+Only the CARE Clinic app updates itself: the app card compares the installed
+version with the newest published GitHub release and can download and launch
+the verified installer. See [the update protocol](wails-application.md) and
+[releases](releases.md). CARE software updates were removed in v2; they return
+later via engine agent ops.
 
 ### Turning update checks off
 
-**Advanced → Update checks** has two switches, **Check for CARE Clinic app updates** and **Check for CARE software updates**. Advanced must be unlocked first. Each switch change sends that admin password to `SetUpdateChecks`, which checks it again and saves `app_update_checks_off` / `care_update_checks_off` in `config.json`. Both default to on, including for installs saved before these settings existed.
-
-- **App checks off:** CARE Clinic never contacts GitHub for a release check or an install. The card shows "Checks off" without Check now or Update buttons, and no "available" banner is raised.
-- **CARE checks off:** no automatic, hourly or manual CARE check runs, so nothing reaches the CARE repositories and nothing new is built. A build that was already staged is held: it is not offered, not installed by Install now, and not applied at the next start. It returns when checks are turned back on.
-- **Not stopped:** an update that was already downloading, building or installing finishes. Rebuild, plugin apply and setup still fetch the configured CARE branches.
-
-The Updates tab always shows a card with the current state and an **Open Advanced** button: "Automatic update checks are on" while both are on, or which one is off. The [binding reference](wails-application.md#turning-update-checks-off) lists every place a check is refused.
-
-## Plugins
-
-The active plugin list is stored in `plugins.json` beside `backend.env`. Its backend parts are written to `ADDITIONAL_PLUGS` in `backend.env`, and the settings editor refuses to edit that variable directly. Desktop saves edits as a separate `plugins-pending.json` draft; applying preserves the previous configuration and backend image in a durable rollback transaction until clinic health is verified. Failed recovery is retried through Start, and `GetState.plugin_recovery_pending` exposes the recovery controls. The catalog format, storage, and apply flow are documented in [Plugins](plugins.md).
-
-## Changing the backup destination
-
-`SetBackupDir` takes a selected parent and appends `care-db-backups`. It validates placement and writability, checks for another installation's recovery data, and inspects whether the backup sidecar is running.
-
-Before saving the new path it copies the public backup certificate to the destination without overwriting a different certificate. The private recovery file is never copied into the backup folder. After saving, it recreates the backup sidecar only if it was running. If that restart fails, it attempts to restore the previous configuration and sidecar, reporting rollback errors as well.
-
-Earlier backups and their public certificate are left in the previous directory;
-changing the destination is not a file migration. The private recovery file
-stays wherever the manager exported it. The ordering prevents a new backup
-destination from being activated without its matching public certificate.
+**Advanced → Update checks** has one switch, **Check for CARE Clinic app
+updates**. Advanced must be unlocked first. Changing it sends that admin
+password to `SetUpdateChecks(app, adminPassword)`, which checks it again and
+saves `app_update_checks_off`. It defaults to on. With checks off, CARE Clinic
+never contacts GitHub for a release check or an install, and the card shows
+"Checks off" without Check now or Update buttons. An update already
+downloading or installing finishes.
 
 ## Relevant regression coverage
 
-[`app_env_test.go`](../app/app_env_test.go) covers concurrent environment/plugin reads, mutation exclusion, closing, administrator/lifecycle guards, and retention save/read values including zero. [`plugins_test.go`](../app/internal/plugins/plugins_test.go) covers literal plugin configuration round trips and duplicate removal.
+[`app_env_test.go`](../app/app_env_test.go) covers concurrent environment reads, mutation exclusion, and administrator/lifecycle guards. [`app_role_test.go`](../app/app_role_test.go) covers role selection and `ClearRole`.
 
-The underlying atomic-file behavior and the clinic's domain rewriting have their own tests, indexed in [the repository map](repository-map.md). Those layers matter independently of how a friendly control is rendered.
+The underlying atomic-file behavior and the stack rendering have their own tests, indexed in [the repository map](repository-map.md).
 
-[`advanced.spec.ts`](../app/frontend/tests/advanced.spec.ts) covers the exact
-15-minute unlock boundary, tab-leave clearing, recovery/password flows, sensitive
-field handling, latest-file merging and failed apply behavior.
-[`backups.spec.ts`](../app/frontend/tests/backups.spec.ts) covers destination
-changes, restore consent and stale async work across a Desktop update.
+[`advanced.spec.ts`](../app/frontend/tests/advanced.spec.ts) covers the
+15-minute unlock boundary, tab-leave clearing, sensitive field handling,
+latest-file merging and failed apply behavior.

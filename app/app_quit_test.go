@@ -37,7 +37,7 @@ func TestRunningJobIsTrackedForTheQuitPrompt(t *testing.T) {
 
 func TestEveryJobOffersQuitWithItsOwnWording(t *testing.T) {
 	seen := map[string]string{}
-	for _, label := range []string{"setup", jobPrereq, "start", "stop", "restore", "uninstall", "app-update", "update", "backup-now", "rebuild-all", ""} {
+	for _, label := range []string{"setup", jobService, "start", "stop", "uninstall", "app-update", ""} {
 		p := jobQuitPrompt(label)
 		if p.doing == "" || p.title == "" || p.message == "" {
 			t.Fatalf("no quit prompt for %q: %+v", label, p)
@@ -69,7 +69,7 @@ func TestConfirmedQuitClosesDuringAJob(t *testing.T) {
 	}
 }
 
-func TestPrereqInstallCanBeQuitDuringSetup(t *testing.T) {
+func TestServiceInstallCanBeQuitDuringSetup(t *testing.T) {
 	a := &App{
 		configFile: filepath.Join(t.TempDir(), "config.json"),
 		cfg:        Config{Role: roleServer},
@@ -77,14 +77,14 @@ func TestPrereqInstallCanBeQuitDuringSetup(t *testing.T) {
 	}
 	started, unblock := make(chan struct{}), make(chan struct{})
 	go func() {
-		_ = a.withLabeledJob(jobPrereq, func() error { close(started); <-unblock; return nil })
+		_ = a.withLabeledJob(jobService, func() error { close(started); <-unblock; return nil })
 	}()
 	<-started
-	if got := a.runningJob(); got != jobPrereq {
-		t.Fatalf("running job = %q, want %q", got, jobPrereq)
+	if got := a.runningJob(); got != jobService {
+		t.Fatalf("running job = %q, want %q", got, jobService)
 	}
-	if jobQuitPrompt(jobPrereq).message == jobQuitPrompt("setup").message {
-		t.Fatal("installing a requirement reuses the setup quit wording")
+	if jobQuitPrompt(jobService).message == jobQuitPrompt("setup").message {
+		t.Fatal("installing the service reuses the setup quit wording")
 	}
 	close(unblock)
 	deadline := time.Now().Add(5 * time.Second)
