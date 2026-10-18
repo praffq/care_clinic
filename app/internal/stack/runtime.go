@@ -325,6 +325,63 @@ func (r *Runtime) CreateSuperuser(ctx context.Context, username, password string
 	return err
 }
 
+// ErrNoUser is returned by ChangePassword when CARE has no such user.
+var ErrNoUser = errors.New("no such CARE user")
+
+// PasswordRejectedError is returned by ChangePassword when CARE's password
+// validators refuse the new password.
+type PasswordRejectedError struct{ Problems []string }
+
+func (e *PasswordRejectedError) Error() string {
+	return "CARE didn't accept that password: " + strings.Join(e.Problems, " ")
+}
+
+// ChangePassword sets a CARE user's password with Django's validators. The
+// password travels as a short-lived file in the config area and reaches the
+// backend through its environment, never through argv or op parameters.
+func (r *Runtime) ChangePassword(ctx context.Context, username, password string) error {
+	ag := r.Service.Agent()
+	name := "password-" + randomHex(8)
+	if err := ag.PutFile(ctx, protocol.FileAreaConfig, name, strings.NewReader(password), int64(len(password))); err != nil {
+		return err
+	}
+	defer func() {
+		if err := ag.DeleteFile(context.WithoutCancel(ctx), protocol.FileAreaConfig, name); err != nil {
+			r.logf("Warning: could not delete the password file %s: %v", name, err)
+		}
+	}()
+	var noUser, set bool
+	var problems []string
+	err := ag.Op(ctx, protocol.ManageCmd{Command: protocol.ManageChangePassword, Username: username, PasswordFile: name}, nil,
+		func(f protocol.Frame) {
+			if f.Log == nil {
+				return
+			}
+			line := strings.TrimSpace(f.Log.Line)
+			switch {
+			case line == protocol.ManagePasswordNoUser:
+				noUser = true
+			case line == protocol.ManagePasswordSet:
+				set = true
+			case strings.HasPrefix(line, protocol.ManagePasswordInvalid):
+				if p := strings.TrimSpace(strings.TrimPrefix(line, protocol.ManagePasswordInvalid)); p != "" {
+					problems = append(problems, strings.ReplaceAll(p, password, "[new password]"))
+				}
+			}
+		})
+	switch {
+	case noUser || (err != nil && strings.Contains(err.Error(), "DoesNotExist")):
+		return ErrNoUser
+	case len(problems) > 0:
+		return &PasswordRejectedError{Problems: problems}
+	case err != nil:
+		return err
+	case !set:
+		r.logf("Warning: the engine didn't confirm the password change (engine older than 0.1.3?)")
+	}
+	return nil
+}
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

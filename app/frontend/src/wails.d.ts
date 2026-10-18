@@ -4,6 +4,7 @@
 import type {
   AppState,
   AppUpdate,
+  CareHealth,
   ClientPreflight,
   ClientReachability,
   ClinicInfo,
@@ -14,6 +15,7 @@ import type {
   NetworkStatus,
   QuitRequest,
   ServiceState,
+  StorageState,
   UpdateChecks,
 } from "./types";
 
@@ -67,6 +69,13 @@ declare global {
           RespondToQuit(id: number, quit: boolean): Promise<void>;
           SetConfirmationDialogReady(ready: boolean): Promise<ConfirmationRequest | null>;
           RespondToConfirmation(id: number, approved: boolean): Promise<void>;
+          ResetWebPassword(username: string, newPassword: string, adminPassword: string): Promise<void>;
+          GetAdminRecoveryCodeCount(): Promise<number>;
+          /** Resolves to the saved sheet's path, or "" when the save dialog was cancelled. */
+          SaveAdminRecoveryCodes(adminPassword: string): Promise<string>;
+          ResetAdminPassword(code: string, newPassword: string): Promise<void>;
+          StorageStatus(): Promise<StorageState>;
+          CheckCareHealth(): Promise<CareHealth>;
         };
       };
     };

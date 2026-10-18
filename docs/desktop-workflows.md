@@ -39,8 +39,8 @@ yet. The full sequence is in [server onboarding](onboarding.md).
    during setup: an offline computer cannot be detected.
 3. **Admin password.** Choose the CARE Clinic password: 8 to 20 characters
    with an uppercase letter, a lowercase letter and a digit. It also becomes
-   the password of the CARE web login `admin`. Save it in a password manager;
-   there are no recovery codes.
+   the password of the CARE web login `admin`. Save it in a password manager.
+   After setup the control panel asks you to save one-time recovery codes.
 4. **Install.** CARE installs the engine if needed, then the clinic, and
    streams progress from the log. The bar is indeterminate. Success opens the
    control panel; at the end CARE offers to set up this computer's browser for
@@ -111,14 +111,28 @@ after a reboot without the app.
 | Overview | Clinic status, Start/Stop/Restart, opening CARE, phone/tablet connection, network fix. |
 | Home access | Tailscale setup, turning home access on or off and doctor sharing. See [Home access](home-access.md). |
 | Updates | CARE Clinic app updates and the update-check switch. |
-| Advanced | Clinic settings, CARE Clinic password, diagnostic log and uninstall. |
+| Advanced | Clinic settings, CARE Clinic password and recovery codes, CARE web password reset, diagnostic log and uninstall. |
 
 **Connect phone or tablet** displays a QR code for
 `http://<clinic>.local/setup`. Phones and tablets still need to follow their
 platform's certificate instructions.
 
-Backups, plugins, storage, CARE software updates, web password reset and
-recovery codes were removed in v2; they return later via engine agent ops.
+**Storage and health** on Overview shows free space on the engine VM's data
+disk and on the backup folder's drive, and pings CARE (`https://localhost/ping/`)
+alongside each stack service's state. It refreshes every minute while Overview
+is open. Below 10 GB free the service summary warns; below 5 GB it is critical.
+
+**Recovery codes.** When no codes are saved, a banner asks for the CARE Clinic
+password and saves six one-time codes to a text file you choose.
+Only their hashes are kept, in `admin-recovery.json` in the clinic state
+folder. **Forgot CARE Clinic password?** on the Advanced lock screen takes a
+code and sets a new password; it also resets the CARE web `admin` login.
+Repeated wrong codes are rate limited. Uninstall deletes the file.
+
+**Reset a CARE web password** (Advanced) sets a new password for any CARE web
+username. The service runs a `manage.py` script in the backend container; the
+password goes through the environment, never the command line or logs, and is
+checked against CARE's password rules.
 
 ### Advanced
 

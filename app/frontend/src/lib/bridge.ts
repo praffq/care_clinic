@@ -75,7 +75,8 @@ export type CareEvent =
   | "client-connect-progress"
   | "quit-requested"
   | "confirmation-requested"
-  | "confirmation-cancelled";
+  | "confirmation-cancelled"
+  | "admin-recovery-codes-changed";
 
 /** Subscribe to a Wails event, waiting out a runtime that isn't injected yet. */
 export function onCareEvent(

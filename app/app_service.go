@@ -128,6 +128,12 @@ func summarize(s ServiceState) Summary {
 			sum.Notes = append(sum.Notes, "The engine reports it isn't fully ready.")
 		}
 	}
+	if note, ok := lowDiskNote(e); ok {
+		sum.Notes = append(sum.Notes, note)
+		if sum.Level == levelOK {
+			sum.Level = levelWarn
+		}
+	}
 	if m := st.MDNS; m != nil && m.Conflict != nil {
 		sum.Notes = append(sum.Notes, fmt.Sprintf("Another device (%s) also answers for %s.local; devices may reach it instead.", m.Conflict.Address, m.Name))
 		if sum.Level == levelOK {

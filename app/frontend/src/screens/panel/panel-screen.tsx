@@ -11,6 +11,7 @@ import { HomeAccessTab } from "./home-access";
 import { OverviewTab } from "./overview-tab";
 import { DismissButton, PanelLogButton, useDismissed, usePanelTask } from "./panel-ui";
 import { PanelUpdateLockProvider } from "./panel-update-lock";
+import { RecoveryCodesBanner } from "./recovery-codes-banner";
 import { UpdatePanel } from "./update-panel";
 
 import "./panel.css";
@@ -53,6 +54,7 @@ function PanelContent({ appUpdate }: { appUpdate: AppUpdateController }) {
         <span className="panel-grow">{task.error}</span><PanelLogButton />
         <DismissButton onClick={hideTaskError} />
       </div> : null}
+      <RecoveryCodesBanner disabled={locked} />
       <ScreenBody className="panel-tab-body care-panel-content">
         {/* Keep component instances stable; each tab controls its own deactivation. */}
         <div hidden={care.tab !== "overview"}><OverviewTab /></div>

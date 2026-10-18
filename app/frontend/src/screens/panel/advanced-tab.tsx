@@ -8,16 +8,18 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/components/ui/sonner";
 import { bridge } from "@/lib/bridge";
 import { useCare } from "@/state/care-store";
 import type { Section } from "@/types";
-import { AdminPasswordSettings } from "./admin-password";
+import { AdminPasswordForm, AdminPasswordSettings } from "./admin-password";
 import {
   AdvancedError, AdvancedLockProvider, AdvancedLogButton, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
 } from "./advanced-ui";
 import { EnvEditor } from "./env-editor";
 import { PanelPageHeader } from "./panel-ui";
 import { UpdateCheckSettings } from "./update-checks";
+import { WebPasswordReset } from "./web-password-reset";
 
 const UNLOCK_MS = 15 * 60 * 1000;
 
@@ -91,6 +93,7 @@ function AdvancedContent() {
       <AdminGate onUnlock={unlock} />
     </> : <>
       <AdminPasswordSettings adminPassword={adminPassword} onPasswordChanged={unlock} />
+      <WebPasswordReset adminPassword={adminPassword} />
       <UpdateCheckSettings adminPassword={adminPassword} />
       <EnvEditor adminPassword={adminPassword} groupId={groupId} onGroupChange={setGroupId} onWorkingChange={setWorking}
         pendingFiles={pendingSettings} onPendingFilesChange={setPendingSettings} onApplicationAccepted={() => setApplyingSettings(true)} />
@@ -118,6 +121,7 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
   const [password, setPassword] = useState("");
   const [problem, setProblem] = useState<AdvancedProblem | null>(null);
   const [checking, setChecking] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const pending = useRef(false);
   const live = useRef(true);
   useEffect(() => {
@@ -140,7 +144,7 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
       setPassword("");
       if (lock.isLocked()) return;
       if (matches) onUnlock(submitted);
-      else setProblem({ title: "That's not the CARE Clinic admin password", message: "Check the password and try again." });
+      else setProblem({ title: "That's not the CARE Clinic admin password", message: "Try again, or use an unused recovery code from your latest sheet." });
     } catch (cause) {
       if (!live.current) return;
       setPassword("");
@@ -150,6 +154,13 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
       if (live.current) setChecking(false);
     }
   };
+  if (recovering) return <section className="advanced-card advanced-gate-recovery">
+    <h2>Reset the CARE Clinic admin password</h2>
+    <AdminPasswordForm onCancel={() => { setRecovering(false); setProblem(null); }} onSuccess={(next) => {
+      toast("CARE Clinic password reset. Mark that recovery code used. CARE web passwords are unchanged; reset one from Advanced if needed.");
+      onUnlock(next);
+    }} />
+  </section>;
   return <section className="advanced-card advanced-gate" aria-labelledby="advanced-gate-title">
     <span className="advanced-icon advanced-gate-icon"><LockKeyhole aria-hidden="true" /></span>
     <h2 id="advanced-gate-title">Enter the admin password</h2>
@@ -162,6 +173,10 @@ export function AdminGate({ onUnlock }: { onUnlock: (password: string) => void }
         {checking ? <Spinner /> : null}{checking ? "Checking…" : "Unlock"}
       </Button>
     </form>
+    <Button type="button" variant="ghost" className="advanced-forgot" disabled={blocked || checking}
+      onClick={() => { if (!lock.isLocked() && !busy && !pending.current) { setPassword(""); setProblem(null); setRecovering(true); } }}>
+      {problem ? "Use a recovery code instead" : "Forgot CARE Clinic password?"}
+    </Button>
   </section>;
 }
 

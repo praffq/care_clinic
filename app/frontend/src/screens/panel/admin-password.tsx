@@ -1,4 +1,4 @@
-import { Check, KeyRound } from "lucide-react";
+import { Check, KeyRound, Printer } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Spinner } from "@/components/spinner";
@@ -13,10 +13,10 @@ import {
   AdvancedError, AdvancedNotice, AdvancedSecretInput, advancedProblem, useAdvancedLock, type AdvancedProblem,
 } from "./advanced-ui";
 
-function AdminPasswordForm({
+export function AdminPasswordForm({
   currentPassword, onSuccess, onCancel, onWorkingChange,
 }: {
-  currentPassword: string;
+  currentPassword?: string;
   onSuccess: (password: string) => void;
   onCancel: () => void;
   onWorkingChange?: (working: boolean) => void;
@@ -26,6 +26,7 @@ function AdminPasswordForm({
   const id = useId();
   const live = useRef(true);
   const pending = useRef(false);
+  const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [working, setWorking] = useState(false);
@@ -33,9 +34,11 @@ function AdminPasswordForm({
   const [retryAt, setRetryAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const strength = usePasswordStrength(password);
+  const recovering = currentPassword === undefined;
   const waitSeconds = Math.max(0, Math.ceil((retryAt - now) / 1000));
   const locked = busy || lock.disabled || working;
-  const canSubmit = !locked && waitSeconds === 0 && strength.strong && password === confirm;
+  const canSubmit = !locked && waitSeconds === 0 && strength.strong && password === confirm &&
+    (!recovering || code.trim() !== "");
 
   useEffect(() => {
     live.current = true;
@@ -47,7 +50,7 @@ function AdminPasswordForm({
     return () => window.clearInterval(timer);
   }, [retryAt]);
 
-  const clear = () => { setPassword(""); setConfirm(""); };
+  const clear = () => { setCode(""); setPassword(""); setConfirm(""); };
   const cancel = () => {
     if (pending.current) return;
     clear();
@@ -62,13 +65,14 @@ function AdminPasswordForm({
     setProblem(null);
     const nextPassword = password;
     try {
-      await bridge.ChangeAdminPassword(currentPassword, nextPassword);
+      if (recovering) await bridge.ResetAdminPassword(code, nextPassword);
+      else await bridge.ChangeAdminPassword(currentPassword, nextPassword);
       if (!live.current) return;
       clear();
       onSuccess(nextPassword);
     } catch (cause) {
       if (!live.current) return;
-      const next = advancedProblem(cause, "The password couldn't be changed",
+      const next = advancedProblem(cause, recovering ? "The password couldn't be reset" : "The password couldn't be changed",
         "Nothing was confirmed. Try again, or open the log file for support.");
       setProblem(next);
       if (next.retryAfter) {
@@ -90,10 +94,14 @@ function AdminPasswordForm({
   ];
 
   return <form className="advanced-admin-form" noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-    <p>Your CARE web login won't change.</p>
+    <p>{recovering ? "Use one unused code from your latest sheet. " : ""}
+      Your CARE web login won't change.</p>
     <fieldset disabled={locked}>
+      {recovering ? <AdvancedSecretInput label="Unused recovery code" value={code} onChange={setCode}
+        icon={<KeyRound aria-hidden="true" />} disabled={locked} autoFocus
+        hint="Each code works once. Spaces and hyphens are accepted." /> : null}
       <AdvancedSecretInput id={`${id}-password`} label="New CARE Clinic admin password" value={password}
-        onChange={setPassword} disabled={locked} autoComplete="new-password" autoFocus
+        onChange={setPassword} disabled={locked} autoComplete="new-password" autoFocus={!recovering}
         hint={<div className="advanced-password-rules">
           {rules.map((rule) => <span key={rule.label} className={`advanced-password-rule${rule.met ? " is-met" : ""}`}>
             <Check aria-hidden="true" />{rule.label}
@@ -111,11 +119,12 @@ function AdminPasswordForm({
     {waitSeconds > 0 ? <p className="advanced-field-hint" role="status">
       Try again in {waitSeconds} {waitSeconds === 1 ? "second" : "seconds"}.
     </p> : null}
+    {recovering ? <p>Mark this code used after resetting. Other unused codes still work.</p> : null}
     <div className="advanced-form-footer">
       <Button type="button" disabled={working} onClick={cancel}>Cancel</Button>
       <Button type="submit" variant="primary" disabled={!canSubmit}>
         {working ? <Spinner /> : null}
-        {working ? "Saving…" : "Change CARE Clinic password"}
+        {working ? "Saving…" : recovering ? "Reset CARE Clinic password" : "Change CARE Clinic password"}
       </Button>
     </div>
   </form>;
@@ -130,50 +139,119 @@ export function AdminPasswordSettings({
   const { busy } = useCare();
   const lock = useAdvancedLock();
   const blocked = busy || lock.disabled;
-  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<"password" | "codes" | null>(null);
   const [working, setWorking] = useState(false);
+  const [problem, setProblem] = useState<AdvancedProblem | null>(null);
   const [notice, setNotice] = useState("");
+  const [savedPath, setSavedPath] = useState("");
+  const [cancelled, setCancelled] = useState(false);
   const pending = useRef(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
+  const live = useRef(true);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
   const passwordWorking = useCallback((next: boolean) => {
     pending.current = next;
     setWorking(next);
   }, []);
+  useEffect(() => {
+    live.current = true;
+    return () => { live.current = false; };
+  }, []);
   const close = () => {
     if (working || pending.current) return;
-    setOpen(false);
+    setDialog(null);
+    setProblem(null);
+    setCancelled(false);
+  };
+  const replaceCodes = async () => {
+    if (busy || lock.isLocked() || working || pending.current) return;
+    pending.current = true;
+    setWorking(true);
+    setProblem(null);
+    setCancelled(false);
+    setSavedPath("");
+    try {
+      const saved = await bridge.SaveAdminRecoveryCodes(adminPassword);
+      if (!live.current) return;
+      if (!saved) {
+        setCancelled(true);
+        return;
+      }
+      setNotice("Six new codes saved. Every previous code is now invalid. Keep the new sheet safe and don't share it.");
+      setSavedPath(saved);
+      setDialog(null);
+    } catch (cause) {
+      if (live.current) setProblem(advancedProblem(cause, "The new codes couldn't be saved",
+        "Keep your previous recovery sheet. Choose a new filename or location and try again."));
+    } finally {
+      pending.current = false;
+      if (live.current) setWorking(false);
+    }
+  };
+  const open = (next: "password" | "codes") => {
+    if (busy || lock.isLocked() || working || pending.current) return;
+    setProblem(null);
+    setNotice("");
+    setSavedPath("");
+    setCancelled(false);
+    triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDialog(next);
   };
 
   return <>
-    <section className="advanced-card advanced-card-pad" aria-labelledby="advanced-password-title">
+    <section className="advanced-card advanced-card-pad" aria-labelledby="advanced-recovery-title">
       <div className="advanced-card-row">
         <span className="advanced-icon advanced-icon-brand"><KeyRound aria-hidden="true" /></span>
         <div className="advanced-grow">
-          <h2 className="advanced-card-title" id="advanced-password-title">Admin password</h2>
-          <p className="advanced-card-description">Change the CARE Clinic admin password. CARE web passwords are separate.</p>
+          <h2 className="advanced-card-title" id="advanced-recovery-title">Admin password and recovery codes</h2>
+          <p className="advanced-card-description">Manage the CARE Clinic password, or save six new recovery codes. CARE web passwords are separate; reset them under CARE web sign-in.</p>
         </div>
         <div className="advanced-actions">
-          <Button type="button" ref={triggerRef} disabled={blocked || working}
-            onClick={() => { if (!busy && !lock.isLocked() && !pending.current) { setNotice(""); setOpen(true); } }}>Change password</Button>
+          <Button type="button" disabled={blocked || working} onClick={() => open("password")}>Change password</Button>
+          <Button type="button" disabled={blocked || working} onClick={() => open("codes")}><Printer aria-hidden="true" className="size-4" />New recovery codes</Button>
         </div>
       </div>
     </section>
-    {notice ? <AdvancedNotice title={notice} tone="success" /> : null}
-    <AlertDialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
+    {notice ? <AdvancedNotice title={notice} tone="success">
+      {savedPath ? <span className="advanced-path">Saved to {savedPath}</span> : null}
+    </AdvancedNotice> : null}
+    {!dialog ? <AdvancedError problem={problem} /> : null}
+    <AlertDialog open={dialog !== null} onOpenChange={(next) => { if (!next) close(); }}>
       <AlertDialogContent className="advanced-dialog advanced-dialog-narrow"
+        onOpenAutoFocus={(event) => {
+          if (dialog === "codes") { event.preventDefault(); cancelRef.current?.focus(); }
+        }}
         onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus(); }}
         onEscapeKeyDown={(event) => { if (working || pending.current) event.preventDefault(); }}>
-        <AlertDialogTitle>Change the CARE Clinic admin password</AlertDialogTitle>
-        <AlertDialogDescription>Staff sign-in to the CARE website stays the same.</AlertDialogDescription>
+        <AlertDialogTitle>{dialog === "password" ? "Change the CARE Clinic admin password" : "Save six new recovery codes?"}</AlertDialogTitle>
+        <AlertDialogDescription>
+          {dialog === "password" ? "Staff sign-in to the CARE website stays the same. To change a CARE web password, use Reset a CARE web password."
+            : "A successfully saved replacement set immediately invalidates every previous code, including unused ones."}
+        </AlertDialogDescription>
         <div className="advanced-dialog-body">
-          <AdminPasswordForm currentPassword={adminPassword}
+          {dialog === "password" ? <AdminPasswordForm currentPassword={adminPassword}
             onWorkingChange={passwordWorking} onCancel={close} onSuccess={(password) => {
               pending.current = false;
               setWorking(false);
               onPasswordChanged(password);
-              setOpen(false);
-              setNotice("CARE Clinic password changed. Your CARE web login is unchanged.");
-            }} />
+              setDialog(null);
+              setNotice("CARE Clinic password changed. Your CARE web login is unchanged, and unused recovery codes still work.");
+            }} /> : <>
+            <AdvancedNotice title="Keep the new sheet somewhere secure" tone="neutral">
+              Save it outside CARE's folders and the backup folder, preferably away from this computer.
+              You can print the saved sheet. Recovery codes don't unlock backups or change the CARE web password.
+            </AdvancedNotice>
+            {cancelled ? <AdvancedNotice title="No new codes were saved" tone="neutral">
+              Your existing unused codes still work.
+            </AdvancedNotice> : null}
+            <AdvancedError problem={problem} />
+            <div className="advanced-dialog-foot">
+              <Button type="button" ref={cancelRef} disabled={working} onClick={close}>Cancel</Button>
+              <Button type="button" variant="primary" disabled={blocked || working} onClick={() => void replaceCodes()}>
+                {working ? <Spinner /> : null}{working ? "Saving codes…" : "Choose where to save"}
+              </Button>
+            </div>
+          </>}
         </div>
       </AlertDialogContent>
     </AlertDialog>

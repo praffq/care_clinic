@@ -12,6 +12,7 @@ import { PhoneDialog } from "./phone-dialog";
 import { panelStatus, type PanelTone } from "./panel-status";
 import { PanelBadge, PanelLogButton, PanelPageHeader, usePanelTask } from "./panel-ui";
 import { usePanelUpdateLock } from "./panel-update-lock";
+import { StorageHealthCard } from "./storage-health";
 
 const ENGINE_LABELS: Record<EngineState, [string, PanelTone]> = {
   no_engine: ["Not installed", "danger"],
@@ -113,6 +114,7 @@ export function OverviewTab() {
       </section>
       <ServiceDetails service={service} />
     </div>
+    <StorageHealthCard />
     {phoneOpen ? <PhoneDialog onClose={() => setPhoneOpen(false)} /> : null}
   </div>;
 }

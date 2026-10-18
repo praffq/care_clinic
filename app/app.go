@@ -72,6 +72,8 @@ type App struct {
 	layout *bundle.Layout
 	// readyTimeout bounds waiting for the engine; zero means engineReadyTimeout.
 	readyTimeout time.Duration
+	// carePingURL overrides CARE's health endpoint (tests).
+	carePingURL string
 	// stateDir overrides stack.DefaultStateDir (tests).
 	stateDir string
 	// nameCheck overrides mdns.CheckAvailable (tests).
