@@ -170,7 +170,7 @@ func commandError(ctx context.Context, step string, err error, output string) er
 	if output != "" {
 		msg += ": " + output
 	}
-	return &protocol.OpError{Code: CodeCommandFailed, Message: msg}
+	return &protocol.OpError{Code: protocol.CodeCommandFailed, Message: msg}
 }
 
 // stream runs args, emitting stdout and stderr lines tagged with svc.
@@ -291,7 +291,7 @@ func (d *DockerExecutor) StackStatus(ctx context.Context) (protocol.StackStatusR
 	}
 	rows, err := parseComposePS(out)
 	if err != nil {
-		return res, &protocol.OpError{Code: CodeCommandFailed, Message: "compose ps: " + err.Error()}
+		return res, &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "compose ps: " + err.Error()}
 	}
 	for _, r := range rows {
 		svc := protocol.Service(r.Service)
@@ -334,7 +334,7 @@ func parseComposePS(out []byte) ([]composePS, error) {
 
 func (d *DockerExecutor) StackLogs(ctx context.Context, op protocol.StackLogs, em Emitter) error {
 	if d.noStack() {
-		return &protocol.OpError{Code: CodeNotInstalled, Message: "the clinic stack is not installed"}
+		return &protocol.OpError{Code: protocol.CodeNotInstalled, Message: "the clinic stack is not installed"}
 	}
 	args := []string{"logs", "--no-color", "--no-log-prefix", "--tail", strconv.Itoa(op.TailLines)}
 	if op.Since != nil {
@@ -368,7 +368,7 @@ func (d *DockerExecutor) inspectImage(ctx context.Context, ref string) (imageInf
 		return info, err
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(out), &info); err != nil {
-		return info, &protocol.OpError{Code: CodeCommandFailed, Message: "image inspect: " + err.Error()}
+		return info, &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "image inspect: " + err.Error()}
 	}
 	return info, nil
 }
@@ -394,7 +394,7 @@ func (d *DockerExecutor) ImagePull(ctx context.Context, op protocol.ImagePull, e
 		return err
 	}
 	if !slices.ContainsFunc(info.RepoDigests, func(rd string) bool { return strings.HasSuffix(rd, "@"+string(op.Digest)) }) {
-		return &protocol.OpError{Code: CodeDigestMismatch, Message: "pulled image does not carry digest " + string(op.Digest)}
+		return &protocol.OpError{Code: protocol.CodeDigestMismatch, Message: "pulled image does not carry digest " + string(op.Digest)}
 	}
 	return nil
 }
@@ -436,7 +436,7 @@ func (d *DockerExecutor) ImageLoad(ctx context.Context, op protocol.ImageLoad, t
 		}
 	}
 	if len(refs) == 0 {
-		return &protocol.OpError{Code: CodeCommandFailed, Message: "docker load reported no loaded image"}
+		return &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "docker load reported no loaded image"}
 	}
 	matched := false
 	for _, ref := range refs {
@@ -452,7 +452,7 @@ func (d *DockerExecutor) ImageLoad(ctx context.Context, op protocol.ImageLoad, t
 		return nil
 	}
 	_ = d.run(ctx, Command{Args: append([]string{dockerBin, "image", "rm"}, refs...), Stdout: io.Discard, Stderr: io.Discard})
-	return &protocol.OpError{Code: CodeDigestMismatch, Message: "loaded image does not match digest " + string(op.Digest)}
+	return &protocol.OpError{Code: protocol.CodeDigestMismatch, Message: "loaded image does not match digest " + string(op.Digest)}
 }
 
 func (d *DockerExecutor) ImageBuild(context.Context, protocol.ImageBuild, Emitter) (protocol.ImageBuildResult, error) {
@@ -490,7 +490,7 @@ func (d *DockerExecutor) ImagePrune(ctx context.Context, op protocol.ImagePrune,
 		if err := dec.Decode(&r); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return &protocol.OpError{Code: CodeCommandFailed, Message: "image ls: " + err.Error()}
+			return &protocol.OpError{Code: protocol.CodeCommandFailed, Message: "image ls: " + err.Error()}
 		}
 		img := images[r.ID]
 		if img == nil {

@@ -14,8 +14,8 @@
 // FrameFunc for every progress and log frame, in order and on the caller's
 // goroutine, and return when the terminal frame arrives: nil after decoding
 // a result frame into the caller's value, or the *protocol.OpError carried
-// by an error frame (codes such as agent.CodeNotInstalled, agent.CodeCanceled
-// or agent.CodeCommandFailed). A stream that ends without a terminal frame
+// by an error frame (codes such as protocol.CodeNotInstalled,
+// protocol.CodeCanceled or protocol.CodeCommandFailed). A stream that ends without a terminal frame
 // returns ErrIncompleteStream; a frame longer than the line limit returns
 // ErrLineTooLong.
 //

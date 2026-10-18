@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
@@ -181,8 +180,8 @@ func (c *Client) WaitReady(ctx context.Context, interval time.Duration) (protoco
 }
 
 // Diagnostics returns the agent's redacted diagnostics report.
-func (c *Client) Diagnostics(ctx context.Context) (agent.DiagnosticsReport, error) {
-	var rep agent.DiagnosticsReport
+func (c *Client) Diagnostics(ctx context.Context) (protocol.DiagnosticsReport, error) {
+	var rep protocol.DiagnosticsReport
 	err := c.doJSON(ctx, http.MethodGet, "/v1/diagnostics", nil, &rep, http.StatusOK)
 	return rep, err
 }

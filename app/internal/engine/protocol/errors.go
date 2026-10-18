@@ -95,3 +95,15 @@ func (v *validator) err() error {
 	}
 	return &ValidationError{Errors: v.errs}
 }
+
+// Error codes carried in OpError.Code by error frames.
+const (
+	CodeNotImplemented = "not_implemented"
+	CodeCommandFailed  = "command_failed"
+	CodeDigestMismatch = "digest_mismatch"
+	CodeOpFailed       = "op_failed"
+	CodeCanceled       = "canceled"
+	// CodeNotInstalled: the op needs the clinic stack, which has no compose
+	// file yet.
+	CodeNotInstalled = "not_installed"
+)

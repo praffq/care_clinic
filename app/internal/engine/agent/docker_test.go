@@ -157,7 +157,7 @@ func TestDockerStreamsOutputAndFailure(t *testing.T) {
 	em := &recEmitter{}
 	err := d.StackLogs(context.Background(), protocol.StackLogs{Service: "db", TailLines: 5}, em)
 	var oe *protocol.OpError
-	if !errors.As(err, &oe) || oe.Code != CodeCommandFailed || !strings.Contains(oe.Message, "compose logs failed: exit status 1: Error:") {
+	if !errors.As(err, &oe) || oe.Code != protocol.CodeCommandFailed || !strings.Contains(oe.Message, "compose logs failed: exit status 1: Error:") {
 		t.Fatalf("err = %v", err)
 	}
 	var lines []string
@@ -229,7 +229,7 @@ func TestDockerWithoutComposeFile(t *testing.T) {
 		t.Fatalf("stack.down: %v", err)
 	}
 	var oe *protocol.OpError
-	if err := d.StackLogs(ctx, protocol.StackLogs{Service: "backend", TailLines: 10}, em); !errors.As(err, &oe) || oe.Code != CodeNotInstalled {
+	if err := d.StackLogs(ctx, protocol.StackLogs{Service: "backend", TailLines: 10}, em); !errors.As(err, &oe) || oe.Code != protocol.CodeNotInstalled {
 		t.Fatalf("stack.logs: %v", err)
 	}
 	if len(r.argv()) != 0 {
@@ -269,7 +269,7 @@ func TestDockerImagePull(t *testing.T) {
 	d, _ = newDocker(inspect(`["ghcr.io/ohcnetwork/care@` + string(digestOf("d")) + `"]`))
 	err := d.ImagePull(context.Background(), protocol.ImagePull{Role: "backend", Ref: "ghcr.io/ohcnetwork/care", Digest: dg}, em)
 	var oe *protocol.OpError
-	if !errors.As(err, &oe) || oe.Code != CodeDigestMismatch {
+	if !errors.As(err, &oe) || oe.Code != protocol.CodeDigestMismatch {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestDockerImageLoad(t *testing.T) {
 	d, r = newDocker(respond(string(digestOf("f"))))
 	err := d.ImageLoad(context.Background(), protocol.ImageLoad{Role: "backend", Digest: dg}, strings.NewReader("TAR"), em)
 	var oe *protocol.OpError
-	if !errors.As(err, &oe) || oe.Code != CodeDigestMismatch {
+	if !errors.As(err, &oe) || oe.Code != protocol.CodeDigestMismatch {
 		t.Fatalf("err = %v", err)
 	}
 	if got := r.argv()[2]; !slices.Equal(got, []string{"docker", "image", "rm", "care/backend:local"}) {
@@ -418,7 +418,7 @@ func TestDockerNotImplemented(t *testing.T) {
 	e3 := d.DBRestore(ctx, protocol.DBRestore{}, em)
 	for _, err := range []error{e1, e2, e3} {
 		var oe *protocol.OpError
-		if !errors.As(err, &oe) || oe.Code != CodeNotImplemented {
+		if !errors.As(err, &oe) || oe.Code != protocol.CodeNotImplemented {
 			t.Fatalf("err = %v", err)
 		}
 	}
@@ -446,7 +446,7 @@ func TestDockerCanceled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
-	if got := toOpError(ctx, err); got.Code != CodeCanceled {
+	if got := toOpError(ctx, err); got.Code != protocol.CodeCanceled {
 		t.Fatalf("op error = %+v", got)
 	}
 }

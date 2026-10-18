@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -165,11 +166,11 @@ func TestOpStreamsFramesAndResult(t *testing.T) {
 func TestOpErrorFrame(t *testing.T) {
 	e := newEnv(t)
 	e.fake.Handle = func(context.Context, protocol.Op, agent.Emitter) (any, error) {
-		return nil, &protocol.OpError{Code: agent.CodeNotInstalled, Message: "no compose file"}
+		return nil, &protocol.OpError{Code: protocol.CodeNotInstalled, Message: "no compose file"}
 	}
 	err := e.c.Op(ctxT(t), protocol.RunMigrations{}, nil, nil)
 	var oe *protocol.OpError
-	if !errors.As(err, &oe) || oe.Code != agent.CodeNotInstalled {
+	if !errors.As(err, &oe) || oe.Code != protocol.CodeNotInstalled {
 		t.Fatalf("err = %v, want OpError not_installed", err)
 	}
 }
@@ -459,7 +460,7 @@ func TestDiagnosticsTimeShutdown(t *testing.T) {
 	}
 	e.fake.SetTimeErr = errors.New("clock_settime: EPERM")
 	var ae *APIError
-	if err := e.c.SetTime(ctx, now); !errors.As(err, &ae) || ae.Status != 500 || ae.Code != agent.CodeOpFailed {
+	if err := e.c.SetTime(ctx, now); !errors.As(err, &ae) || ae.Status != 500 || ae.Code != protocol.CodeOpFailed {
 		t.Fatalf("set time failure err = %v", err)
 	}
 
@@ -491,4 +492,19 @@ var logsOp = protocol.StackLogs{Service: protocol.ServiceBackend, TailLines: 10}
 
 func digest(hex1 string) protocol.Digest {
 	return protocol.Digest("sha256:" + strings.Repeat(hex1, 64))
+}
+
+func TestExportBackupMissingChecksum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer srv.Close()
+	var d net.Dialer
+	c := New(func(ctx context.Context) (net.Conn, error) {
+		return d.DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	})
+	_, err := c.ExportBackupFile(ctxT(t), "id1", "db.dump", &bytes.Buffer{})
+	if !errors.Is(err, ErrMissingChecksum) || errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("err = %v, want ErrMissingChecksum", err)
+	}
 }

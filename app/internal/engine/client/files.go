@@ -11,9 +11,6 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
-// backupSHA256Header carries the manifest checksum of an exported backup file.
-const backupSHA256Header = "X-Care-SHA256"
-
 func fileRef(area protocol.FileArea, name string) (string, error) {
 	var fe []protocol.FieldError
 	if !area.Valid() {
@@ -81,8 +78,8 @@ func validBackupID(id string) error {
 }
 
 // ExportBackupFile copies file of backup set id to w and verifies its length
-// and the SHA-256 recorded in the set's manifest. On ErrChecksumMismatch (or
-// any other error) w may hold partial or corrupt data and must be discarded.
+// and the SHA-256 recorded in the set's manifest (ErrMissingChecksum when the
+// agent omits it). On ErrChecksumMismatch (or any other error) w may hold partial or corrupt data and must be discarded.
 // It returns the number of bytes written.
 func (c *Client) ExportBackupFile(ctx context.Context, id, file string, w io.Writer) (int64, error) {
 	if err := validBackupID(id); err != nil {
@@ -96,7 +93,10 @@ func (c *Client) ExportBackupFile(ctx context.Context, id, file string, w io.Wri
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	want := resp.Header.Get(backupSHA256Header)
+	want := resp.Header.Get(protocol.BackupSHA256Header)
+	if want == "" {
+		return 0, fmt.Errorf("export backup %s/%s: %w", id, file, ErrMissingChecksum)
+	}
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(w, h), resp.Body)
 	if err != nil {

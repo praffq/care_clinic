@@ -20,6 +20,7 @@ var (
 	ErrLineTooLong      = errors.New("op stream frame exceeds the line limit")
 	ErrBadFrame         = errors.New("malformed op stream frame")
 	ErrChecksumMismatch = errors.New("checksum mismatch")
+	ErrMissingChecksum  = errors.New("agent sent no " + protocol.BackupSHA256Header + " checksum header")
 )
 
 // APIError is a non-success HTTP response from the agent other than a 400

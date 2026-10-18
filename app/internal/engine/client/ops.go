@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
@@ -55,7 +54,7 @@ func (c *Client) LoadImage(ctx context.Context, op protocol.ImageLoad, tar io.Re
 	if err != nil {
 		return err
 	}
-	q := url.Values{agent.ParamsQuery: {string(params)}}.Encode()
+	q := url.Values{protocol.ParamsQuery: {string(params)}}.Encode()
 	return c.runOp(ctx, protocol.OpImageLoad, q, tar, -1, "application/x-tar", nil, onFrame)
 }
 

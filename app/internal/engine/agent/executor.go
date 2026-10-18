@@ -9,20 +9,8 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
-// Error codes carried in protocol.OpError.Code by error frames.
-const (
-	CodeNotImplemented = "not_implemented"
-	CodeCommandFailed  = "command_failed"
-	CodeDigestMismatch = "digest_mismatch"
-	CodeOpFailed       = "op_failed"
-	CodeCanceled       = "canceled"
-	// CodeNotInstalled: the op needs the clinic stack, which has no compose
-	// file yet.
-	CodeNotInstalled = "not_installed"
-)
-
 // ErrNotImplemented is returned by executors for ops they do not support yet.
-var ErrNotImplemented = &protocol.OpError{Code: CodeNotImplemented, Message: "operation not implemented yet"}
+var ErrNotImplemented = &protocol.OpError{Code: protocol.CodeNotImplemented, Message: "operation not implemented yet"}
 
 // Emitter receives progress and log output of a running op. Implementations
 // are safe for concurrent use and redact everything they forward.
@@ -32,7 +20,7 @@ type Emitter interface {
 }
 
 // Executor performs ops. Errors that are a *protocol.OpError are reported as
-// is (after redaction); any other error becomes CodeOpFailed. Methods must not
+// is (after redaction); any other error becomes protocol.CodeOpFailed. Methods must not
 // call the Emitter after returning.
 type Executor interface {
 	// Ping reports whether the docker daemon is reachable.
@@ -106,7 +94,7 @@ func dispatch(ctx context.Context, ex Executor, op protocol.Op, body io.Reader, 
 	case *protocol.BackupRun:
 		return none(ex.BackupRun(ctx, em))
 	}
-	return nil, &protocol.OpError{Code: CodeNotImplemented, Message: "no executor for op " + op.OpName()}
+	return nil, &protocol.OpError{Code: protocol.CodeNotImplemented, Message: "no executor for op " + op.OpName()}
 }
 
 // toOpError converts an executor error into a redacted terminal error.
@@ -118,7 +106,7 @@ func toOpError(ctx context.Context, err error) *protocol.OpError {
 		c.Message = Redact(c.Message)
 		return &c
 	case ctx.Err() != nil:
-		return &protocol.OpError{Code: CodeCanceled, Message: Redact(err.Error())}
+		return &protocol.OpError{Code: protocol.CodeCanceled, Message: Redact(err.Error())}
 	}
-	return &protocol.OpError{Code: CodeOpFailed, Message: Redact(err.Error())}
+	return &protocol.OpError{Code: protocol.CodeOpFailed, Message: Redact(err.Error())}
 }
