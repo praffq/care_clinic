@@ -1,59 +1,134 @@
-# Facility setup with CARE Onboarding
+# Server onboarding
 
 [Documentation index](README.md)
 
-Facility setup lives in the [CARE Onboarding frontend plugin](https://github.com/ohcnetwork/care_onboarding_fe), not in a separate CARE Clinic page. Its source, curated datasets and master-sheet converter are maintained in the plugin repository, with the datasets in `data_source/`. CARE Clinic only registers the hosted plugin; it does not bundle its assets or datasets.
+Setting up a Mac as the clinic server takes three steps in the desktop app:
+**computer checks**, **clinic name and admin password**, and **install**. The
+app only drives the steps; the engine VM and the clinic containers belong to
+the boot-time [`care-clinic-service`](../app/cmd/care-clinic-service/README.md).
+Nothing is installed on the host besides that service: no Docker, Rancher
+Desktop, Git or WSL.
 
-For the desktop's computer checks, recovery exports, installation and control
-panel, use [Using CARE Clinic](desktop-workflows.md). Reaching the desktop
-Overview means the local installation completed; it does not mean a facility,
-staff or clinical catalog has already been created in CARE.
+Server setup is macOS-only for now. The Windows app compiles, but the Windows
+service comes in a later slice, so server setup is not available there.
 
-## Default installation
-
-CARE Onboarding is a frontend-only [catalog entry](plugins.md). **New clinic installations** enable it automatically with:
-
-| Setting | Value |
-| --- | --- |
-| Display name | CARE Onboarding |
-| Plugin ID / frontend name | `care_onboarding_fe` |
-| Remote URL | `https://ohcnetwork.github.io/care_onboarding_fe/assets/remoteEntry.js` |
-| Frontend settings | `{"config":{"redirect_after_login":true}}` |
-
-`Clinic.Setup` initializes the catalog defaults before building images. The resulting list is persisted in `plugins.json`; normal startup registers its frontend entries in CARE's `PlugConfig` table. Initialization preserves any existing list, including an explicitly empty one, so retries do not re-enable a removed plugin.
-
-Existing installations are **not** automatically opted in. Add **CARE Onboarding** from CARE Clinic's **Plugins** tab, then choose **Save and apply**. Enable the frontend build setting below and rebuild the CARE frontend before reloading CARE. If a custom entry already uses its plugin ID or frontend name, remove that entry before adding the catalog version.
-
-The whole plugin bundle is served by GitHub Pages. No local preview server or extra container is needed, but staff browsers need internet access to download it. Removing the plugin and saving disables it without deleting data already imported into CARE.
-
-## CARE compatibility and startup
-
-Automatic onboarding runs **after normal CARE login**, using CARE's existing plugin component-override feature. No CARE frontend or backend source changes, custom login screen, or new backend endpoint are required.
-
-The bundled `deployments/frontend.env` enables the dashboard override:
-
-```dotenv
-REACT_MFE_REGISTERED_COMPONENTS=UserDashboard
+```mermaid
+sequenceDiagram
+    participant UI as Desktop UI
+    participant App as Go App
+    participant OS as macOS (admin prompt)
+    participant Svc as care-clinic-service
+    participant VM as Engine VM (agent)
+    UI->>App: BeginServerSetup, HostChecks
+    App-->>UI: virtualization, memory, disk, service
+    UI->>App: InstallService (only if the service is missing)
+    App->>OS: osascript ... with administrator privileges
+    OS->>Svc: copy binary, plist, care-clinic group, launchctl bootstrap
+    App->>Svc: wait until the control socket answers
+    UI->>App: RunSetup(name, adminPassword)
+    App->>Svc: engine install + activate (bundled engine, if newer)
+    Svc->>VM: boot engine, forward 80/443/8480, advertise name.local
+    App->>VM: load images, upload config, migrate, stack up, create admin
+    App-->>UI: setup-done, care-done(0, "setup")
 ```
 
-This is a **build-time setting**. New installations include it when building CARE. Existing installations preserve their installed `frontend.env`; add `UserDashboard` to that file's existing registration list and rebuild the CARE frontend. Keep other registered components; `*` already includes the dashboard. Saving plugin settings alone does not rebuild the frontend.
+## 1. Computer checks
 
-The selected CARE frontend must support manifest `overrides`, registration of `UserDashboard`, and passing the original component as `__base`. Without registration, the plugin remains available manually through **Facility Setup** but cannot redirect the dashboard automatically.
+`BeginServerSetup` saves the Server role, then `HostChecks()` returns a
+[`hostcheck.Report`](../app/internal/hostcheck/hostcheck.go): a list of checks,
+each `ok`, `warn` or `fail`, and `ready`, which is false while any check fails.
+Warnings do not block setup.
 
-Use CARE Clinic's **Open** button or visit `https://<clinic>.local/`, then sign in with the initial superuser. When the home dashboard opens, the plugin confirms the account is a superuser and checks the authenticated `/api/v1/facility/?limit=1&offset=0` endpoint. This checks the superuser's instance-wide facility list, including private clinics, rather than their assigned memberships.
+| Check | Fails when | Warns when |
+| --- | --- | --- |
+| Virtualization | Not a Mac with Apple silicon, or the hypervisor is unavailable. | — |
+| Memory | Less than 8 GiB (the engine VM uses 4 GiB). | — |
+| Disk | Less than 20 GiB free where the service keeps the engine (`/Library/Application Support/care-clinic`). | Less than 40 GiB free. |
+| Service | The control socket does not answer. On macOS the check carries the `install-service` action. | The check isn't available on this system yet (Windows). |
 
-No facilities means redirect to `/admin/onboarding`. An existing facility or an ordinary staff account keeps the original CARE dashboard. Failed or malformed checks show an error with **Try again**, never an automatic redirect. Normal CARE login and MFA remain unchanged.
+### Installing the service
 
-The check runs on dashboard entry, not continuously during setup. After a facility has been created, resume unfinished setup through **Facility Setup** in the same browser. `/onboarding` remains an authenticated alias for bookmarks.
+When the service check fails with `install-service`, the UI offers to install
+it. `InstallService()` ([`internal/service/install`](../app/internal/service/install))
+shows **one** macOS administrator prompt (`osascript` `do shell script ... with
+administrator privileges`) whose script:
 
-Set `config.redirect_after_login` to `false` for manual-only setup. Replace saved experimental `auto_onboarding` metadata with the new setting; the plugin no longer uses the experimental pre-login integration.
+1. creates the `care-clinic` group if missing and adds the logged-in user;
+2. copies `Contents/MacOS/care-clinic-service` from the app bundle (or
+   `CARE_CLINIC_SERVICE_BINARY`) to
+   `/Library/Application Support/care-clinic/bin/care-clinic-service`;
+3. writes `/Library/LaunchDaemons/org.ohc.care-clinic.plist`, booting out a
+   running copy first;
+4. runs `launchctl bootstrap system`.
 
-## Data loading
+The app then waits up to a minute for the control socket
+`/var/run/care-clinic/control.sock` to answer. The socket belongs to the
+`care-clinic` group, and group membership only applies to new logins: if the
+socket says "permission denied", the app asks the user to **log out of the
+Mac and back in**, then open CARE Clinic again. Declining the prompt installs
+nothing.
 
-The plugin calls CARE's REST APIs using the CARE session; it does not write directly to the database or store a separate login token. It is restricted to superusers.
+Developers can install the same service with `scripts/service-macos.sh
+install` or `install-built` (needs sudo); see
+[development](development-and-release.md#the-care-clinic-service).
 
-The setup flow covers geography, the clinic, departments and locations, staff memberships, invoice and patient numbering, clinical questionnaires, and report templates. Questionnaires and templates have separate steps. Existing records and sharing links are reconciled so retries do not duplicate successful imports.
+## 2. Clinic name and admin password
 
-Progress is saved per CARE instance in the browser, without passwords or contact details. Continue incomplete setup in the same browser; existing-facility checks and a single-tab lock help prevent accidental duplicate setup.
+The clinic name becomes `<name>.local` (default `care`). `MDNSStatus` and
+`ValidateDomain` check it before setup; `RunSetup` checks again that no other
+computer on the network advertises it, unless this Mac's service already does.
+Keep other clinic servers awake during setup: an offline computer cannot be
+detected.
 
-Clinical catalog import remains disabled until the required definitions and facility mappings are complete. Maintain fixtures and the master sheet in the plugin repository, and use its build, conversion and test commands. The [plugin README](https://github.com/ohcnetwork/care_onboarding_fe#readme) is the source of truth for the current flow and API contracts.
+The CARE Clinic admin password must be 8 to 20 characters with an uppercase
+letter, a lowercase letter and a digit (`ValidatePassword`). It protects the
+Advanced settings, uninstall and update-check switches, and becomes the
+password of the CARE web login `admin`. Only its bcrypt hash is saved. There
+are no recovery codes.
+
+## 3. Install
+
+`RunSetup(name, adminPassword)` validates its input synchronously, then runs
+the `setup` job:
+
+1. Save the name and password hash in `config.json`.
+2. Wait for the service, then **install the engine** if needed. The app uses
+   the engine bundle shipped in `Contents/Resources/engine` (or
+   `CARE_CLINIC_ENGINE_BUNDLE`). It installs and activates it through the
+   service, the same as `ctl install` and `ctl activate`, when no engine is
+   installed or the bundled version is newer than the active one. With no
+   bundle, an already installed engine is used; otherwise setup fails.
+3. Wait up to 5 minutes for the engine to be ready, starting it if stopped,
+   and tell the service the clinic name to advertise.
+4. Copy the deployment kit to the install folder, then `Clinic.Setup` loads the
+   CARE images into the engine and uploads the rendered configuration.
+5. `Clinic.Start` migrates the database, brings the stack up, creates the
+   `admin` login and offers to set up this Mac's browser for
+   `https://<name>.local/` (hosts entry and certificate trust; skipping it
+   doesn't stop the clinic).
+
+Images come from `CARE_CLINIC_DEV_IMAGES` (a
+[`scripts/dev-images.sh`](dev-images.md) output folder) or, failing that, the
+images the engine's clinic already runs. Release images come in a later
+slice; without either, setup fails and suggests `ctl clinic install --images`.
+
+Progress streams to the UI as `care-log` lines. Success emits `setup-done`
+and `care-done(0, "setup")`, and saves `setup_done`. A failure emits
+`setup-failed {can_retry}`:
+
+- **Try again** (`RetrySetup`) resumes the same attempt while the app is still
+  open, skipping preparation that already finished.
+- Otherwise `CleanupFailedInstall` removes the clinic from the engine and this
+  computer's install files, then setup starts over. The service and engine
+  stay installed.
+
+After setup the service keeps the clinic running: it boots the engine at
+startup, brings the stack up after each engine boot, and advertises the name.
+Quitting the app does not stop the clinic.
+
+## Facility setup
+
+Reaching the control panel means the clinic is installed; it does not mean a
+facility, staff or clinical catalog exists in CARE. Facility setup happens in
+the CARE web application. The CARE Onboarding plugin was enabled by the old
+plugin system, which was removed in v2; it returns later via engine agent ops.

@@ -9,6 +9,9 @@
   "preBuildHooks": {
     "*/*": "node ../../frontend/scripts/stage-install.mjs"
   },
+  "postBuildHooks": {
+    "darwin/*": "sh ../../../scripts/bundle-macos.sh ${bin} ${platform}"
+  },
   "author": {
     "name": "Open Healthcare Network Foundation"
   },

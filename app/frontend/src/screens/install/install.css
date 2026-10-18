@@ -1,5 +1,5 @@
 .onboarding.install-screen { --on-muted: #5f7268; position: relative; overflow: hidden; }
-.install-screen .on-main { overflow: hidden; }
+.install-screen .on-main { overflow-x: hidden; overflow-y: auto; }
 .install-screen .on-rail-step, .install-screen .install-stage { position: relative; }
 .install-screen .on-rail .on-step-dot .animate-spin { width: 11px; height: 11px; border-width: 1.5px; }
 .install-screen .install-head { display: flex; align-items: flex-start; gap: 20px; }
@@ -11,18 +11,25 @@
 .install-screen .install-elapsed { flex: none; padding-top: 2px; color: var(--on-muted); font: 15px var(--font-mono); font-variant-numeric: tabular-nums; }
 .install-screen .install-progress-card { padding: 26px 28px; }
 .install-screen .install-progress-card .install-current-label { margin-top: 4px; font-size: 17px; line-height: 1.4; font-weight: 700; }
-.install-screen .install-progress { height: 8px; margin-top: 16px; background: #eef2ef; }
-.install-screen .install-progress [data-slot="progress-indicator"] { width: 35%; background: linear-gradient(90deg, #0d9f6e, #22c08a); animation: install-travel 1.8s ease-in-out infinite; }
-.install-screen .install-stages { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-auto-flow: column; grid-template-rows: repeat(4, auto); column-gap: 28px; list-style: none; margin: 14px 0 0; padding: 10px 0 0; border-top: 1px solid #eef2ef; }
-.install-screen .install-stage { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 0; border-top: 1px solid #eef2ef; font-size: 13px; color: #52685c; }
-.install-screen .install-stage:nth-child(1), .install-screen .install-stage:nth-child(5) { border-top: 0; }
-.install-screen .install-stage-mark { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; background: #eef2ef; color: #667a70; }
+.install-screen .install-progress { height: 6px; margin-top: 8px; background: #eef2ef; }
+.install-screen .install-progress [data-slot="progress-indicator"] { background: linear-gradient(90deg, #0d9f6e, #22c08a); }
+.install-screen .install-progress-busy [data-slot="progress-indicator"] { animation: install-travel 1.8s ease-in-out infinite; }
+.install-screen .install-stages { list-style: none; margin: 14px 0 0; padding: 4px 0 0; border-top: 1px solid #eef2ef; }
+.install-screen .install-stage { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 6px 0; font-size: 13px; color: #8a9a92; }
+.install-screen .install-stage-mark { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid #dfe6e2; color: #667a70; }
 .install-screen .install-stage-mark svg { width: 12px; height: 12px; }
-.install-screen .install-stage-past { color: #33403a; }
-.install-screen .install-stage-past .install-stage-mark { background: #0d9f6e; color: #fff; }
-.install-screen .install-stage-now { color: #0f1a16; font-weight: 600; }
-.install-screen .install-stage-now .install-stage-mark { background: #e3f7ee; color: #046c4e; }
+.install-screen .install-stage-mark .animate-spin { width: 12px; height: 12px; border-width: 1.5px; }
+.install-screen .install-stage-body { display: flex; flex-direction: column; flex: 1; min-width: 0; padding-top: 1px; }
 .install-screen .install-stage-name { min-width: 0; overflow-wrap: anywhere; }
+.install-screen .install-stage-detail, .install-screen .install-stage-bytes { margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--on-muted); overflow-wrap: anywhere; }
+.install-screen .install-stage-bytes { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.install-screen .install-stage-done, .install-screen .install-stage-skipped { color: #33403a; }
+.install-screen .install-stage-done .install-stage-mark { border-color: #0d9f6e; background: #0d9f6e; color: #fff; }
+.install-screen .install-stage-skipped .install-stage-mark { border-color: #c9d4ce; background: #eef2ef; }
+.install-screen .install-stage-active { color: #0f1a16; font-weight: 600; }
+.install-screen .install-stage-active .install-stage-mark { border-color: #0d9f6e; background: #e3f7ee; color: #046c4e; }
+.install-screen .install-stage-failed { color: #b91c1c; font-weight: 600; }
+.install-screen .install-stage-failed .install-stage-mark { border-color: #b91c1c; background: #fdecec; color: #b91c1c; }
 .install-screen .install-reassurance { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; font-size: 13px; color: #33403a; }
 .install-screen .install-reassurance > svg { flex: none; width: 18px; height: 18px; margin-top: 2px; }
 .install-screen .install-reassurance strong { display: block; margin-bottom: 3px; font-weight: 600; color: #0f1a16; }
@@ -59,7 +66,6 @@
 @keyframes install-travel { 0% { transform: translateX(-100%); } 100% { transform: translateX(386%); } }
 @media (max-width: 1000px) {
   .install-screen .install-progress-card, .install-screen .install-failure-card { padding: 22px; }
-  .install-screen .install-stages { column-gap: 20px; }
   .install-screen .install-stage { gap: 8px; }
   .install-screen .install-update-row { flex-wrap: wrap; }
   .install-screen .install-update-row .on-grow { flex-basis: calc(100% - 60px); }
@@ -73,8 +79,6 @@
   .install-screen:not(.install-failed) .install-head .on-grow { display: contents; }
   .install-screen:not(.install-failed) .on-subtitle { grid-column: 1 / -1; grid-row: 2; }
   .install-screen:not(.install-failed) .install-elapsed { grid-column: 2; grid-row: 1; align-self: center; }
-  .install-screen .install-stages { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; }
-  .install-screen .install-stage:nth-child(5) { border-top: 1px solid #eef2ef; }
   .install-screen .install-progress-card, .install-screen .install-failure-card { padding: 18px; }
   .install-screen .install-progress-card .install-current-label { font-size: 16px; }
   .install-screen .install-failure-card .on-card-head { flex-wrap: nowrap; align-items: flex-start; }
@@ -92,5 +96,5 @@
   .onboarding.install-screen .on-rail-spacer { min-height: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .install-screen .install-progress [data-slot="progress-indicator"] { animation: none; transform: none; }
+  .install-screen .install-progress-busy [data-slot="progress-indicator"] { animation: none; transform: none; }
 }

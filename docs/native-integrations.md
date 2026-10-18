@@ -2,25 +2,16 @@
 
 # Native integrations and machine readiness
 
-On Windows, the default backup location uses the Windows Desktop known folder,
-including OneDrive or administrator redirection, rather than assuming
-`C:\Users\<name>\Desktop`. Explicitly configured backup locations are unchanged.
-The native folder chooser and recovery save dialogs start at that Desktop.
-Windows setup offers **Open folder** for saved recovery files and codes, warns
-that Desktop may sync to OneDrive, and shows free space without an estimated
-number of days or years of backups. Other platforms retain their existing
-folder and setup behavior.
-
 This guide explains how CARE Clinic interacts with the computer running the
 clinic: child processes, files, logs, administrator approval, local name
-resolution, certificates, LAN discovery, Windows networking, prerequisite tools,
-login startup, and restart detection. It also explains what the health checks
-actually prove.
+resolution, certificates, LAN discovery and Windows networking. The engine VM,
+port forwarding and name advertising belong to `care-clinic-service`; see its
+[README](../app/cmd/care-clinic-service/README.md).
 
 **CARE Clinic is the native Wails application.** First run persists a Server
 or Client role, without an ordinary role-switching control. Server mode
-installs and manages the clinic; Client mode connects to an existing clinic and
-performs native certificate setup without Docker, Git, or mDNS advertising.
+installs the service and the clinic; Client mode connects to an existing clinic
+and performs native certificate setup without a service or mDNS advertising.
 The **CARE frontend** is the clinical web application served through Caddy and
 opened in a browser, including browsers on other devices. Trusting a certificate
 or adding a hosts entry on the server computer does not configure every browser
@@ -44,10 +35,7 @@ This guide describes the current source rather than historical design boards.
 - [Certificate trust and device bootstrap](#certificate-trust-and-device-bootstrap)
 - [LAN names and mDNS](#lan-names-and-mdns)
 - [Windows network repair](#windows-network-repair)
-- [Docker and Git prerequisites](#docker-and-git-prerequisites)
-- [Disk space and storage monitoring](#disk-space-and-storage-monitoring)
-- [Health and port checks](#health-and-port-checks)
-- [Login startup and restart detection](#login-startup-and-restart-detection)
+- [Computer checks and the service install](#computer-checks-and-the-service-install)
 - [Error handling and ownership rules](#error-handling-and-ownership-rules)
 - [Source-file role inventory](#source-file-role-inventory)
 - [Verification boundaries and historical differences](#verification-boundaries-and-historical-differences)
@@ -62,15 +50,16 @@ or network-interface filtering.
 flowchart TD
     UI["CARE Clinic embedded management UI"] --> App["Wails Go application bridge"]
     App --> Clinic["Clinic orchestration"]
-    App --> Ready["prereq and health"]
+    App --> Ready["hostcheck and service/install"]
     App --> Native["sys packages"]
     Clinic --> Local["thiscomputer.go"]
     Clinic --> Export["caddyroot.go"]
     Local --> Native
     Export --> Native
     Ready --> Proc["sys/proc"]
+    Clinic --> Svc["care-clinic-service: engine VM, forwards, mDNS"]
     Native --> OS["Host files, processes, trust stores, and networking"]
-    Export --> Caddy["Running Caddy container"]
+    Export --> Caddy["Caddy in the engine VM, via forwarded port 80"]
     App --> Client["Native client certificate bootstrap"]
     Client --> Caddy
     Caddy --> Browser["Browser CARE frontend"]
@@ -78,8 +67,9 @@ flowchart TD
 
 There are three different kinds of ownership:
 
-1. **Application lifetime:** the Wails layer owns the in-memory mDNS advertiser,
-   its renewal loop, log delivery to the desktop, and second-instance behavior.
+1. **Application lifetime:** the Wails layer owns log delivery to the desktop
+   and second-instance behavior. The mDNS advertiser and its renewal loop live in
+   the service.
 2. **Clinic data and generated files:** the clinic layer owns the installation
    directory and chooses when to extract Caddy's root certificate for local
    trust. It passes ordinary logging and confirmation callbacks to
@@ -91,8 +81,7 @@ There are three different kinds of ownership:
 
 `proc.Runner` is a shared process-execution context, not a job scheduler.
 `elevate.Step` is a description of a privileged action, not a transaction.
-`health.Health`, `prereq.Status`, `netfix.Status`, `mdns.NameStatus`, and
-`reboot.Plan` are small result types that the application can expose through its
+`hostcheck.Report`, `netfix.Status` and `mdns.NameStatus` are small result types that the application can expose through its
 bridge. Their boolean fields have different meanings; one green result does not
 replace the other checks.
 
@@ -104,18 +93,15 @@ environment, browser, or architecture is supported or has been integration-teste
 | Concern | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Child process windows | Console-hiding helper is a no-op. | `HideWindow` and `CREATE_NO_WINDOW` prevent ordinary child-console flashes. OS approval dialogs still appear. | Console-hiding helper is a no-op. |
-| GUI PATH repair | Login-shell PATH, then Homebrew and standard executable directories. | Docker and Git installation directories, then inherited PATH; no login-shell probe. | Login-shell PATH, then the same Unix directory list, including Homebrew paths even if absent. |
+| GUI PATH repair | Login-shell PATH, then Homebrew and standard executable directories. | Inherited PATH; no login-shell probe. | Login-shell PATH, then the same Unix directory list, including Homebrew paths even if absent. |
 | Batched administrator approval | AppleScript `do shell script ... with administrator privileges`. | One elevated PowerShell child through `Start-Process -Verb RunAs`. | `pkexec sh -c`; requires the relevant policy/desktop support. |
 | Server hosts file | `/etc/hosts`. | `%WINDIR%\System32\drivers\etc\hosts`; path helper falls back to `C:\Windows`. | `/etc/hosts`. |
 | Local certificate installation | After the confirmation: when the hosts entry also needs elevation, put the System keychain install in that same elevated batch and fall back to the login keychain only if trust is still unverified; otherwise try the login keychain first. | After the confirmation, try machine `Root` through `certutil`, then elevation. | After the confirmation, try system anchors/bundle update, then elevation. |
 | Client certificate cleanup and installation | One elevated batch for the hosts repair and System-keychain deletions, then one shell as the signed-in user for the login-keychain deletions and the install, which is the only way macOS will set trust. Up to two prompts; fewer when there is less to repair. | One elevated batch: hosts repair, `Remove-Item` per stale thumbprint, then `certutil -addstore -f Root`. | One elevated batch: hosts repair, stale anchor removal with a trust-store update, then the new anchor with another update. |
-| mDNS | Shared IPv4 address-selection and response-probing implementation. | Same implementation; firewall/profile repair is separate. | Same implementation; no Linux firewall manager is configured here. |
+| mDNS | Advertised by the service; the app only checks names. | Same check implementation; no Windows service yet. Firewall/profile repair is separate. | Same check implementation. |
 | Network repair | `netfix` reports not applicable; no repair. | Public profiles can become Private; three owned inbound rules cover HTTP, HTTPS, and mDNS on Private and Domain profiles. | `netfix` reports not applicable; no repair. |
 | Atomic replacement | Rename within the destination directory, then sync that directory. | `MoveFileEx` with replacement and write-through flags. | Same Unix replacement implementation as macOS. |
-| Login startup | Per-user LaunchAgent plist. | Per-user `HKCU` Run value. | Per-user `.desktop` autostart file under `~/.config`. |
-| Restart detection/action | No pending-restart detection; `Now` returns an unsupported error. | Two registry-key probes; restart action schedules `shutdown /r` after five seconds. | No pending-restart detection; `Now` returns an unsupported error. |
-| Automated Docker setup | Download the pinned, architecture-selected Rancher Desktop DMG and verify its SHA-256. | Download the pinned Rancher Desktop MSI, verify its SHA-256, and run it. | Download Docker's pinned static engine and Compose plugin, verify their SHA-256, install them with a systemd unit, `groupadd`, and `usermod`. |
-| Automated Git setup | Launch Command Line Tools installer with `xcode-select --install`. | Download the pinned Git for Windows installer, verify its SHA-256, and run it silently. | Supported package manager, otherwise a manual plan. |
+| Server setup | Computer checks, then the `care-clinic-service` LaunchDaemon with one administrator prompt. | Not available yet: no Windows service. | Not supported. |
 
 Other `GOOS` values are not a general supported-platform promise. For example,
 some helpers have default branches, but `atomicfile` only supplies replacement
@@ -129,18 +115,18 @@ Source: [proc.go](../app/internal/sys/proc/proc.go),
 
 ### Why one process wrapper exists
 
-Docker, Git, platform utilities, and installers need a predictable working
-directory and environment when launched from a GUI. They also need to avoid
+Platform utilities and installers need a predictable working directory and
+environment when launched from a GUI. They also need to avoid
 flashing console windows on Windows. The wrapper centralizes these mechanics
 without deciding whether a particular command is an installation, a diagnostic,
 or a teardown.
 
 | API or field | Actual contract |
 | --- | --- |
-| `Runner.Dir` | Assigned to the command's working directory. Empty means inherit the current process directory. Compose callers must provide the intended project context; the runner does not discover it. |
+| `Runner.Dir` | Assigned to the command's working directory. Empty means inherit the current process directory. |
 | `Runner.Env` | Assigned to the child environment. `nil` inherits the process environment; a non-nil slice supplies an explicit environment rather than automatically merging with the parent. |
 | `Runner.Log` | Optional `func(string)` sink. `Run` can call it concurrently from stdout and stderr reader goroutines. |
-| `Runner.Ctx` | Optional context for `Run`, `RunWith`, `Capture` and `Lines`; plugin application and recovery provide separate deadlines. |
+| `Runner.Ctx` | Optional context for `Run`, `RunWith`, `Capture` and `Lines`. |
 | `Command` | Constructs `exec.Command` and applies the platform console settings. It does not start the command. |
 | `CommandContext` | Same wrapper around `exec.CommandContext`; the caller supplies cancellation and deadlines. |
 | `Run` / `RunWith` | Start the command, stream stdout and stderr, wait for both readers and process completion, and return an error on failure. |
@@ -161,7 +147,7 @@ the remaining chunks of that line. Reader errors themselves are not exposed as
 a separate API result; the final process result comes from `Wait`.
 
 `Runner.Run` and `Runner.Capture` use `Runner.Ctx` when supplied; without it they
-have no automatic timeout. Plugin apply and recovery supply bounded contexts.
+have no automatic timeout.
 Context-created commands use a two-second `WaitDelay`, and cancellation closes
 streamed output pipes so an inherited pipe cannot keep a timed-out operation
 waiting indefinitely. `Run` reports the context error without exposing output.
@@ -177,18 +163,14 @@ construction; see the integration point in [app.go](../app/app.go).
   `SHELL` is unset. It has a three-second context deadline. The command emits a
   line prefixed with `__care_path__`, so unrelated shell startup output is not
   mistaken for PATH. Failure simply omits this part.
-- `AugmentedPath` prepends `$HOME/.rd/bin` (Rancher Desktop's CLI directory),
-  `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `/usr/bin`,
-  `/bin`, `/usr/sbin`, and `/sbin` on Unix.
-- On Windows it prepends
-  `%LOCALAPPDATA%\Programs\Rancher Desktop\resources\resources\win32\bin`,
-  `C:\Program Files\Rancher Desktop\resources\resources\win32\bin`,
-  `C:\Program Files\Git\bin`, and `C:\Program Files\Git\cmd`.
+- `AugmentedPath` prepends `/opt/homebrew/bin`, `/opt/homebrew/sbin`,
+  `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, and `/sbin` on Unix. On
+  Windows it adds nothing.
 - The existing PATH is appended. The login-shell result, when available, precedes
   the augmented path. There is no directory-existence check or deduplication.
 
 This addresses GUI launches that cannot find installed tools. It does not install
-them, prove that Docker is running, or validate a minimum tool version.
+them or validate a minimum tool version.
 
 The Windows console helper preserves existing `SysProcAttr` settings and adds
 `HideWindow = true` plus creation flag `0x08000000`. It is not a request to hide
@@ -234,11 +216,10 @@ The limits matter:
   ownership, or ACLs from an older destination.
 - Staging cleanup is best effort: the deferred `os.Remove` result is ignored.
 
-Do not infer that every native file write uses `atomicfile`. In this scope,
-autostart registrations use `os.WriteFile`, logs are
+Do not infer that every native file write uses `atomicfile`. In this scope, logs are
 appended, and Unix hosts removal deliberately rewrites the existing hosts inode.
-See [Configuration and settings](configuration-and-settings.md) and
-[Backups and restore](backups-and-restore.md) for higher-level persistence users.
+See [Configuration and settings](configuration-and-settings.md) for
+higher-level persistence users.
 
 ## Diagnostic logging with applog
 
@@ -258,12 +239,7 @@ method shape Wails expects from its logger.
 | Windows | `%LOCALAPPDATA%\care-clinic\logs`; if unset, `~/AppData/Local/care-clinic/logs` |
 | Linux/default branch | `$XDG_STATE_HOME/care-clinic`; if unset, `~/.local/state/care-clinic` |
 
-CARE records launcher invocations, failures and Docker readiness in its main log,
-but discards inherited launcher stdout/stderr. Use Rancher Desktop's
-**Troubleshooting** logs for Rancher's startup diagnostics. CARE no longer
-creates or appends to `rancher-launch.log`; older copies are not automatically
-removed, and processes started by an older CARE build can still hold their old
-output handle until they exit.
+The service writes its own log to `/Library/Logs/care-clinic/service.log`.
 
 The active filename is `care-log.log`. The code first needs `os.UserHomeDir` to
 succeed, even before checking the Windows or XDG overrides. A failed home lookup
@@ -375,7 +351,7 @@ guarantee to every `Start-Process` in the repository.
 
 Each elevation is a separate consent prompt, and an operator who approves the
 first and misses the second leaves the second item installed. Because the
-post-operation scan then still reports residue, a removal that asked three times
+post-operation scan then still reports leftovers, a removal that asked three times
 and was approved once is indistinguishable from one that failed outright.
 
 Teardown therefore plans before it elevates. `trust.RemoveStepWindows`,
@@ -439,16 +415,11 @@ unverified after that batch, it falls back to the login keychain. When only the
 certificate is missing, the login keychain is still tried first, since that
 avoids the administrator password altogether.
 
-During first-time setup, `Setup()` calls it through `setUpThisComputerEarly`
-right after the Caddy image is built, while the backend and frontend images are
-still building. That starts Caddy alone and waits up to 60 seconds for its root
-and a served site certificate (`trust.HostServed`, a handshake that checks the
-name but not trust). If Caddy can't start or the certificates don't appear, it
-logs why and leaves the work to the end of `Start()`. Once it has run on an
-engine, `Start()` does not offer it a second time.
+`Clinic.Start()` runs it at the end of first-time setup, once the stack is
+up. Panel Start/Restart do not offer it again.
 
 The one-prompt design applies to the remaining privileged hosts and trust steps,
-not every prerequisite installation or Windows network repair. On macOS the
+not the service install or Windows network repair. On macOS the
 certificate still needs its own approval, because the system asks the user in
 person before changing certificate trust, even for root.
 
@@ -522,7 +493,7 @@ applies a line filter, and stages the result in a temporary file. It returns one
 step that saves `hosts.care-backup`, writes the new file, and flushes the DNS
 cache. There are two filters:
 
-- `withoutMarker` (uninstall, purge, remove old installation) drops every line
+- `withoutMarker` (uninstall) drops every line
   carrying `# care-clinic`, whatever name it maps, and leaves unmarked lines
   alone.
 - `withoutHost` removes one exact hostname from any line, whoever added it, and
@@ -579,11 +550,10 @@ Sources: [app_update.go](../app/app_update.go),
 [project.nsi](../app/build/windows/installer/project.nsi).
 
 **Update CARE Clinic** updates the installed desktop, not the clinic server.
-It does not run `docker compose stop/down`, remove clinic files, change backup
-keys, reinstall WebView2, or invoke the application uninstaller. Normal shutdown
-does stop this desktop's mDNS advertiser; clinic containers stay running and
-advertising resumes when the app reopens. Clinic-name discovery can therefore
-be briefly unavailable during the restart.
+It does not stop the clinic, remove clinic files, reinstall WebView2, or invoke
+the application uninstaller. The service keeps the clinic running and
+advertised while the app restarts. It does not update the service binary
+either; see [development](development-and-release.md#the-care-clinic-service).
 
 1. Fetch the release and its checksum, download into a private uniquely named
    `CARE Clinic/updates/update-*` directory in the OS user cache, verify SHA-256,
@@ -639,7 +609,7 @@ Sources: [trust.go](../app/internal/sys/trust/trust.go),
 [client.go](../app/internal/sys/trust/client.go), and
 [caddyroot.go](../app/internal/clinic/caddyroot.go). The adjacent serving
 contract is in [Caddyfile](../deployments/Caddyfile) and the Caddy service in
-[docker-compose.yml](../deployments/docker-compose.yml).
+[docker-compose.yml](../deployments/docker-compose.yml), which runs in the engine VM.
 
 ### Public root versus private CA material
 
@@ -650,8 +620,8 @@ The configured identities are:
 | --- | --- |
 | `CARE Clinic Local CA` | Root Common Name, also `trust.CommonName`. |
 | `CARE Clinic Local CA - Intermediate` | Intermediate Common Name in the Caddyfile. |
-| `/data/caddy/pki/authorities/local/root.crt` | Public root certificate read by `caddyRootPEM`. |
-| Caddy `/data` | Backed by the Compose `caddy-data` volume; contains Caddy state, including private PKI material. |
+| `/data/caddy/pki/authorities/local/root.crt` | Public root certificate, served at `/root.crt`. |
+| Caddy `/data` | Backed by the compose `caddy-data` volume in the VM; contains Caddy state, including private PKI material. |
 
 A root certificate is public material, not its private signing key. Remote
 devices need the public root to verify the clinic's certificate chain. They do
@@ -672,8 +642,8 @@ does not require deleting that directory.
 
 On a staff computer, install CARE Clinic, select **Client** at first run, and
 enter the clinic's `.local` address shown on the server. The saved role is not a
-routine toggle between hosting and connecting. Clients do not provision Docker
-or Git, run the server stack, or advertise a clinic over mDNS; their operating
+routine toggle between hosting and connecting. Clients do not install the
+service, run the server stack, or advertise a clinic over mDNS; their operating
 system still needs to resolve the server's address.
 
 The address field accepts a bare clinic label, `name.local`, or an HTTP/HTTPS
@@ -831,24 +801,22 @@ different clinic.
 
 Successful cleanup clears the saved role and returns to the Server/Client
 choice. Server uninstall does the same after all required cleanup succeeds.
-It does not uninstall the CARE Clinic executable. To leave the clinic permanently,
-uninstall the setup first, then remove the executable using the operating system.
+The Disconnect dialog can also remove the CARE Clinic app afterwards; see
+[cleanup and uninstall](cleanup-and-uninstall.md#3-removing-the-desktop-app).
 
 ### Root extraction is deliberately non-fatal
 
-`caddyRootPEM` first tries `docker compose exec -T caddy cat` on the root path.
-It accepts successful output containing `BEGIN CERTIFICATE`. If that fails, it
-creates a scratch `.crt` file, uses `docker compose cp` from the same container
-path, and reads the result. It attempts to remove the scratch file on return.
+`caddyRootPEM` fetches `http://<clinic>/root.crt` through `127.0.0.1` (the
+service's forwarded port 80) with `trust.FetchClientCertificate` and a
+15-second deadline, the same download a client uses.
 
-This helper returns `""`, not an error, if extraction cannot be completed. It
-checks for the certificate marker, not full certificate validity. Native import
+This helper returns `""`, not an error, if the download fails. Native import
 tools and the final TLS handshake provide later checks. It neither exports
 private keys nor generates a replacement CA when Caddy is unavailable.
 
 ```mermaid
 flowchart TD
-    Caddy["Caddy internal CA in private volume"] --> Root["Read public root.crt: exec, then cp fallback"]
+    Caddy["Caddy internal CA in private volume"] --> Root["Fetch public root.crt over forwarded port 80"]
     Root --> Available{"Root available?"}
     Available -- No --> Deferred["Trust preparation may warn; retry starting CARE"]
     Available -- Yes --> Local["trust.Step for server computer"]
@@ -980,9 +948,11 @@ than assuming that any certificate-management window is showing it.
 Sources: [advertise.go](../app/internal/sys/mdns/advertise.go),
 [responder.go](../app/internal/sys/mdns/responder.go), and
 [probe.go](../app/internal/sys/mdns/probe.go), and
-[conflict.go](../app/internal/sys/mdns/conflict.go). Renewal is an
-application-lifetime responsibility at the integration boundary in
-[app.go](../app/app.go), not a background loop inside this package.
+[conflict.go](../app/internal/sys/mdns/conflict.go). Renewal is the job of the
+service's [`advertise`](../app/internal/service/advertise/advertise.go) watcher,
+not a background loop inside this package. The desktop app does not advertise;
+it only checks names (`MDNSStatus`) and resolves them for clients. Exactly one
+advertiser runs per Mac.
 
 ### Why this is separate from hosts and trust
 
@@ -1033,7 +1003,7 @@ This is a heuristic, not complete topology discovery:
   interface metadata is unavailable, IPv4 source subnets or IPv6 source zones
   identify the link.
 - IPv4 transport is always enabled; IPv6 transport is also enabled on interfaces
-  with IPv6 addresses. Published host addresses and the watchdog remain IPv4:
+  with IPv6 addresses. Published host addresses and the watcher remain IPv4:
   this does not add support for IPv6-only clinics.
 
 ### Browser hostname replies
@@ -1074,8 +1044,7 @@ must have a unique name on its LAN.
 ### Checking for an occupied name
 
 The setup wizard saves the chosen name without advertising it. `MDNSStatus(name)`
-checks the address currently shown in the form, not merely the existence of this
-process's advertiser. It sends A and AAAA questions directly to IPv4 mDNS on every
+checks the address currently shown in the form. It sends A and AAAA questions directly to IPv4 mDNS on every
 selected LAN interface, bypassing the system resolver, cached records, and
 `/etc/hosts`. Three query rounds listen for 500 ms each under a two-second overall
 deadline. Live foreign A/AAAA records in answers or additional records block
@@ -1086,9 +1055,8 @@ the listening window. Socket and interface errors fail the check explicitly.
 The frontend rechecks when the address changes and every 30 seconds, ignores
 superseded results, and requires a fresh check before installation. `RunSetup`
 also checks before saving installation credentials or changing installation
-files; `Advertise` checks again before opening responders, including after the
-installation work and on restart. An installed server's status additionally
-requires its own responder to answer.
+files; `Advertise` in the service checks again before opening responders,
+including on restart.
 
 An offline or sleeping server cannot answer. Multicast isolation, packet loss,
 and peers reachable only through IPv6 transport can also prevent detection;
@@ -1096,19 +1064,15 @@ a green result means no conflict was detected, not a global reservation.
 Simultaneous installations can pass before either starts advertising. The
 runtime watcher checks for later conflicts, withdraws the local advertisement,
 and shows an error asking the administrator to resolve the duplicate names.
-It does not rename installed clinics, alter certificates, or stop containers.
+The service reports it in its status `mdns.conflict`. It does not rename
+installed clinics, alter certificates, or stop containers.
 
 Setup, the setup preflight in `RunSetup`, and the check inside `Advertise` stay
 strict: one probe that hears a foreign answer is a conflict. Those checks run
-while this computer is not answering for the name. Once a clinic is
-advertising, `MDNSStatus` for the advertised name no longer probes for itself.
-It leaves conflict detection to the watcher (below) and reports only whether
-the advertiser still answers. A single probe while the network is switching
-could otherwise show "already in use" for this computer's own answer. When the
-watcher confirms a conflict it withdraws the advertiser, and the next
-`MDNSStatus` call finds no advertiser, probes strictly, and shows the conflict.
-Names this computer is not advertising, and every check before setup, still
-use the strict probe.
+while this computer is not answering for the name. When the service is configured with the name being checked, `MDNSStatus`
+reports "This computer already answers for <name>.local" without probing, and
+leaves conflict detection to the service's watcher (below). Other names, and
+every check before setup, use the strict probe.
 
 ### Confirming a conflict while advertising
 
@@ -1132,13 +1096,13 @@ when it is stable:
   closed socket, such as "can't assign requested address"), the
   `ConflictError` carries it as `Unsettled`. `mdns.Unsettled` reports that, or
   a bare socket error, as a sign that the network is still changing.
-- **Settle period:** for **12 seconds** after an advertiser starts (at launch,
+- **Settle period:** for **12 seconds** after an advertiser starts (at service start,
   after a network change, or after any restart) the watcher does not run the
   conflict check. The own-response probe still runs.
 - **Two sightings:** the first conflict is only logged ("Checking again before
   reporting it"), and the watcher rechecks after **5 seconds** instead of
   waiting 30. Only a second consecutive conflict withdraws the advertisement and
-  notifies the administrator. A clean or failed check in between resets the
+  reports the conflict in the service status. A clean or failed check in between resets the
   count.
 - **Network change resets:** if `IPsChanged` reports a change before the check,
   or again right after a check that found a conflict, or the check was
@@ -1159,7 +1123,7 @@ Every interface must return an authoritative response with the matching query
 ID/question and live A records belonging to that interface. A hosts-file
 loopback result, unrelated service response, stale address, or query error is
 not success. A nil/stopped advertiser does not query, and shutdown during the
-query prevents a positive result. Failures return an error to the application.
+query prevents a positive result. Failures return an error to the caller.
 
 The probe bypasses the system resolver and its hosts file. It does not prove
 that ordinary multicast replies reach a remote WiFi client, verify HTTPS, or
@@ -1177,7 +1141,7 @@ availability; reordering alone does not trigger a change. Enumeration errors,
 including loss of all usable interfaces, are returned rather than treated as
 an unchanged network.
 
-The application watches every **30 seconds**. It attempts to start a missing
+The service watches every **30 seconds**. It attempts to start a missing
 advertiser, restarts when the topology comparison reports a change or error,
 and restarts after **two consecutive failed response probes**. It also checks
 for foreign claims before the own-response probe, withdrawing advertising and
@@ -1187,13 +1151,12 @@ advertising](#confirming-a-conflict-while-advertising) for the settle period and
 recheck.
 Retries must pass the availability check before advertising again. A successful
 response probe clears the miss count. Shutdown prevents the watcher from reopening a
-responder. The watcher and advertiser must be stopped with
-application shutdown. The package itself does not automatically restart after
+responder. The watcher and advertiser stop with the service. The package itself does not automatically restart after
 a WiFi roam, dock change, or firewall change.
 
 ```mermaid
 flowchart TD
-    Tick["Application watcher: every 30 seconds"] --> Have{"Advertiser exists?"}
+    Tick["Service watcher: every 30 seconds"] --> Have{"Advertiser exists?"}
     Have -- No --> Start["Try Advertise with current usable IPv4 addresses"]
     Have -- Yes --> Changed{"IPsChanged reports a change?"}
     Changed -- Yes --> Renew["Stop old responder and start a new one"]
@@ -1202,7 +1165,7 @@ flowchart TD
     Settling -- No --> Conflict{"Another device claims this name?"}
     Conflict -- "Yes, network changing" --> Renew
     Conflict -- "Yes, first sighting" --> Recheck["Check again in 5 seconds"]
-    Conflict -- "Yes, second in a row" --> Pause["Withdraw advertisement and warn administrator"]
+    Conflict -- "Yes, second in a row" --> Pause["Withdraw advertisement and report the conflict"]
     Pause --> Later
     Conflict -- No --> Probe["Query hostname A records on every selected IPv4 interface"]
     Probe --> Match{"Matching response, no query error, still running?"}
@@ -1214,10 +1177,9 @@ flowchart TD
     Renew --> Later
 ```
 
-Container lifetime and native advertiser lifetime are different. A running
-clinic stack is not by itself an mDNS responder from this package; the desktop
-process owns that service. See [The Wails application](wails-application.md) for
-hide, close, quit, and second-instance behavior.
+Container lifetime and advertiser lifetime are different. The service
+advertises whenever it runs with a configured name, whether or not the stack
+is up, and independently of the desktop app.
 
 ### Client independence and network limits
 
@@ -1280,7 +1242,7 @@ advertising it:
 CARE_MDNS_CONFLICT_TEST_HOST=care.local go test -race ./ ./internal/sys/mdns -run 'TestExistingNameConflictOverLAN|TestOccupiedNameBlocksSetupStatusOverLAN' -count=1 -v
 ```
 
-The temporary-hostname check advertises a unique name, checks the watchdog,
+The temporary-hostname check advertises a unique name, checks the renewal logic,
 and exercises multicast and legacy hostname replies on each selected interface
 and available transport family. It withdraws that name afterwards. QU framing
 is covered by deterministic tests; observing a QU reply on a second machine is
@@ -1390,660 +1352,17 @@ batched teardown: it inspects first and returns the step only when rules exist,
 so a full teardown can request one approval for every change. See
 [one approval per operation](#one-approval-per-operation-not-per-item).
 
-## Docker and Git prerequisites
-
-Sources: [check.go](../app/internal/prereq/check.go) and
-[provision.go](../app/internal/prereq/provision.go).
-
-The package separates **readiness**, **the offered next action**, and **executing
-an installer**. A tool binary existing is not the same as a usable Docker daemon,
-and an installer finishing is not always the end of setup.
-
-### Readiness checks
-
-Each explicit probe uses `cmdTimeout = 5 * time.Second` and
-`proc.CommandContext`. It applies `Runner.Env` but does not set `Runner.Dir`.
-
-| Probe | Evidence checked | Limits |
-| --- | --- | --- |
-| `DockerCheck` | `docker version --format "{{.Server.Os}}/{{.Server.Version}}"` succeeds; server OS is Linux or empty; `docker compose version` succeeds. On failure, "not installed" is decided by `rancherDesktopInstalled` alone, not by the `docker` binary being missing: on macOS `~/.rd/bin/docker` only appears once Rancher Desktop's first start finishes, so an installed but still-starting Rancher Desktop reports "running, but Docker is not answering yet" instead. | No minimum Docker version, capacity, virtualization, or registry-access test. Empty OS output is accepted by the helper. |
-| `hasCompose` | Compose v2-style subcommand can run. | Does not validate the clinic's Compose files or pull images. |
-| `GitCheck` | `git --version` succeeds. | Any failure yields the generic "Git is not installed" status, even if another execution error caused it. |
-| `dockerDaemonUp` | A bounded `docker version` request for the server version succeeds. | Used to choose an action; not the complete OS/Compose readiness check. |
-
-`DockerCheck` distinguishes a not-found executable using error-message substrings,
-reports other command failures as installed-but-not-running advice, and explicitly
-warns about a non-Linux container mode. These are actionable summaries, not a full
-diagnostic classification of every possible Docker error.
-
-The environment is preserved, so Docker's configured context or environment can
-affect which daemon answers. The helper does not force a local Docker endpoint.
-Meanwhile the clinic's HTTP health probe is explicitly local.
-
-A successful Docker check can use two sequential five-second probes. Five
-seconds is a per-command deadline, not a guaranteed total duration for every
-status request.
-
-### Plans and follow-up checks
-
-`ToolPlan` carries `Action`, `Label`, `Detail`, `URL`, and `DownloadPreview`; actions are `""`,
-`install`, `open`, and `manual`.
-
-Rancher install plans set `download_preview`. Before invoking installation,
-the prerequisite UI calls `RancherDownloadInfo()` to inspect the pinned
-platform-specific installer with a HEAD request (following redirects, with a
-30-second overall timeout). It displays the filename and size in a confirmation
-dialog. No installer body is fetched until **Download and install** is chosen.
-Cancellation leaves the machine unchanged. Missing size or failed metadata
-requests show an error and require retry, rather than guessing a size.
-
-- If a tool is ready, its plan offers no action.
-- If Docker's daemon is not answering but an installation is detected, the plan
-  offers to open/start Docker.
-- Otherwise Docker gets an install plan, or a manual plan on an unsupported
-  platform, including Linux on an architecture other than x86_64/aarch64 or
-  without `systemctl`.
-- Git uses installation plans where implemented; Linux without a supported
-  package manager gets manual guidance.
-
-Plan selection is deliberately small. For example, an already-running daemon
-with the wrong container mode or missing Compose can still lead to an install
-plan, while the readiness message explains the more specific problem.
-
-```mermaid
-flowchart LR
-    Inspect["Check readiness"] --> OK{"Ready?"}
-    OK -- Yes --> Continue["Continue clinic workflow"]
-    OK -- No --> Plan["Choose open, install, or manual plan"]
-    Plan --> Action["Operator follows the offered action"]
-    Action --> Pending["May require download, approval, logout, or restart"]
-    Pending --> Inspect
-```
-
-### Provisioning by platform
-
-**macOS Docker**
-
-The engine supplied on macOS and Windows is
-[Rancher Desktop](https://rancherdesktop.io/) (Apache-2.0), not Docker Desktop:
-Docker Desktop requires a paid subscription for organizations above its size
-threshold, and that threshold applies to the clinic running the installation.
-Rancher Desktop ships dockerd (moby) and the same `docker` CLI and Compose v2
-plugin, so nothing in `internal/clinic` or `internal/compose` changes. Docker
-Desktop may be installed alongside it for unrelated reasons, so the app never
-lets the CLI pick the engine: every command runs
-with `DOCKER_HOST` pinned to Rancher Desktop's socket or named pipe (see
-[Clinic lifecycle](clinic-lifecycle.md#3-one-subprocess-environment-for-the-clinic)). `DockerCheck` reports "not
-installed" rather than "not running" when the Rancher Desktop application is
-absent, even if some other `docker` binary is on PATH.
-
-The Rancher Desktop version is pinned, never resolved at install time: see
-[Pinned prerequisite downloads](#pinned-prerequisite-downloads). The downloader
-fetches `.../releases/download/v<RANCHER_VERSION>/Rancher.Desktop-<version>.aarch64.dmg`
-for an arm64 build, or the `x86_64` asset for an amd64 build, and verifies it
-against `RANCHER_MACOS_ARM64_SHA256` or `RANCHER_MACOS_X86_64_SHA256`. It requests administrator
-approval to attach the image on a temporary mount point it owns, replace
-`/Applications/Rancher Desktop.app`, and detach.
-
-The shell sequence is joined with `&&`. On failure it also attempts an ordinary
-detach so the image is not intentionally left mounted. Downloaded media is
-removed on return. It then launches Rancher Desktop with
-`open -a "/Applications/Rancher Desktop.app"` and waits for readiness.
-
-**Windows Docker**
-
-WSL 2 is checked and installed as its own prerequisite in
-[wsl.go](../app/internal/prereq/wsl.go), not as part of installing Docker. It is
-a different dependency with a different remedy — Windows may need a restart
-before it takes effect — and folding it into the Docker step hid that behind a
-button labelled "Install Rancher Desktop". The wizard therefore shows it as its
-own row, on Windows only, in the same way the network-profile repair does.
-
-### WSL 2 is two separate things, and both have to be on
-
-The "Windows Subsystem for Linux" app package and the `VirtualMachinePlatform`
-optional feature are installed independently, and they can disagree. The app
-package answers `wsl --status`; the feature carries the Hyper-V socket transport
-the virtual machine is reached through. `wsl --install --no-distribution` does
-not reliably turn the feature on, and `wsl --status` answers `0` regardless.
-
-A machine in that split state is the worst case, because every cheap signal says
-it is healthy: `wsl --status` succeeds, `wsl --version` prints, and a
-distribution will even boot and run commands, since Hyper-V alone is enough to
-start the VM. Only traffic to it fails. Rancher Desktop installs, `dockerd`
-starts *inside* the VM, and then `docker-proxy` loops on
-`error accept()ing connection: bad file descriptor` while the Windows side
-reports `timed out dialing Hyper-V socket`, forever.
-
-`wslReady` therefore requires both, and `wslAnswers` alone is never treated as
-readiness. The feature is read through the `Win32_OptionalFeature` CIM class,
-whose `InstallState` is `1` when enabled. That class is readable **without
-elevation**, unlike `Get-WindowsOptionalFeature` and `dism`, which is what makes
-the check possible on a path that has no administrator rights.
-
-Two details keep that probe honest:
-
-- It costs roughly a second and a half, far too much for every re-check, so a
-  positive result is cached for the life of the process. The feature cannot be
-  switched off again without administrator rights, so a cached *yes* cannot go
-  stale underneath the app. A negative result is never cached, so the row clears
-  as soon as the operator fixes it, and `InstallWSL` resets the cache after it
-  runs so the next probe is honest.
-- A probe that *fails* reports the feature as present. An inconclusive query must
-  not turn a working machine red and block setup; the failure that matters is a
-  definite `InstallState` that is not `1`.
-
-`InstallWSL` enables the feature explicitly with an elevated
-`dism /online /enable-feature /featurename:VirtualMachinePlatform /all
-/norestart` before installing the app package, rather than trusting
-`wsl --install` to do it. No distribution is requested because the clinic needs
-the WSL 2 platform, not a Linux userland of its own; Rancher Desktop registers
-its own distributions. It reports success only when both probes pass *and* no
-restart is pending; otherwise it returns the restart instruction as success
-rather than as an error. The restart itself is covered by
-[reboot](#reboot-detect-a-pending-windows-restart-not-its-exact-cause).
-
-Whether toggling the feature forces a restart varies by Windows build — it has
-been observed applying immediately with `RestartNeeded: False` — so the pending
-restart is checked rather than assumed. When WSL is not ready the row always
-carries its fix: a pending restart changes the wording only, because a stale
-restart flag left by an unrelated change must never remove the operator's only
-button.
-
-Skipping the prerequisite is what made a clean machine unrecoverable: winget
-resolves `Microsoft.WSL` as a dependency, but that package is an MSIX and cannot
-elevate itself from a non-elevated winget, so the winget route failed with
-`0x80073d28`, and the MSI fallback then downloaded roughly a gigabyte before
-failing its WSL 2 launch condition with the generic exit code 1603.
-
-The Docker row now defers to the WSL row rather than competing with it. While
-WSL is not ready `dockerInstallPlan` returns no action at all, so the wizard
-never offers a button whose only outcome is failure, and `DockerCheck` says so
-in words: "Rancher Desktop is not installed, and WSL 2 has to be on before it
-can be." `installDockerWindows` keeps the same guard as a backstop for a stale
-interface or a direct call, logging the refusal before returning it — an
-unlogged refusal is invisible when reading back what happened.
-
-With WSL 2 in place the app downloads the pinned
-`.../releases/download/v<RANCHER_VERSION>/Rancher.Desktop.Setup.<version>.msi`
-and verifies it against `RANCHER_WINDOWS_SHA256`. There is no winget fallback:
-winget installs whatever version its catalog currently lists, which would defeat
-the pin, and its dependency resolution stopped mattering once WSL became a
-prerequisite of its own. A failed download or checksum is reported as it is.
-There is no architecture-selection branch; the Windows build is amd64 only.
-
-The direct installer runs elevated as
-`msiexec /i <msi> /qn /norestart /l*v <log>`. A quiet install prints nothing, so
-without that log a refusal reaches the operator as a bare exit code;
-`msiFailureDetail` reads the log back and reports the installer's own
-explanation instead. It takes the first `Product: <name> -- <message>` line
-that is not a generic status such as `Installation failed.`, since the blocking
-condition is logged before the failure it causes, and strips NUL bytes so a
-UTF-16 log reads the same as an ANSI one. The log is removed afterwards.
-
-After either installation route, it launches Rancher Desktop and waits.
-`afterWindowsDockerInstall` does not itself edit group membership or inspect
-restart registry keys. It reports a start failure with advice that Windows may
-need a WSL 2 restart.
-
-Rancher Desktop executable lookup checks `%LOCALAPPDATA%\Programs`,
-`ProgramFiles`, `ProgramW6432`, and `C:\Program Files`, each with
-`Rancher Desktop\Rancher Desktop.exe`.
-
-### The Rancher Desktop deployment profile
-
-Source: [profile.go](../app/internal/prereq/profile.go).
-
-The profile carries a `version` field, pinned to `rancherProfileVersion = 18`,
-the schema version the format is documented against. Rancher Desktop migrates an
-older profile version forward, so this does not need to track every release.
-
-`writeRancherProfile` writes a *defaults* deployment profile so the operator
-never meets the first-run wizard and the clinic's requirements are already
-answered. Rancher Desktop treats a run as a first run only when it finds no
-profile at all, so a profile that sets anything suppresses the wizard; with one
-in place it also never offers, downloads, or starts Kubernetes. The profile is
-therefore written before installing, before every `startRancher`, and once when
-a server starts CARE Clinic, so it is in place even when the operator installed
-Rancher Desktop themselves rather than through CARE:
-
-| Setting | Why CARE needs it |
-| --- | --- |
-| `application.adminAccess: true` | Rancher Desktop only forwards host ports below 1024 with administrative access. Without it Caddy cannot take 80/443, every container still reports healthy, and `health.Wait` times out with no obvious cause. |
-| `containerEngine.name: moby` | Supplies dockerd and the `docker` CLI the engine calls. The containerd/nerdctl engine would fail every Compose command. |
-| `kubernetes.enabled: false` | k3s would consume roughly 1.5GB of RAM the clinic never uses. |
-| `application.autoStart: true` | Rancher Desktop starts at login, so the clinic comes back after a reboot without anyone opening it. |
-| `application.startInBackground: true` | Rancher Desktop starts without its window; the operator only ever sees CARE Clinic. |
-| `application.pathManagementStrategy: rcfiles` | Lets Rancher Desktop put `~/.rd/bin` on the shell PATH, matching what `AugmentedPath` already prepends. Ignored on Windows. |
-
-| Platform | Profile location |
-| --- | --- |
-| macOS | `~/Library/Preferences/io.rancherdesktop.profile.defaults.plist` |
-| Windows | `HKCU\Software\Rancher Desktop\Profile\Defaults` through `reg add` |
-| Linux | Not written; Linux uses its native Docker Engine. |
-
-Rancher Desktop looks for a registry profile under `SOFTWARE\Policies\Rancher
-Desktop` and then `SOFTWARE\Rancher Desktop\Profile`, reading `HKLM` before
-`HKCU` within each, and takes the first that holds anything. CARE writes the
-last of those four. Windows reserves `HKCU\Software\Policies` for
-administrators, so writing there fails with "Access is denied" for an ordinary
-operator, no profile lands, and Rancher Desktop opens its welcome dialog and
-downloads Kubernetes. `rancherProfileWritten` reads the `version` value back
-first, so a start that already has the profile does not shell out to `reg` six
-more times.
-
-Defaults are applied on first run only. An operator's later preference changes
-are kept, and an administrator's managed profile in `/Library/Managed
-Preferences` or `HKLM` still takes precedence over this user profile. Because of
-that, an installation that had already run would ignore the profile, so
-`applyRancherProfileNow` additionally attempts `rdctl set` for the same values
-(`rancherSettings`). It runs on every profile write - after installing, before
-each start, and once each time a server starts CARE Clinic - so existing
-installations pick up later additions. That attempt is
-best-effort: `rdctl` may be absent, or the values may be locked by an
-administrator. A profile write failure is logged as a warning and does not stop
-the installation. `rdctlPath` uses the copy inside the Rancher Desktop bundle,
-because a freshly installed `~/.rd/bin` is not yet on the PATH CARE inherits.
-
-`OpenDocker` starts Rancher Desktop with `rdctl start` and `rancherLaunchArgs`
-(`--no-modal-dialogs` plus `rancherSettings`), which opens no window, skips the
-first-run wizard, and applies the settings to an instance that is already
-running.
-
-A launcher may exit while Rancher keeps its stdout/stderr handles open. CARE
-uses `RunLauncher` for these commands, directing output to the OS null device
-instead of a pipe or an unbounded file. It waits for the launcher process and
-then proceeds to readiness checks without waiting for Rancher itself to exit.
-The inherited null-device handles stay valid even when CARE exits; closing an
-inherited pipe could otherwise break Rancher's later output. This deliberately
-discards launcher console output rather than adding a background log collector;
-Rancher's own Troubleshooting logs remain the source for startup details.
-Launcher commands have a separate
-two-minute timeout; nonzero exits and cancellation remain failures. This prevents
-an inherited log pipe from blocking the Docker-readiness timer indefinitely.
-
-A Rancher Desktop that has never run its Linux environment before regularly
-fails its first start with `Timed out after waiting for /run/wsl-init.pid` and
-succeeds when it is started again, so a failed `rdctl start` is followed by
-`rdctl shutdown`, a `rancherRestartPause` wait, and one more attempt. Only if
-that also fails does it launch the application directly, passing the same
-`rancherLaunchArgs` on the command line. Rancher Desktop parses those arguments
-itself whatever launched it, so the direct launch skips the wizard and keeps
-Kubernetes off just as `rdctl` does - and unlike the profile, command-line
-arguments also apply to an installation that already answered the wizard.
-
-An accepted launch request is not readiness: when the operator has just quit
-Rancher Desktop, the request can reach the old instance before it finishes
-shutting down. While waiting for Docker, CARE allows 15 seconds for Rancher's
-process to appear, then checks that it is still running. If it has exited, CARE
-launches it once more. If the second launch also exits or never appears, the
-operation fails with a retryable error rather than waiting out the full
-eight-minute Docker-readiness limit. A live Rancher process gets that full limit
-to finish starting; Linux Docker keeps its normal readiness checks without
-Rancher process monitoring.
-
-**Rancher Desktop administrator setup (macOS)**
-
-With `adminAccess`, Rancher Desktop needs root-owned pieces before it can forward
-ports 80 and 443. When any is missing it shows its own explanation dialog and a
-password prompt on every start, and under `--no-modal-dialogs` it silently turns
-admin access off for that run instead, leaving Caddy unreachable. CARE therefore
-creates them itself (`rancherRootSetup`), inside the same single password prompt
-that copies the app, and `ensureRancherRoot` repairs any that go missing before
-each `OpenDocker`:
-
-| Item | Why |
-| --- | --- |
-| `/opt/rancher-desktop` | A root-owned copy of the bundle's `lima/socket_vmnet` tree. Rancher compares it file by file. |
-| `/private/etc/sudoers.d/zzzzz-rancher-desktop-lima` | Lets Rancher run `socket_vmnet` without a password. `rancherSudoers` reproduces Rancher Desktop 1.24's `sudoersFile` layout, with one bridged entry per interface from `system_profiler SPNetworkDataType`, and it is checked with `visudo -cf` before install. Rancher compares the text exactly, so if a later Rancher release changes the layout, Rancher asks for the password itself again and `TestRancherSudoersMatchesRancherLayout` is the place to update. A new network adapter also changes the text; CARE rewrites it on the next start. |
-| `/var/run/docker.sock` → `~/.rd/docker.sock` | macOS empties `/var/run` at every boot. Without the link Rancher asks for the password after each reboot. |
-| `/Library/LaunchDaemons/org.ohcnetwork.care-clinic.docker-socket.plist` | Recreates that link at boot, before Rancher starts at login. It is left in place on uninstall, since it serves Rancher Desktop rather than the clinic. |
-| Stale `/private/var/run/socket_vmnet.*` sockets and pidfiles | Deleted, not created. A socket left by a stopped daemon lets Lima dial it before the new daemon listens, and the VM fails with `connection refused`. Only files whose pidfile names no running process are removed; see [Stale Rancher network sockets](cleanup-and-uninstall.md#stale-rancher-network-sockets-macos). |
-
-**Linux Docker**
-
-Linux runs Docker Engine natively; Rancher Desktop is never used there. So that
-every distribution gets the same, pinned engine, the app installs Docker's
-official static binaries rather than distribution packages, in
-[linux_docker.go](../app/internal/prereq/linux_docker.go):
-
-1. Download `docker-<DOCKER_LINUX_VERSION>.tgz` from
-   `download.docker.com/linux/static/stable/<arch>/` and
-   `docker-compose-linux-<arch>` from the `docker/compose` GitHub release, and
-   verify both against the pinned SHA-256 for the machine's architecture
-   (`x86_64` or `aarch64`).
-2. In one `pkexec` shell: install `iptables` with the package manager if it is
-   missing (dockerd needs it), extract the archive, copy its binaries to
-   `/usr/local/bin`, copy Compose to
-   `/usr/local/lib/docker/cli-plugins/docker-compose`, write
-   `/etc/systemd/system/docker.service`, `groupadd -f docker`,
-   `usermod -aG docker <user>`, `systemctl daemon-reload`, and
-   `systemctl enable --now docker`. A `trap` removes the root-owned extraction
-   directory whatever the outcome.
-
-The unit runs `/usr/local/bin/dockerd`, which starts and manages its own
-containerd, so no separate containerd service is installed. dockerd gives
-`/var/run/docker.sock` to the `docker` group because that group exists. Adding the
-user to it grants substantial host control through Docker, not merely a cosmetic
-login preference.
-
-If a Docker daemon is already answering and only Compose is missing, the app
-installs just the pinned Compose plugin and leaves the existing engine, including
-a distribution-packaged one, alone.
-
-Static binaries are not updated by the distribution. The engine a clinic runs
-changes only when a CARE release bumps `DOCKER_LINUX_VERSION`, so a Docker
-security fix reaches clinics through a CARE release.
-
-It waits up to the nominal 30-second Linux post-install limit. A newly added
-group may not apply to the current desktop process until logout/login. An error
-at this stage can mean Docker is installed but not usable by this session, not
-that every installation step was rolled back.
-
-**Git**
-
-- macOS launches `xcode-select --install` and returns instructions to finish the
-  separate system dialog. It does not use Homebrew or wait for all tools to
-  finish installing.
-- Windows downloads the pinned Git for Windows installer (`GIT_WINDOWS_VERSION`),
-  verifies it against `GIT_WINDOWS_SHA256`, and runs it elevated with
-  `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP-`, which keeps Git's
-  default of adding `Git\cmd` to PATH. The app itself finds it through
-  `proc.AugmentedPath`, which already lists `C:\Program Files\Git\cmd`.
-- Linux installs `git` with the selected package manager under elevation.
-
-Manual information URLs come from `dockerHelpURL()`: `https://rancherdesktop.io/`
-on macOS and Windows, `https://docs.docker.com/engine/install/` on Linux. Git
-uses `https://git-scm.com/downloads`.
-
-### Waiting, downloads, and side effects
-
-`OpenDocker` launches Rancher Desktop on macOS/Windows. On Linux it elevates
-`systemctl start docker`. It then uses `dockerReadyTimeout = 8 * time.Minute`,
-checking full `DockerCheck` readiness and sleeping three seconds between
-unsuccessful checks. Poll deadlines are checked between probes; they are not
-hard cancellation deadlines for the whole operation.
-
-That budget is generous because the first start after an install is the slow
-one: Rancher Desktop has to provision its distributions before the engine
-answers, and a healthy first run has been measured at around four and a half
-minutes. The earlier three-minute budget expired while a perfectly good install
-was still starting, so the wizard reported a failure for something that then
-succeeded on its own a minute later. Running out of time is therefore worded as
-"taking longer than usual… it may still be starting", not as a failure, because
-the check cannot tell a slow start from a broken one.
-
-The HTTP downloader uses a cloned default Go HTTP transport, ordinary TLS
-verification, and:
-
-- `downloadHeaderTimeout = 30 * time.Second` for response headers.
-- `downloadStallTimeout = 2 * time.Minute` to cancel when progress stops.
-- No overall `http.Client.Timeout` cap for a long but progressing download.
-- A stall timer reset whenever a body read returns positive bytes.
-- Progress logs at crossed 10-percent steps when content length is known.
-- Structured `prereq-download-progress` events carry filename, phase, downloaded
-  bytes and total bytes. Byte updates are throttled to roughly five per second,
-  including downloads with unknown length; terminal events report the final count.
-- HTTP 200 as the required response; other status codes are errors.
-
-The UI shows a progress bar, percentage and downloaded/total size. Unknown
-totals use an indeterminate indicator and downloaded bytes rather than a made-up
-percentage. Connecting, downloading, checksum verification and verified download
-are distinct states; download completion is not reported as installation success.
-
-DNS failures, connection resets, truncated responses and download timeouts are
-identified natively as connection interruptions, retaining the underlying error
-in the log. The setup wizard and panel repair screen show **The download was
-interrupted** and ask the operator to check the internet connection and retry.
-The download-size preview gives the same reconnect guidance without claiming
-that an installer has been downloaded. Checksum, certificate, disk and installer
-permission failures are not classified as lost connections.
-
-Every download is hashed while it is written. A SHA-256 that differs from the
-pinned value deletes the file and fails the install before anything runs, with
-both hashes in the error. Successful downloads return a temporary path whose
-caller must remove after use. Copy/read and file-close failures remove the
-incomplete download before returning an error. There is no persistent installer
-cache. Trying again downloads the installer from the beginning; it does not
-clear clinic settings, backups or recovery files.
-
-### Pinned prerequisite downloads
-
-Installers the app downloads from the internet are pinned in
-[`deployments/.env`](../deployments/.env), which is embedded in the app:
-
-| Key | Download |
-| --- | --- |
-| `RANCHER_VERSION` | Rancher Desktop release from `github.com/rancher-sandbox/rancher-desktop`. |
-| `RANCHER_MACOS_ARM64_SHA256` | `Rancher.Desktop-<version>.aarch64.dmg` |
-| `RANCHER_MACOS_X86_64_SHA256` | `Rancher.Desktop-<version>.x86_64.dmg` |
-| `RANCHER_WINDOWS_SHA256` | `Rancher.Desktop.Setup.<version>.msi` |
-| `GIT_WINDOWS_VERSION` | Git for Windows tag without the `v`, e.g. `2.55.0.windows.5`, from `github.com/git-for-windows/git`. |
-| `GIT_WINDOWS_SHA256` | `Git-<X.Y.Z>[.<N>]-64-bit.exe`; the `.<N>` is omitted for `.windows.1`. |
-| `DOCKER_LINUX_VERSION` | Docker Engine static release from `download.docker.com/linux/static/stable/`. |
-| `DOCKER_LINUX_X86_64_SHA256`, `DOCKER_LINUX_AARCH64_SHA256` | `<arch>/docker-<version>.tgz` |
-| `COMPOSE_LINUX_VERSION` | Docker Compose release from `github.com/docker/compose`, without the `v`. |
-| `COMPOSE_LINUX_X86_64_SHA256`, `COMPOSE_LINUX_AARCH64_SHA256` | `docker-compose-linux-<arch>` |
-
-URLs are derived from these values in
-[`downloads.go`](../app/internal/prereq/downloads.go). The installers are
-linked from upstream, never re-hosted, so CARE does not redistribute them.
-Everything else stays with the operating system: macOS Git comes from Apple's
-`xcode-select`, Linux Git from the distribution's package manager (Git
-publishes no Linux binaries), and WSL 2 from `wsl --install`.
-
-The release workflow's `prerequisites` job downloads every pinned installer and
-fails the release if any URL is gone or any SHA-256 differs. A test runs that
-job's script against a stubbed `fetch` and checks it verifies exactly the URLs
-the app would download. See the [release runbook](releases.md#bump-a-pinned-prerequisite)
-for bumping a version.
-
-Readiness checks do not download tools or request elevation. Installation
-normally needs internet access to vendor/package sources, and may need native
-approval, additional OS components, login renewal, or restart. Opening an
-already-installed tool is different from downloading one. These helpers do not
-establish whether subsequent clinic image pulls, repository clones, or external
-services are reachable; see [Clinic lifecycle](clinic-lifecycle.md).
-
-## Disk space and storage monitoring
-
-Sources: [diskspace](../app/internal/sys/diskspace/diskspace.go),
-[storage](../app/internal/storage/storage.go), and
-[app_storage.go](../app/app_storage.go).
-
-`diskspace.Of(path)` walks up to the nearest folder that exists, then reads the
-space available to this user (`statfs` on macOS/Linux, `GetDiskFreeSpaceEx` on
-Windows) and a volume id (device number, or the volume mount path on Windows).
-The volume id is how two folders are recognised as the same drive.
-
-### Which drives are measured
-
-| Drive | Path | Why |
-| --- | --- | --- |
-| Clinic data (labelled "This computer's drive" on macOS and Windows) | `storage.DockerDataDir()`: `~/Library/Application Support/rancher-desktop/lima` on macOS, `%LOCALAPPDATA%\rancher-desktop` on Windows, on Linux whatever `docker info --format '{{.DockerRootDir}}'` reports (so a moved `data-root` or rootless Docker is measured on the right disk), falling back to `/var/lib/docker` when Docker doesn't answer within 5 seconds. | Images and the Postgres/MinIO volumes live here. On macOS and Windows that is inside Rancher Desktop's VM disk file, so this row answers whether the host drive has room for that file to grow, and the Rancher Desktop disk row answers how full the VM disk is. The install folder only holds a few MB of compose files. |
-| Rancher Desktop disk | `docker compose exec -T backup df -Pk /` (macOS/Windows, only while the clinic answers). | The VM disk has its own ceiling (Lima defaults to 100 GB), so the host can have room while the VM is full. |
-| Backups | The configured backup folder. | See [backup space](backups-and-restore.md#space-checks-and-the-status-file). |
-
-### Thresholds
-
-| When | Rule | Effect |
-| --- | --- | --- |
-| Setup, "Free disk space" row | Clinic data drive has at least 30 GB; the install folder's drive, if different, at least 1 GB. | Blocks Continue, like every other row. |
-| After setup, the same row in "See what's wrong" | Clinic data drive has at least 5 GB. | Red row naming the drive. |
-| Background monitor | Below 10 GB is `low`, below 5 GB is `critical`, for each drive. | `low` shows amber on the Overview storage card; `critical` shows the red panel banner and a system notification. |
-
-If a drive cannot be measured the setup row passes with a note rather than
-blocking on an unknown.
-
-### The background monitor
-
-`watchStorage` runs for the server role: first check 20 seconds after launch,
-then every 5 minutes, stopping with the mDNS watcher on shutdown. Each check
-builds a `storage.Report` (drives, backup space, the sidecar's last run, newest
-backup time), caches it for `StorageStatus()`, and emits `care-storage`. The UI
-never polls; it reads the cached report on panel boot, listens for the event,
-and calls `RecheckStorage()` after every panel action and the "Check now"
-button.
-
-### Freeing space
-
-"Free up space" sits on the row whose `Drive.Cleanable` is set: the Rancher
-Desktop disk on macOS and Windows, and Clinic data on Linux, where Docker has no
-VM and the clinic's data is on the host's own drive. Both need the clinic to be
-answering. It runs the `free-space` action,
-`Clinic.FreeSpace()`. It only removes things Docker can rebuild or pull again:
-
-1. `docker image prune -f`, for untagged images left by rebuilds.
-2. `docker image rm` for every tag in a repository CARE pins (from `.env`) that
-   is not the current pin or its `-next` stage, such as a Postgres or MinIO tag
-   from an earlier release. `staleImages` does the matching, and repositories
-   CARE does not pin are never touched. Without `-f`, Docker refuses to remove
-   an image that any container still uses, so another project's container
-   keeps its image. The log reports it as kept.
-3. `docker builder prune -f`, which clears the whole build cache, including any
-   other project's. The next CARE rebuild is slower but gives the same result.
-
-Volumes, containers and backups are left alone. Step failures are logged rather
-than failing the action. When the backup container answers before and after,
-the log reports how much the VM disk gained. Log rotation is in the compose
-file (see [clinic lifecycle](clinic-lifecycle.md#7-deployment-inventory-and-dependency-graph)),
-so logs never need clearing here.
-
-A system notification is sent once per distinct critical headline, and re-armed
-when the level drops back below critical. Notifications are best-effort: when
-the OS refuses authorization or the build has no bundle identity, only the
-in-app banner appears.
-
-The monitor only runs while the app is open. The backup script's own space
-check and status file cover the hours the app is closed.
-
-## Health and port checks
-
-Source: [health.go](../app/internal/health/health.go). The Caddy contract includes
-a dedicated `localhost:443` block proxying `/ping/*` to `backend:9000`, separate
-from the clinic hostname's browser site.
-
-### What each check establishes
-
-| Check | Target and verification | What success does not establish |
-| --- | --- | --- |
-| `health.Ping` | GET `https://localhost/ping/`, three-second client timeout, **TLS certificate verification disabled**, HTTP status 200 required. | Trusted certificate, correct CA identity, hosts/mDNS, remote reachability, or full clinical functionality. |
-| `trust.HostTrusts(host)` | TLS to `127.0.0.1:443`, verification enabled with the clinic hostname as `ServerName`. | DNS resolution, HTTP application health, or trust in every browser/device. |
-| `hosts.HasEntry(host)` | Parse this computer's hosts file for a consistent loopback mapping. | Multicast advertisement or resolution from any other computer. |
-| `Advertiser.Resolves` | Bounded direct hostname queries on every selected IPv4 interface. | Remote multicast delivery, a client's WiFi path, HTTPS, or trust. |
-| `netfix.Check` | Windows profile and selected effective firewall-rule properties. | Absence of other blocks, router/client isolation, or actual remote packet delivery. |
-| `DockerCheck` | Responding configured daemon, acceptable container OS, and usable Compose command. | A started or healthy CARE stack. |
-
-`Health` has `Active`, `Code`, and `Detail` fields. A request error returns
-inactive/code 0 with "nothing answering on :443". A non-200 response returns
-inactive with the received HTTP status. The response body is closed but not
-validated for an application-specific marker.
-
-Using localhost and skipping certificate verification is intentional for this
-**local readiness probe**: startup should not appear dead merely because name
-advertising or root installation is pending. It is not a pattern to copy into
-authenticated remote requests or the verified trust check. An HTTP 200 alone
-also does not authenticate that the responding process is the expected clinic.
-
-`Wait(log, timeout)` repeatedly calls `Ping`, logs unsuccessful attempts, and
-sleeps three seconds. It returns an error including the last detail after the
-deadline is exceeded. The deadline is tested after probes, so the actual elapsed
-time can exceed the nominal timeout by probe/sleep time. This is an operation
-error, not a call to the fatal logger.
-
-### Refusing an obvious port conflict
-
-`EnsurePortFree(run, host)` avoids starting the clinic on top of an existing
-listener:
-
-1. It first asks the configured Compose project for running service names. If
-   `caddy` is listed, it treats the listeners as the clinic's own and skips
-   conflict probes.
-2. Otherwise it attempts TCP connections to `127.0.0.1:80` and
-   `127.0.0.1:443`, each with a 700-millisecond timeout.
-3. A successful connection means that port is busy. It returns an actionable
-   error naming the port and, when available, its process.
-4. On macOS/Linux it tries `lsof` for a listener command name. Windows has no
-   implemented occupant-name branch, and missing `lsof` simply omits the name.
-
-Connecting instead of binding avoids asking a non-root GUI to bind a privileged
-port just to inspect it. It is still a preflight heuristic: it does not reserve
-ports, prevent a later race, find every LAN-only/IPv6-only listener, or prove the
-running Compose `caddy` owns every relevant socket. Connection failure is treated
-as not busy. The Compose capture and `lsof` calls do not gain the TCP probe's
-700-millisecond timeout.
-
-## Login startup and restart detection
-
-### autostart: own one per-user launch registration
-
-Source: [autostart.go](../app/internal/sys/autostart/autostart.go).
-
-Autostart registers the current executable with `--autostart`. It starts the
-native desktop application, not a new clinical web frontend, a Docker daemon
-configuration, or a system-wide CARE service.
-
-Login startup is on by default: when server setup finishes successfully, the
-application enables it before emitting `setup-done`. A failure there is logged
-and does not fail setup. The user can turn it off from the Overview tab, and
-that choice is not overridden later because setup only completes once.
-
-| Platform | Owned registration | Enabled/disabled behavior |
-| --- | --- | --- |
-| macOS | `~/Library/LaunchAgents/ohc.care-clinic.plist` with label `ohc.care-clinic` | Writes `ProgramArguments` for the current executable and `--autostart`, with `RunAtLoad`. Disabling removes the file. There is no `launchctl` load/unload or `KeepAlive` operation here. |
-| Windows | Value `CARE Clinic` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Uses `reg add` with a quoted executable path and `--autostart`; disabling uses `reg delete`. It does not delete the whole Run key. |
-| Linux | `~/.config/autostart/care-clinic.desktop` | Writes a desktop entry with a quoted executable path, `--autostart`, and `X-GNOME-Autostart-enabled=true`; disabling removes the file. This path does not honor `XDG_CONFIG_HOME`. |
-
-The Unix registration directories are created with `0755` and files with `0644`.
-Writes are not atomic. `Set` obtains `os.Executable` before dispatching even for
-disable operations and returns relevant write/command errors. Moving the
-executable later does not automatically rewrite the recorded path.
-
-`Enabled` only checks file existence or whether `reg query` succeeds. It does not
-parse a registration, validate its executable path, prove it has been loaded, or
-verify a successful login launch. Its false result can include inspection
-failure. Unix removal treats any initial stat error as already absent; Windows
-can return an error when deleting a nonexistent value. These APIs are not as
-strict as the explicit hosts/trust/firewall residue inspectors.
-
-The second-instance boundary matters. [main.go](../app/main.go) configures
-Wails' single-instance lock; [app_lifecycle.go](../app/app_lifecycle.go) responds
-to a second launch by unminimizing/showing the existing application when its
-context exists. It does not inspect that launch's arguments. An autostart launch
-while CARE Clinic is already running can therefore reveal the existing
-window rather than start another independent backend. The bridge's
-`WasAutostartLaunched` reports the original process arguments, not a replacement
-set from that second launch. Detailed window/start behavior belongs to
-[The Wails application](wails-application.md).
-
-### reboot: detect a pending Windows restart, not its exact cause
-
-Source: [reboot.go](../app/internal/sys/reboot/reboot.go).
-
-`Check` returns a `Plan` containing `Needed`, `Title`, `Detail`, and `Label`. On
-Windows it probes these registry keys with `reg query`:
-
-```text
-HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending
-HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired
-```
-
-Either successful query produces a restart plan. The message is framed around
-finishing Docker/WSL 2 setup, but the keys are general Windows servicing/update
-indicators. They do not prove that Docker caused the restart requirement.
-Query failures are treated as no positive signal; there is no separate
-inspection-error status or exhaustive restart detection.
-
-`Now` is implemented only on Windows. It invokes `shutdown /r /t 5` with a CARE
-setup explanation, scheduling an actual machine restart after five seconds.
-It returns the command result, not proof that the restart finished. Other
-platforms return an unsupported error.
-
-The application bridge attempts to enable CARE login startup before requesting
-a restart and logs a warning if that fails; see
-[app_status.go](../app/app_status.go). `reboot` itself does not persist restart
-continuation or create an autostart registration. The plan's promise to reopen
-must be understood alongside that possible registration failure.
+## Computer checks and the service install
+
+Server onboarding replaces the old Docker, Git and WSL prerequisites with
+[`hostcheck`](../app/internal/hostcheck/hostcheck.go) (virtualization, memory,
+disk and service) and a one-prompt service install through
+[`service/install`](../app/internal/service/install). Both are described in
+[server onboarding](onboarding.md#1-computer-checks).
+
+Prerequisite installers, storage monitoring, the health page, login startup
+and restart detection were removed in v2. The service starts at boot, so there
+is no login item. Removed checks return later via engine agent ops.
 
 ## Error handling and ownership rules
 
@@ -2051,8 +1370,8 @@ must be understood alongside that possible registration failure.
 
 | Situation | Contract to preserve |
 | --- | --- |
-| Tool readiness is false | Return actionable status and a plan; do not treat a failed probe as an installed-and-ready tool. |
-| Installer returned an error after changing the machine | Report the error and recheck. Installation, service startup, group membership, and restart readiness are not one rollback transaction. |
+| A computer check fails | Return the check with its detail (and action); do not treat a failed probe as ready. |
+| Service install returned an error after changing the machine | Report the error and recheck. Copying, group membership and `launchctl bootstrap` are not one rollback transaction. |
 | Server root unavailable | Local trust setup can remain pending; server startup is not automatically fatal. Retry starting CARE or ask an administrator. |
 | Local hosts/trust approval declined | Log skipped optional setup. Do not claim both checks passed, and do not claim remote devices were configured. |
 | Privileged command succeeded | Inspect the requested outcome. This is mandatory for local setup and Windows network repair. |
@@ -2061,12 +1380,10 @@ must be understood alongside that possible registration failure.
 | mDNS probe failed | Report name advertising unconfirmed and let the application retry; do not substitute a hosts lookup. |
 | Atomic replacement returned an error | Handle it, but allow that the replacement may already have occurred before directory-sync failure. |
 | Ordinary log open/write failed | File logging degrades silently; opening the log location has its own bridge error. Logging success is not part of operation success. |
-| Health wait timed out or a busy port was found | Return an operation error with context; this is not a process-fatal logging call. |
 
 `bool` APIs have different conservatism. `hosts.Present`, `trust.Present`, and
-`netfix.RulesPresent` count inspection errors as possible residue. In contrast,
-`autostart.Enabled` and reboot detection can return false on inspection failures,
-and `IPsChanged` returns false on an address-enumeration error. Do not generalize
+`netfix.RulesPresent` count inspection errors as possible leftovers. In
+contrast, `IPsChanged` returns false on an address-enumeration error. Do not generalize
 one package's boolean into another's guarantee.
 
 ### Artifact ownership and lifetime
@@ -2079,14 +1396,12 @@ one package's boolean into another's guarantee.
 | Hosts marker `# care-clinic` | CARE-managed hosts lines across clinic names; preserve unmarked lines. |
 | Root Common Name and known anchors | CARE trust integration on this computer; do not infer that browser-specific or remote trust is gone. |
 | Temporary root PEM | The extraction/preparation operation; preserve it until its consumer has finished, then attempt removal. |
-| mDNS responder | Application lifetime; renew after detected address changes/probe failures and stop on shutdown. |
+| mDNS responder | Service lifetime; renew after detected address changes/probe failures and stop on shutdown. |
 | `CARE Clinic ` firewall prefix | CARE-owned rule namespace. Repair exact current names; removal can sweep the prefix. |
 | Windows network category | Shared profile state, not an owned rule; no previous-category rollback is recorded. |
-| Autostart plist/value/desktop file | One per-user CARE registration; removing it is not the same as stopping a running application. |
-| Downloaded installer | Provisioning operation; remove media after use without confusing it with the installed tool. |
+| Service LaunchDaemon, binary and `care-clinic` group | Installed by `InstallService`; removed only by `scripts/service-macos.sh uninstall`, which keeps the group. |
 
-For broad cleanup sequencing, retained volumes, backups, and manual residue
-reporting, use [Cleanup and uninstall](cleanup-and-uninstall.md) rather than
+For broad cleanup sequencing and retained data, use [Cleanup and uninstall](cleanup-and-uninstall.md) rather than
 calling native removal helpers ad hoc. Native operations can be partial and
 often affect shared machine state; a setup helper is not a safe test fixture for
 the real host.
@@ -2136,29 +1451,25 @@ For the rest of the repository, use [Repository map](repository-map.md).
 | [sys/mdns/hostname_network_test.go](../app/internal/sys/mdns/hostname_network_test.go) | Opt-in live multicast and legacy hostname checks using a temporary name. |
 | [sys/netfix/netfix.go](../app/internal/sys/netfix/netfix.go) | Windows profile/rule readiness, scoped repair, verified prefix-owned removal, and non-Windows no-op entry points. |
 | [sys/netfix/netfix_test.go](../app/internal/sys/netfix/netfix_test.go) | Profile/rule validation, malformed/failed reads, repair-script scope, residue counts, and verified removal via string assertions and POSIX command fixtures. |
-| [sys/autostart/autostart.go](../app/internal/sys/autostart/autostart.go) | Per-user login registration presence and writes/removal for plist, registry Run value, and desktop entry. |
-| [sys/reboot/reboot.go](../app/internal/sys/reboot/reboot.go) | Windows pending-restart key probes, explanatory plan, and delayed restart command. |
 
 ### Readiness and clinic-side integration
 
 | Source file | Role |
 | --- | --- |
-| [prereq/check.go](../app/internal/prereq/check.go) | Five-second Docker/Git readiness probes, container-mode/Compose checks, and operator advice. |
-| [prereq/provision.go](../app/internal/prereq/provision.go) | Tool plans, platform installers/openers, Docker waits, vendor downloads, and stall/progress handling. |
-| [prereq/provision_test.go](../app/internal/prereq/provision_test.go) | POSIX Docker-command fixture verifies environment preservation and bounded up/down/hung daemon probing; skipped on Windows. |
-| [health/health.go](../app/internal/health/health.go) | Local insecure HTTPS readiness, wait loop, Compose-aware port preflight, and optional listener naming. |
+| [hostcheck/hostcheck.go](../app/internal/hostcheck/hostcheck.go) | Onboarding computer checks: virtualization, memory, disk and service. |
+| [service/install/install.go](../app/internal/service/install/install.go) | One-prompt LaunchDaemon install of the bundled service binary. |
+| [service/advertise/advertise.go](../app/internal/service/advertise/advertise.go) | The service's mDNS watcher: settle period, two sightings, renewal. |
 | [clinic/thiscomputer.go](../app/internal/clinic/thiscomputer.go) | Assemble optional hosts/trust work, confirm once, elevate, verify final local usability, and report partial setup. |
 | [clinic/thiscomputer_test.go](../app/internal/clinic/thiscomputer_test.go) | Pure result-message tests require both hosts and trust, cover errors and verified state despite command failure, and prevent false success. |
-| [clinic/caddyroot.go](../app/internal/clinic/caddyroot.go) | Best-effort public root extraction from running Caddy through exec/copy fallback. |
+| [clinic/caddyroot.go](../app/internal/clinic/caddyroot.go) | Best-effort public root download from Caddy over the forwarded port. |
 
 ## Verification boundaries and historical differences
 
 The included tests cover important error and ownership decisions, but many use
 injected queries, generated command strings, redirected filesystem fixtures, or
 fake executables. They are not evidence of real UAC, macOS keychain, LAN
-multicast, Rancher Desktop installation, or distribution-wide browser support.
-This scope has no separate test files for `applog`, `autostart`, `reboot`,
-`health` or root extraction. The documentation work does
+multicast, a real LaunchDaemon install, or distribution-wide browser support.
+This scope has no separate test files for `applog` or root extraction. The documentation work does
 not require running installers, native removal scripts, or broad test suites.
 
 When comparing the implementation with older design notes, retain these
@@ -2180,8 +1491,7 @@ corrections:
 7. Linux trust cleanup checks generated bundles as well as anchor files;
    downloadable browser imports use a readable anchor and do not hide attempted
    NSS import failures.
-8. `applog.Header` does not itself print release pins, and Windows
-   post-install provisioning does not itself perform the reboot-key detection.
+8. `applog.Header` does not itself print release pins.
 
 For release/platform prerequisites and available developer validation commands,
 continue with [Development and release](development-and-release.md).

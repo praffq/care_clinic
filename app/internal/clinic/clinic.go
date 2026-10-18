@@ -7,6 +7,7 @@ package clinic
 import (
 	"context"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/proc"
 )
@@ -25,7 +26,10 @@ type Clinic struct {
 	// Stack drives the CARE stack in the engine VM through the service.
 	Stack       *stack.Runtime
 	StackImages []stack.Image
+	// Progress receives the setup steps (Step* constants).
+	Progress progress.Func
 
+	configured        bool
 	localSetupOffered bool
 	ctx               context.Context
 }

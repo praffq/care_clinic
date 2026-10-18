@@ -13,20 +13,11 @@ inventories remain in the linked guides.
 care_desktop/
 |-- README.md
 |-- docs/
-|   |-- README.md
-|   |-- desktop-workflows.md
-|   |-- architecture.md
-|   |-- repository-map.md
-|   |-- wails-application.md
-|   |-- configuration-and-settings.md
-|   |-- plugins.md
-|   |-- clinic-lifecycle.md
-|   |-- backups-and-restore.md
-|   |-- cleanup-and-uninstall.md
-|   |-- native-integrations.md
-|   |-- development-and-release.md
-|   |-- releases.md
-|   `-- onboarding.md
+|-- scripts/
+|   |-- bundle-macos.sh
+|   |-- service-macos.sh
+|   `-- dev-images.sh
+|-- engine/                  # engine VM image build (see engine/README.md)
 |-- app/
 |   |-- main.go and app_*.go
 |   |-- password.go
@@ -35,6 +26,11 @@ care_desktop/
 |   |-- wails.json
 |   |-- .golangci.yml
 |   |-- build/
+|   |-- cmd/
+|   |   |-- care-clinic-service/   # root host service and `ctl`
+|   |   |-- care-engine-agent/     # agent inside the engine VM
+|   |   |-- release/               # feed/versions tooling
+|   |   `-- vzboot/                # developer VM boot tool
 |   |-- frontend/
 |   |-- install/
 |   `-- internal/
@@ -44,9 +40,9 @@ care_desktop/
 |   |-- frontend.env
 |   |-- docker-compose.yml
 |   |-- Caddyfile
-|   |-- backup.Dockerfile
 |   |-- caddy.Dockerfile
-|   |-- scripts/backup.sh
+|   |-- backup.Dockerfile      # not uploaded in v2
+|   |-- scripts/backup.sh      # not uploaded in v2
 |   |-- minio/entrypoint.sh
 |   `-- setup/index.html
 `-- .github/
@@ -55,7 +51,10 @@ care_desktop/
         `-- release.yml
 ```
 
-`deployments/` is versioned kit source. `app/install/` is generated build staging. The clinic computer's installed kit is a third location selected by the application, not either of those checkout directories. [Facility setup](onboarding.md) and its curated datasets live in the separate `ohcnetwork/care_onboarding_fe` plugin repository.
+`deployments/` is versioned kit source. `app/install/` is generated build
+staging. The clinic computer's install folder is a third location selected by
+the application, and the engine's config area inside the VM is a fourth. See
+[clinic lifecycle](clinic-lifecycle.md#2-three-copies-of-the-deployment-kit).
 
 ## Application boundary: `app/*.go`
 
@@ -64,46 +63,35 @@ All of these files belong to Go `package main`, even though they are organized b
 | Source | Responsibility | Main guide |
 | --- | --- | --- |
 | [`main.go`](../app/main.go) | Embedded filesystems, log initialization, `wails.Run`, callbacks/binding, fatal startup handling. | [Wails application](wails-application.md). |
-| [`app.go`](../app/app.go) | `App` state, construction, log/event delivery, mDNS advertiser ownership and watcher. | [Architecture](architecture.md), [Wails application](wails-application.md). |
-| [`app_lifecycle.go`](../app/app_lifecycle.go) | Startup refresh, shutdown, second launch, close confirmation, bounded stop-for-quit. | [Wails application](wails-application.md). |
+| [`app.go`](../app/app.go) | `App` state, construction, log/event delivery and error reporting. | [Architecture](architecture.md), [Wails application](wails-application.md). |
+| [`app_lifecycle.go`](../app/app_lifecycle.go) | Startup (kit refresh, service watch), shutdown, second launch, close confirmation. | [Wails application](wails-application.md). |
 | [`app_confirmation.go`](../app/app_confirmation.go) | ID-scoped permission requests, independent response channel, native fallback and shutdown cancellation. | [Confirmation protocol](wails-application.md#in-window-permission-confirmations). |
 | [`app_quit.go`](../app/app_quit.go) | Registered running-job quit requests and guarded responses. | [Closing the application](wails-application.md#closing-the-application). |
-| [`app_config.go`](../app/app_config.go) | `Config`, OS configuration path, strict initial loading, cached/atomic saves and forgetting state. | [Configuration](configuration-and-settings.md). |
-| [`app_client.go`](../app/app_client.go) | Native client connection, pinned trust/ownership journal, TLS verification, and exact-certificate uninstall with role reset after success. | [Native integrations](native-integrations.md), [Wails application](wails-application.md). |
-| [`app_installdir.go`](../app/app_installdir.go) | Fixed runtime kit path, unpacking/preservation rules, creation of a configured `Clinic`. | [Configuration](configuration-and-settings.md). |
-| [`app_actions.go`](../app/app_actions.go) | Read/write job gates, async runner, lifecycle/admin guards, setup, action dispatch, failed-install cleanup. | [Wails application](wails-application.md), [clinic lifecycle](clinic-lifecycle.md). |
-| [`app_setup_check.go`](../app/app_setup_check.go) | Review preflight and the same checks repeated under RunSetup's exclusive lock. | [Setup configuration order](configuration-and-settings.md#setup-configuration-order). |
-| [`app_recovery.go`](../app/app_recovery.go) | Recovery-key/code export and verification, replacement, CARE Clinic password changes and offline reset. | [Recovery materials](backups-and-restore.md#3-backup-recovery-file-and-care-clinic-admin-recovery). |
-| [`app_setup_retry.go`](../app/app_setup_retry.go) | Retained setup attempt, failure metadata, non-destructive retry validation and preparation/startup boundary. | [Installation retries](desktop-workflows.md#during-installation). |
-| [`app_update.go`](../app/app_update.go) | CARE branch-update status/check/dismiss, the background update watcher, and the GitHub-release desktop updater. | [Clinic lifecycle](clinic-lifecycle.md), [releases](releases.md). |
-| [`app_selfupdate.go`](../app/app_selfupdate.go) | macOS bundle verification/replacement and post-exit reopening. | [Wails application](wails-application.md). |
-| [`app_status.go`](../app/app_status.go) | State/health/tool/network queries, provisioning controls, name/password/folder validation, pre-setup naming. | [Wails application](wails-application.md), [native integrations](native-integrations.md). |
+| [`app_config.go`](../app/app_config.go) | `Config`, OS configuration path, strict loading, cached/atomic saves, role selection and clearing. | [Configuration](configuration-and-settings.md). |
+| [`app_client.go`](../app/app_client.go) | Native client connection, pinned trust/ownership journal, TLS verification, and exact-certificate removal with role reset after success. | [Native integrations](native-integrations.md). |
+| [`app_installdir.go`](../app/app_installdir.go) | Install-folder path, unpacking/preservation rules, creation of a configured `Clinic`, dev images. | [Configuration](configuration-and-settings.md). |
+| [`app_service.go`](../app/app_service.go) | Service client, bundle layout, status summary and the `service-status` watcher, engine install and readiness. | [Architecture](architecture.md). |
+| [`app_onboarding.go`](../app/app_onboarding.go) | `HostChecks`, `InstallService`, `RunSetup`, `RetrySetup`, `CleanupFailedInstall`, name checks. | [Server onboarding](onboarding.md). |
+| [`app_actions.go`](../app/app_actions.go) | Read/write job gates, async runner, lifecycle/admin guards, `ClinicAction`, `ClinicStatus`. | [Wails application](wails-application.md), [clinic lifecycle](clinic-lifecycle.md). |
+| [`app_status.go`](../app/app_status.go) | State, network, name/password validation, `MDNSStatus`, admin password check and change. | [Wails application](wails-application.md). |
 | [`app_home_access.go`](../app/app_home_access.go) | Home access bindings: Tailscale status, enable and disable. | [Home access](home-access.md). |
-| [`app_ui.go`](../app/app_ui.go) | Native URL/folder/log actions and login-startup controls. | [Wails application](wails-application.md). |
 | [`app_env.go`](../app/app_env.go) | Authorized reads and atomic writes of the two installed environment files. | [Configuration](configuration-and-settings.md). |
-| [`app_plugins.go`](../app/app_plugins.go) | Lifecycle-guarded, password-free plugin access through the domain manager. | [Plugins](plugins.md). |
-| [`app_backup.go`](../app/app_backup.go) | Policy, listing/import inspection, restore dispatch, backup picker, and backup-directory changes. | [Backups](backups-and-restore.md), [Wails application](wails-application.md). |
-| [`app_storage.go`](../app/app_storage.go) | Disk/backup-space assessments, cached reports, background monitoring and storage events. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
-| [`app_uninstall.go`](../app/app_uninstall.go) | Authorized normal uninstall, removal checkpoint, post-cleanup scan, local-state cleanup and event. | [Cleanup](cleanup-and-uninstall.md). |
-| [`app_osremove.go`](../app/app_osremove.go) | `--uninstall`/`--uninstall-check` modes for the Windows uninstaller, the shared "still set up" check, and in-app removal of the desktop app. | [Cleanup](cleanup-and-uninstall.md#removing-the-desktop-app). |
-| [`app_residue.go`](../app/app_residue.go) | Residue scanning, recovery of old install location, confirmed purge, preserving the selected first-run name. | [Cleanup](cleanup-and-uninstall.md). |
+| [`app_update.go`](../app/app_update.go), [`app_update_checks.go`](../app/app_update_checks.go), [`app_update_helpers.go`](../app/app_update_helpers.go), [`app_selfupdate.go`](../app/app_selfupdate.go) | GitHub-release desktop updater, the update-check switch, platform helpers, macOS bundle replacement. | [Wails application](wails-application.md), [releases](releases.md). |
+| [`app_ui.go`](../app/app_ui.go) | Native URL/folder/log actions and native questions. | [Wails application](wails-application.md). |
+| [`app_uninstall.go`](../app/app_uninstall.go) | Authorized uninstall, removal checkpoint, local-state reset and event. | [Cleanup](cleanup-and-uninstall.md). |
+| [`app_osremove.go`](../app/app_osremove.go) | `--uninstall`/`--uninstall-check` modes for the Windows uninstaller, the shared "still set up" check, and in-app removal of the desktop app. | [Cleanup](cleanup-and-uninstall.md#3-removing-the-desktop-app). |
 | [`password.go`](../app/password.go) | Shared setup password policy. | [Wails application](wails-application.md). |
-| [`app_env_test.go`](../app/app_env_test.go) | Synthetic-app regressions for concurrent settings reads, guards, conflicting writes, and saved retention values. | [Configuration](configuration-and-settings.md). |
 
 ### Application-boundary regression groups
 
 | Tests | Contract |
 | --- | --- |
 | [`app_confirmation_test.go`](../app/app_confirmation_test.go), [`app_quit_contract_test.go`](../app/app_quit_contract_test.go), [`app_quit_test.go`](../app/app_quit_test.go), [`app_ui_test.go`](../app/app_ui_test.go) | Consent/quit snapshots, stale responses, cancellation, independent locking and native question handling. |
-| [`app_onboarding_contract_test.go`](../app/app_onboarding_contract_test.go), [`app_setup_check_test.go`](../app/app_setup_check_test.go), [`app_role_test.go`](../app/app_role_test.go) | Role persistence and clearing, prerequisite/setup rejection, worker completion and retry boundaries. |
-| [`app_setup_retry_test.go`](../app/app_setup_retry_test.go) | Retained-attempt validation, unchanged settings/recovery requirements, preparation reuse and retry failure classification. |
-| [`app_desktop_windows_test.go`](../app/app_desktop_windows_test.go), [`internal/clinic/desktop_windows_test.go`](../app/internal/clinic/desktop_windows_test.go) | Recovery dialog defaults and default backup paths match Windows' Desktop known folder; explicit backup paths remain unchanged. |
-| [`internal/sys/proc/launcher_test.go`](../app/internal/sys/proc/launcher_test.go) | Launcher exit, failure, timeout/cancellation, and high-volume descendant output that remains writable after both the launcher and its parent exit, without creating output files. |
-| [`app_recovery_test.go`](../app/app_recovery_test.go) | Recovery exports, password reset/replacement, filesystem guards and persisted recovery state. |
-| [`app_client_test.go`](../app/app_client_test.go), [`app_mdns_test.go`](../app/app_mdns_test.go) | Native client contracts and server name-advertisement checks. |
-| [`app_update_test.go`](../app/app_update_test.go), [`app_update_access_test.go`](../app/app_update_access_test.go) | Desktop release/update behavior and access outside an installed server. |
-| [`app_env_test.go`](../app/app_env_test.go), [`app_plugins_test.go`](../app/app_plugins_test.go) | Settings/plugin persistence, access and operation gates. |
-| [`app_installdir_test.go`](../app/app_installdir_test.go), [`app_osremove_test.go`](../app/app_osremove_test.go), [`app_log_test.go`](../app/app_log_test.go) | Kit embedding, executable-removal checks and native error logging. |
+| [`app_onboarding_test.go`](../app/app_onboarding_test.go), [`app_service_test.go`](../app/app_service_test.go), [`app_fake_service_test.go`](../app/app_fake_service_test.go), [`app_role_test.go`](../app/app_role_test.go) | Role persistence and clearing, computer checks, setup against a fake service, status summaries. |
+| [`app_client_test.go`](../app/app_client_test.go), [`app_home_access_test.go`](../app/app_home_access_test.go) | Native client contracts and home access. |
+| [`app_update_test.go`](../app/app_update_test.go), [`app_update_access_test.go`](../app/app_update_access_test.go), [`app_update_helpers_test.go`](../app/app_update_helpers_test.go) | Desktop release/update behavior and access outside an installed server. |
+| [`app_env_test.go`](../app/app_env_test.go) | Settings access and operation gates. |
+| [`app_installdir_test.go`](../app/app_installdir_test.go), [`app_osremove_test.go`](../app/app_osremove_test.go), [`app_log_test.go`](../app/app_log_test.go), [`app_branding_test.go`](../app/app_branding_test.go) | Kit embedding, executable-removal checks, native error logging and branding. |
 
 The complete method signatures and event/result shapes are in the [Wails API reference](wails-application.md#complete-bound-method-reference). Do not infer an exported API just from a filename: Wails binds exported `App` methods, not every function in this package.
 
@@ -111,161 +99,63 @@ The complete method signatures and event/result shapes are in the [Wails API ref
 
 ```text
 app/internal/
-|-- backup/
-|   |-- store.go
-|   |-- crypto.go
-|   |-- restore.go
-|   |-- restore_data.go
-|   |-- restore_journal.go
-|   |-- crypto_test.go
-|   |-- restore_test.go
-|   `-- restore_archive_test.go
-|-- clinic/
-|   |-- clinic.go
-|   |-- setup.go
-|   |-- start.go
-|   |-- stop.go
-|   |-- status.go
-|   |-- rebuild.go
-|   |-- plugins.go
-|   |-- plugin_transaction.go
-|   |-- plugin_health.go
-|   |-- plugin_transaction_test.go
-|   |-- plugin_health_test.go
-|   |-- plugin_live_check_test.go
-|   |-- images.go
-|   |-- freespace.go
-|   |-- migrate.go
-|   |-- domain.go
-|   |-- secret.go
-|   |-- backup.go
-|   |-- backupstore.go
-|   |-- caddyroot.go
-|   |-- thiscomputer.go
-|   |-- uninstall.go
-|   |-- purge.go
-|   |-- teardown.go
-|   |-- leftovers.go
-|   |-- backup_script_test.go
-|   |-- domain_test.go
-|   |-- freespace_test.go
-|   |-- migrate_test.go
-|   |-- teardown_test.go
-|   `-- thiscomputer_test.go
-|-- compose/
-|   |-- build.go
-|   |-- build_test.go
-|   |-- deployment_test.go
-|   |-- parallel.go
-|   `-- parallel_test.go
-|-- health/
-|   `-- health.go
-|-- plugins/
-|   |-- catalog.yml
-|   |-- plugins.go
-|   |-- pending.go
-|   |-- pending_test.go
-|   `-- plugins_test.go
-|-- prereq/
-|   |-- check.go
-|   |-- profile.go
-|   |-- provision.go
-|   `-- provision_test.go
-|-- release/
-|   |-- pins.go
-|   |-- pins_test.go
-|   `-- workflow_test.go
-|-- residue/
-|   |-- residue.go
-|   `-- residue_test.go
-|-- storage/
+|-- bundle/          # files shipped inside the .app
+|-- clinic/          # clinic Setup/Start/Up/Stop/Uninstall, this computer
+|-- engine/
+|   |-- agent/       # agent ops inside the VM
+|   |-- client/      # agent client
+|   |-- forward/     # host-port to vsock forwarding
+|   |-- protocol/    # op registry and wire types
+|   `-- vm/          # Virtualization.framework VM
+|-- feed/            # signed updates.json
+|-- hostcheck/       # onboarding computer checks
+|-- release/         # release pins
+|-- service/
+|   |-- advertise/   # mDNS watcher
+|   |-- api/         # control-socket types
+|   |-- control/     # control-socket client and server
+|   |-- hostfwd/     # host listeners for 80/443/8480
+|   |-- install/     # one-prompt LaunchDaemon install
+|   |-- logfile/
+|   |-- settings/
+|   |-- slots/       # engine bundle slots, install and activate
+|   `-- supervisor/  # engine VM watchdog
+|-- stack/           # Runtime: render, upload and run agent ops
+|-- versions/        # versions.yml
 `-- sys/
-    |-- applog/
-    |   |-- applog.go
-    |   |-- dir.go
-    |   `-- rotate.go
-    |-- appremoval/
-    |   |-- appremoval.go
-    |   |-- trash_darwin.go
-    |   |-- trash_other.go
-    |   `-- appremoval_test.go
-    |-- atomicfile/
-    |   |-- atomicfile.go
-    |   |-- replace_darwin.go
-    |   |-- replace_linux.go
-    |   |-- replace_windows.go
-    |   `-- atomicfile_test.go
-    |-- autostart/
-    |   `-- autostart.go
-    |-- diskspace/
-    |-- elevate/
-    |   |-- elevate.go
-    |   `-- elevate_test.go
-    |-- hosts/
-    |   |-- hosts.go
-    |   `-- hosts_test.go
-    |-- mdns/
-    |   |-- advertise.go
-    |   |-- advertise_test.go
-    |   |-- hostname_network_test.go
-    |   |-- probe.go
-    |   `-- responder.go
-    |-- netfix/
-    |   |-- netfix.go
-    |   `-- netfix_test.go
-    |-- proc/
-    |   |-- proc.go
-    |   |-- console_other.go
-    |   |-- console_windows.go
-    |   `-- proc_test.go
-    |-- reboot/
-    |   `-- reboot.go
-    `-- trust/
-        |-- trust.go
-        |-- client.go
-        `-- trust_test.go
+    |-- applog/  appremoval/  atomicfile/  diskspace/  elevate/
+    `-- hosts/  mdns/  netfix/  proc/  tailscale/  trust/
 ```
 
 ### Where each package is explained
 
-| Package | Responsibility | Detailed explanation and source-file roles |
+| Package | Responsibility | Detailed explanation |
 | --- | --- | --- |
-| [`internal/clinic`](../app/internal/clinic) | Orders operations across the domains; no Wails dependency. | [Clinic lifecycle](clinic-lifecycle.md), [cleanup](cleanup-and-uninstall.md), [backup callbacks](backups-and-restore.md), [local device access](native-integrations.md). |
-| [`internal/backup`](../app/internal/backup) | Backup inventory, recovery files/public certificates, decryption, staged replacement, journal recovery. | [Backups and restore](backups-and-restore.md). |
-| [`internal/compose`](../app/internal/compose) | Infrastructure and CARE image building, source checkout, freshness inputs. | [Clinic lifecycle](clinic-lifecycle.md). |
-| [`internal/health`](../app/internal/health) | HTTP readiness and port availability. | [Native integrations](native-integrations.md). |
-| [`internal/plugins`](../app/internal/plugins) | Active plugin list (`plugins.json`), inactive draft (`plugins-pending.json`), defaults already offered (`plugins-offered.json`), catalog, validation, derived `ADDITIONAL_PLUGS`, and frontend `PlugConfig` rows. | [Configuration](plugins.md). |
-| [`internal/prereq`](../app/internal/prereq) | Docker/Git detection, action plans, Rancher Desktop provisioning and preconfiguration, and readiness waits. | [Native integrations](native-integrations.md). |
+| [`internal/clinic`](../app/internal/clinic) | Clinic operations on top of the stack runtime; no Wails dependency. | [Clinic lifecycle](clinic-lifecycle.md), [cleanup](cleanup-and-uninstall.md). |
+| [`internal/stack`](../app/internal/stack) | Renders the kit and generated env files, uploads them, runs agent ops. | [Clinic lifecycle](clinic-lifecycle.md). |
+| [`internal/hostcheck`](../app/internal/hostcheck) | Virtualization, memory, disk and service checks. | [Server onboarding](onboarding.md#1-computer-checks). |
+| [`internal/bundle`](../app/internal/bundle) | Locates the bundled service binary and engine tarball, with env overrides. | [Bundle layout](releases.md#macos-app-bundle-layout). |
+| [`internal/service/*`](../app/internal/service) | The host service's packages and the app's control client. | [care-clinic-service](../app/cmd/care-clinic-service/README.md). |
+| [`internal/engine/*`](../app/internal/engine) | Engine VM, agent, protocol and forwarding. | [engine](../engine/README.md). |
+| [`internal/feed`](../app/internal/feed), [`internal/versions`](../app/internal/versions) | Signed update feed and release pins file for future engine/CARE updates. | [Update feed](updates-feed.md), [versions](versions.md). |
 | [`internal/release`](../app/internal/release) | Validated release manifest and source/image identity. | [Development and release](development-and-release.md#release-identity-and-pins). |
-| [`internal/residue`](../app/internal/residue) | Owned-resource inventory, unknown-state errors, old kit location. | [Cleanup](cleanup-and-uninstall.md). |
-| [`internal/storage`](../app/internal/storage) | Storage thresholds, backup-space estimates, policy/status reporting and backup-run state. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
-| [`sys/diskspace`](../app/internal/sys/diskspace) | Platform filesystem free-space measurements. | [Storage monitoring](native-integrations.md#disk-space-and-storage-monitoring). |
-| [`sys/proc`](../app/internal/sys/proc) | Child-process creation, streamed-command network failure classification, pipe-free launcher execution with discarded output, Windows Desktop known-folder lookup, and PATH repair. | [Native integrations](native-integrations.md). |
+| [`sys/proc`](../app/internal/sys/proc) | Child-process creation, launcher execution, Windows Desktop lookup and PATH repair. | [Native integrations](native-integrations.md). |
 | [`sys/atomicfile`](../app/internal/sys/atomicfile) | Durable single-file replacement across OSes. | [Native integrations](native-integrations.md). |
-| [`sys/appremoval`](../app/internal/sys/appremoval) | Locating and removing the installed desktop app (macOS Trash, Windows uninstaller), other-instance and other-account checks. | [Cleanup](cleanup-and-uninstall.md#removing-the-desktop-app). |
+| [`sys/appremoval`](../app/internal/sys/appremoval) | Locating and removing the installed desktop app (macOS Trash, Windows uninstaller), other-instance and other-account checks. | [Cleanup](cleanup-and-uninstall.md#3-removing-the-desktop-app). |
 | [`sys/applog`](../app/internal/sys/applog) | Diagnostic sink, native log location, bounded rotation. | [Native integrations](native-integrations.md). |
+| [`sys/diskspace`](../app/internal/sys/diskspace) | Platform free-space measurement (used by the disk check). | [Server onboarding](onboarding.md#1-computer-checks). |
 | [`sys/elevate`](../app/internal/sys/elevate) | Interpreter quoting and batching privileged native steps. | [Native integrations](native-integrations.md). |
 | [`sys/hosts`](../app/internal/sys/hosts) | Owned loopback hostname entries and verified removal. | [Native integrations](native-integrations.md). |
 | [`sys/trust`](../app/internal/sys/trust) | Root-CA trust, removal, and native client certificate bootstrap. | [Native integrations](native-integrations.md). |
-| [`sys/mdns`](../app/internal/sys/mdns) | LAN address selection, name advertisement, response probing. | [Native integrations](native-integrations.md). |
+| [`sys/mdns`](../app/internal/sys/mdns) | LAN address selection, name advertisement (used by the service), name checks and response probing. | [Native integrations](native-integrations.md#lan-names-and-mdns). |
 | [`sys/tailscale`](../app/internal/sys/tailscale) | Tailscale CLI discovery, status, and CARE Clinic's own `tailscale serve` handler. | [Home access](home-access.md). |
 | [`sys/netfix`](../app/internal/sys/netfix) | Windows network profiles and application-owned firewall rules. | [Native integrations](native-integrations.md). |
-| [`sys/autostart`](../app/internal/sys/autostart) | Platform login-startup records. | [Native integrations](native-integrations.md). |
-| [`sys/reboot`](../app/internal/sys/reboot) | Restart requirement and restart request. | [Native integrations](native-integrations.md). |
 
 ### Smaller domain source files
 
-The larger subsystem guides contain their own file tables. These smaller packages are fully accounted for here:
-
 | Source | Role |
 | --- | --- |
-| [`plugins/plugins.go`](../app/internal/plugins/plugins.go) | `Plugin`, `Manager`, `Prepare`, `Catalog`, `FrontendRows`, dotenv/JSON read, safe variable replacement. |
-| [`plugins/pending.go`](../app/internal/plugins/pending.go), [`pending_test.go`](../app/internal/plugins/pending_test.go) | Private draft staging/consumption without changing active inputs, and persistence regressions. |
-| [`clinic/home_access.go`](../app/internal/clinic/home_access.go), [`home_access_test.go`](../app/internal/clinic/home_access_test.go) | Loopback home-access port and the one-time settings update for existing clinics. | [Home access](home-access.md). |
-| [`clinic/plugin_transaction.go`](../app/internal/clinic/plugin_transaction.go), [`plugin_transaction_test.go`](../app/internal/clinic/plugin_transaction_test.go) | Durable configuration/image/frontend-row rollback and injected failure/recovery regressions. |
-| [`clinic/plugin_health.go`](../app/internal/clinic/plugin_health.go), [`plugin_health_test.go`](../app/internal/clinic/plugin_health_test.go), [`plugin_live_check_test.go`](../app/internal/clinic/plugin_live_check_test.go) | Sustained container/endpoint readiness, Docker metadata compatibility, and opt-in read-only live checks. |
-| [`plugins/catalog.yml`](../app/internal/plugins/catalog.yml) | Embedded list of plugins offered in the panel. |
-| [`plugins/plugins_test.go`](../app/internal/plugins/plugins_test.go) | Literal values, legacy migration, backend/frontend split, validation, catalog refresh, frontend rows. |
+| [`clinic/home_access.go`](../app/internal/clinic/home_access.go) | Home-access port and Tailscale serve target. |
 | [`release/pins.go`](../app/internal/release/pins.go) | `Pins`, required manifest fields, version/source-ref validation, diagnostic summary. |
 | [`release/pins_test.go`](../app/internal/release/pins_test.go) | Version agreement, release-versus-development refs, commit-ID validation. |
 | [`release/workflow_test.go`](../app/internal/release/workflow_test.go) | Executes the workflow's Node identity validator with synthetic inputs; requires Node. |
@@ -275,7 +165,6 @@ The larger subsystem guides contain their own file tables. These smaller package
 ```text
 app/frontend/
 |-- package.json
-|-- package-lock.json
 |-- tsconfig.json
 |-- vite.config.ts
 |-- playwright.config.ts
@@ -285,26 +174,15 @@ app/frontend/
 |   `-- prune-fonts.mjs
 |-- tests/
 |   |-- fixtures/
-|   |   |-- index.html
-|   |   `-- host.ts
 |   `-- *.spec.ts
 `-- src/
     |-- App.tsx
     |-- wails.d.ts
     |-- types.ts
     |-- lib/
-    |   |-- bridge.ts
-    |   |-- env-file.ts
-    |   `-- run-steps.ts
     |-- state/
-    |   `-- care-store.tsx
     |-- components/
-    |   |-- confirmation-dialog.tsx
-    |   |-- quit-dialog.tsx
-    |   |-- start-update-card.tsx
-    |   `-- onboarding.tsx and onboarding.css
     |-- hooks/
-    |   `-- use-app-update.ts
     `-- screens/
         |-- role-screen.tsx
         |-- client-screen.tsx
@@ -319,28 +197,19 @@ app/frontend/
 | [`wails.d.ts`](../app/frontend/src/wails.d.ts) | Hand-maintained method names, argument lists, and promise result declarations. |
 | [`types.ts`](../app/frontend/src/types.ts) | JSON-facing return shapes used by the desktop. |
 | [`bridge.ts`](../app/frontend/src/lib/bridge.ts) | Lazy runtime lookup, call dispatch, event subscriptions, host logging. |
-| [`care-store.tsx`](../app/frontend/src/state/care-store.tsx) | Async-job completion handling, boot/start request, status polling, restore/plugin-recovery state. |
+| [`care-store.tsx`](../app/frontend/src/state/care-store.tsx) | Async-job completion handling, boot, `service-status` state. |
 | [`run-steps.ts`](../app/frontend/src/lib/run-steps.ts) | Progress milestones derived from backend log messages. |
 | [`App.tsx`](../app/frontend/src/App.tsx) | Root flow routing and always-mounted permission/quit dialogs. |
-| [`role-screen.tsx`](../app/frontend/src/screens/role-screen.tsx), [`client-screen.tsx`](../app/frontend/src/screens/client-screen.tsx) | First-run navigation without persistence, client discovery/connection/recovery and saved connection state. |
-| [`setup-screen.tsx`](../app/frontend/src/screens/setup/setup-screen.tsx), [`use-setup-checks.ts`](../app/frontend/src/screens/setup/use-setup-checks.ts) | Role initialization, platform-aware checks, configuration/recovery steps and Review preflight. |
-| [`installing-screen.tsx`](../app/frontend/src/screens/install/installing-screen.tsx), [`failed-screen.tsx`](../app/frontend/src/screens/install/failed-screen.tsx) | Log-backed milestones, quiet-activity warning, retained-attempt retry and explicit cleanup fallback. |
+| [`role-screen.tsx`](../app/frontend/src/screens/role-screen.tsx), [`client-screen.tsx`](../app/frontend/src/screens/client-screen.tsx) | First-run navigation without persistence, client discovery/connection and saved connection state. |
+| [`setup/`](../app/frontend/src/screens/setup) | Computer checks with the service install, clinic name and password steps. |
+| [`installing-screen.tsx`](../app/frontend/src/screens/install/installing-screen.tsx), [`failed-screen.tsx`](../app/frontend/src/screens/install/failed-screen.tsx) | Log-backed milestones, retained-attempt retry and explicit cleanup fallback. |
 | [`confirmation-dialog.tsx`](../app/frontend/src/components/confirmation-dialog.tsx), [`quit-dialog.tsx`](../app/frontend/src/components/quit-dialog.tsx) | Request registration, stale-response protection, safe consent focus and response errors. |
 | [`use-app-update.ts`](../app/frontend/src/hooks/use-app-update.ts), [`panel-update-lock.tsx`](../app/frontend/src/screens/panel/panel-update-lock.tsx) | Shared updater, installer acknowledgement, restart guard and live/stale-operation exclusion. |
-| [`panel-screen.tsx`](../app/frontend/src/screens/panel/panel-screen.tsx), [`panel-requirements.tsx`](../app/frontend/src/screens/panel/panel-requirements.tsx) | Panel navigation, shared task guards and actionable native requirements. |
-| [`overview-tab.tsx`](../app/frontend/src/screens/panel/overview-tab.tsx), [`storage-tab.tsx`](../app/frontend/src/screens/panel/storage-tab.tsx), [`phone-dialog.tsx`](../app/frontend/src/screens/panel/phone-dialog.tsx) | Health/actions, storage measurements and the mobile setup QR. |
-| [`home-access.tsx`](../app/frontend/src/screens/panel/home-access.tsx) | The Home access tab: Tailscale setup steps, turning home access on or off and the doctor instructions QR. |
-| [`backups-tab.tsx`](../app/frontend/src/screens/panel/backups-tab.tsx), [`restore-backup-dialog.tsx`](../app/frontend/src/screens/panel/restore-backup-dialog.tsx) | Actual policy/destination, backup operations, restore consent and cancelled/stale preflight handling. |
-| [`advanced-tab.tsx`](../app/frontend/src/screens/panel/advanced-tab.tsx), [`admin-recovery.tsx`](../app/frontend/src/screens/panel/admin-recovery.tsx) | Fixed 15-minute UI unlock, sensitive-state clearing, password/recovery controls and protected administration. |
+| [`panel-screen.tsx`](../app/frontend/src/screens/panel/panel-screen.tsx), [`overview-tab.tsx`](../app/frontend/src/screens/panel/overview-tab.tsx), [`panel-status.ts`](../app/frontend/src/screens/panel/panel-status.ts) | Panel navigation, service status and Start/Stop/Restart. |
+| [`home-access.tsx`](../app/frontend/src/screens/panel/home-access.tsx), [`phone-dialog.tsx`](../app/frontend/src/screens/panel/phone-dialog.tsx), [`network-card.tsx`](../app/frontend/src/screens/panel/network-card.tsx) | Home access, the mobile setup QR and the network fix. |
+| [`advanced-tab.tsx`](../app/frontend/src/screens/panel/advanced-tab.tsx), [`admin-password.tsx`](../app/frontend/src/screens/panel/admin-password.tsx), [`update-checks.tsx`](../app/frontend/src/screens/panel/update-checks.tsx) | Fixed 15-minute UI unlock, password change, update-check switch and uninstall. |
 | [`remove-screen.tsx`](../app/frontend/src/screens/remove-screen.tsx) | The screen the Windows uninstaller opens: server uninstall, client disconnect or unfinished-setup cleanup, then exit. |
-| [`update-panel.tsx`](../app/frontend/src/screens/panel/update-panel.tsx) | The password-free Updates tab: CARE branch status and the desktop release updater. |
-| [`env-editor.tsx`](../app/frontend/src/screens/panel/env-editor.tsx) | Concurrent environment reads, draft changes, writes and apply action. |
-| [`env-file.ts`](../app/frontend/src/lib/env-file.ts) | Line-based environment parsing, value quoting, change application. |
-| [`env-schema.ts`](../app/frontend/src/screens/panel/env-schema.ts) | Key/file ownership, friendly field constraints, managed-value notes. |
-| [`env-controls.tsx`](../app/frontend/src/screens/panel/env-controls.tsx) | Raw string/undefined values rendered as typed controls. |
-| [`advanced-env.ts`](../app/frontend/src/screens/panel/advanced-env.ts) | Friendly validation and changed-key merges that preserve unedited file bytes. |
-| [`plugin-table.tsx`](../app/frontend/src/screens/panel/plugin-table.tsx) | Password-free Plugins tab: catalog picker, custom editor, and save followed by `apply-plugins`. |
-| [`plugin-model.ts`](../app/frontend/src/screens/panel/plugin-model.ts) | Catalog reconciliation, typed settings preservation and frontend/native-compatible validation. |
+| [`env-editor.tsx`](../app/frontend/src/screens/panel/env-editor.tsx), [`env-file.ts`](../app/frontend/src/lib/env-file.ts), [`env-schema.ts`](../app/frontend/src/screens/panel/env-schema.ts), [`env-controls.tsx`](../app/frontend/src/screens/panel/env-controls.tsx), [`advanced-env.ts`](../app/frontend/src/screens/panel/advanced-env.ts) | The clinic settings editor. See [configuration](configuration-and-settings.md#applying-settings). |
 | [`tests/fixtures/host.ts`](../app/frontend/tests/fixtures/host.ts) | Simulated native state/events used only by the explicit Vite test entry. |
 
 See [Wails API](wails-application.md) and [configuration](configuration-and-settings.md) for behavior rather than visual layout.
@@ -350,23 +219,26 @@ See [Wails API](wails-application.md) and [configuration](configuration-and-sett
 | Source | Runtime purpose |
 | --- | --- |
 | [`deployments/.env`](../deployments/.env) | Release version, image names/bases, upstream repos and refs. |
-| [`docker-compose.yml`](../deployments/docker-compose.yml) | Services, dependencies, mounts, health checks, fixed project and network identity. |
-| [`backend.env`](../deployments/backend.env) | Initial CARE/backend/backup-related settings; installed copy becomes clinic-specific. |
-| [`frontend.env`](../deployments/frontend.env) | Initial CARE frontend build settings; installed copy is preserved. |
+| [`docker-compose.yml`](../deployments/docker-compose.yml) | Services, dependencies, mounts, health checks; run by the agent in the engine VM. |
+| [`backend.env`](../deployments/backend.env) | Initial CARE backend settings; installed copy becomes clinic-specific. |
+| [`frontend.env`](../deployments/frontend.env) | CARE frontend build settings, baked into the frontend image. |
 | [`Caddyfile`](../deployments/Caddyfile) | HTTPS/local CA, reverse proxy, storage routes, public root bootstrap, WAF behavior. |
 | [`caddy.Dockerfile`](../deployments/caddy.Dockerfile) | Builds the proxy with the Coraza module. |
-| [`backup.Dockerfile`](../deployments/backup.Dockerfile) | Tools and permissions required by backup/restore helper containers. |
-| [`scripts/backup.sh`](../deployments/scripts/backup.sh) | Scheduled/manual backup modes, encryption, writer locking, publication and retention. |
 | [`minio/entrypoint.sh`](../deployments/minio/entrypoint.sh) | Starts Silo, waits for readiness, configures credentials and buckets under the retained storage-service identity. |
+| [`setup/index.html`](../deployments/setup/index.html) | The phone/tablet certificate setup page. |
 
-Generated public trust files and restore/build working files belong to the installed copy, not the source kit.
+`backup.Dockerfile` and `scripts/backup.sh` are still shipped but not uploaded
+to the engine; backups return later via engine agent ops.
 
 ## Build and automation
 
 | File | Responsibility |
 | --- | --- |
 | [`app/go.mod`](../app/go.mod), [`app/go.sum`](../app/go.sum) | Go module identity, toolchain requirement, and dependencies. |
-| [`app/wails.json`](../app/wails.json) | Desktop/frontend build hooks, output identity, installer metadata. |
+| [`app/wails.json`](../app/wails.json) | Desktop/frontend build hooks (including the macOS bundle hook), output identity, installer metadata. |
+| [`scripts/bundle-macos.sh`](../scripts/bundle-macos.sh) | Wails post-build hook: puts the service and an engine bundle inside the `.app`. See [bundle layout](releases.md#macos-app-bundle-layout). |
+| [`scripts/service-macos.sh`](../scripts/service-macos.sh) | Developer install, status and uninstall of the LaunchDaemon. See [the care-clinic-service](development-and-release.md#the-care-clinic-service). |
+| [`scripts/dev-images.sh`](../scripts/dev-images.sh) | Builds and saves dev images for the engine. See [dev images](dev-images.md). |
 | [`app/.golangci.yml`](../app/.golangci.yml) | Go lint and formatter policy. |
 | [`app/.gitignore`](../app/.gitignore) | Separates generated/staged output from versioned source. |
 | [`frontend/package.json`](../app/frontend/package.json), [`package-lock.json`](../app/frontend/package-lock.json) | Desktop frontend scripts and dependency lock. |
@@ -383,7 +255,7 @@ Generated public trust files and restore/build working files belong to the insta
 | [`build/windows/info.json`](../app/build/windows/info.json), [`wails.exe.manifest`](../app/build/windows/wails.exe.manifest) | Windows version resource and manifest templates filled from `wails.json`. |
 | [`build/windows/installer/project.nsi`](../app/build/windows/installer/project.nsi) | NSIS installer definition; `wails_tools.nsh` beside it is generated. |
 | [`ci.yml`](../.github/workflows/ci.yml) | Compilation, package boundary, test, formatting/lint, frontend build checks. |
-| [`release.yml`](../.github/workflows/release.yml) | Release identity, platform builds, packaging/signing, draft release or artifact upload. |
+| [`release.yml`](../.github/workflows/release.yml) | Release identity, platform builds, nested service and app signing, packaging, draft release or artifact upload. |
 | [`actions/install-nsis`](../.github/actions/install-nsis/action.yml) | Pinned NSIS install shared by CI and release. |
 | [`signpath/artifact-configuration.xml`](../.github/signpath/artifact-configuration.xml) | SignPath artifact configuration: metadata restrictions the signed files must satisfy. |
 

@@ -255,6 +255,7 @@ func (a *App) ensureEngine(ctx context.Context) error {
 	switch {
 	case errors.Is(err, bundle.ErrNoEngine) && current != "":
 		a.logln("Using the installed engine " + current + ".")
+		a.progress().Skip(stepEngine, "Version "+current+" is already installed")
 		return nil
 	case errors.Is(err, bundle.ErrNoEngine):
 		return errors.New("this copy of CARE Clinic has no engine bundle and none is installed; " +
@@ -264,6 +265,7 @@ func (a *App) ensureEngine(ctx context.Context) error {
 	}
 	if current != "" && !newerEngine(eng.Version, current) {
 		a.logln("Using the installed engine " + current + ".")
+		a.progress().Skip(stepEngine, "Version "+current+" is already installed")
 		return nil
 	}
 	f, err := os.Open(eng.Path)
@@ -272,7 +274,10 @@ func (a *App) ensureEngine(ctx context.Context) error {
 	}
 	defer func() { _ = f.Close() }()
 	a.logln("Installing engine " + eng.Version + "...")
-	slot, err := s.InstallEngine(ctx, f, eng.Size, eng.SHA256)
+	detail := "Version " + eng.Version
+	meter := a.progress().Meter(stepEngine, detail, eng.Size)
+	meter.Set(0)
+	slot, err := s.InstallEngine(ctx, meter.Reader(f), eng.Size, eng.SHA256)
 	if err != nil {
 		return fmt.Errorf("install engine %s: %w", eng.Version, err)
 	}
@@ -280,6 +285,7 @@ func (a *App) ensureEngine(ctx context.Context) error {
 	if _, err := s.Activate(ctx, slot.Version); err != nil {
 		return fmt.Errorf("activate engine %s: %w", slot.Version, err)
 	}
+	a.progress().Finish(stepEngine, detail)
 	return nil
 }
 

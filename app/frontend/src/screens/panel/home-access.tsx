@@ -72,6 +72,7 @@ function HomeAccessCard({ locked }: { locked: boolean }) {
   const runCheck = useRef(check.run);
   runCheck.current = check.run;
 
+  const running = care.service?.summary.running === true;
   const refresh = useCallback(async () => {
     const next = await bridge.HomeAccessStatus();
     if (mounted.current) setStatus(next);
@@ -81,7 +82,7 @@ function HomeAccessCard({ locked }: { locked: boolean }) {
     mounted.current = true;
     void runCheck.current(refresh, "Couldn't check Tailscale on this computer.");
     return () => { mounted.current = false; };
-  }, [refresh, care.system]);
+  }, [refresh, running]);
 
   const busy = locked || updateLock.active || change.working;
   const current = view(status, check.error);
@@ -92,7 +93,7 @@ function HomeAccessCard({ locked }: { locked: boolean }) {
   const enable = () => void change.run(async () => {
     const restart = await bridge.EnableHomeAccess();
     await refresh();
-    if (restart && care.system !== "stopped") {
+    if (restart && running) {
       toast("Restarting the clinic to finish turning on home access");
       void care.runAction("restart");
     } else if (restart) {

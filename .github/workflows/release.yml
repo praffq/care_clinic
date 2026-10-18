@@ -372,6 +372,10 @@ jobs:
               fi
             }
             codesign --force --timestamp --options runtime \
+              --entitlements app/cmd/care-clinic-service/care-clinic-service.entitlements \
+              --keychain "$SIGNING_KEYCHAIN" --sign "$SIGN_IDENTITY" \
+              "$app/Contents/MacOS/care-clinic-service"
+            codesign --force --timestamp --options runtime \
               --keychain "$SIGNING_KEYCHAIN" --sign "$SIGN_IDENTITY" "$app"
             codesign --verify --strict "$app"
             ditto -c -k --keepParent "$app" incoming/notarize.zip

@@ -8,7 +8,6 @@ import { getValue } from "../src/lib/env-file";
 
 const desktopPassword = "ClinicTest123";
 const nextPassword = "ClinicChanged456";
-const recoveryCode = "0123-4567-89AB-CDEF-0123-4567-89AB-CDEF";
 const unavailableSettings = [
   "REACT_DISABLE_PATIENT_LOGIN=true", "USE_SMS=False",
   "SMS_BACKEND=care.utils.sms.backend.console.ConsoleBackend",
@@ -48,13 +47,11 @@ test.beforeEach(async ({ page }) => {
 async function openAdvanced(page: Page) {
   await page.goto("/tests/fixtures/index.html?scenario=panel-running");
   await page.waitForFunction(() => !!window.careTest);
-  await page.evaluate(({ backend, frontend, code }) => {
+  await page.evaluate(({ backend, frontend }) => {
     const fixtures = window.careTest.fixtures;
     fixtures.env = { backend, frontend };
-    fixtures.rancherInstalled = true;
     fixtures.canRemoveApp = true;
-    fixtures.recoveryCodes[0] = code;
-  }, { backend: backendEnvironment, frontend: frontendEnvironment, code: recoveryCode });
+  }, { backend: backendEnvironment, frontend: frontendEnvironment });
   await page.getByRole("button", { name: "Advanced", exact: true }).click();
   await expect(root(page).getByLabel("CARE Clinic admin password", { exact: true })).toBeVisible();
 }
@@ -85,7 +82,7 @@ async function fillNewPassword(page: Page, scope = root(page)) {
 async function openRemoval(page: Page) {
   await root(page).getByRole("button", { name: "Uninstall…", exact: true }).click();
   await expect(dialog(page)).toBeVisible();
-  await expect(dialog(page).getByRole("checkbox")).toHaveCount(4);
+  await expect(dialog(page).getByRole("checkbox")).toHaveCount(2);
 }
 
 async function blockAdvanced(page: Page) {
@@ -227,19 +224,13 @@ test("email, SMS, patient sign-in and MFA settings cannot reappear in support-on
 });
 
 for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) {
-  test(`Advanced gate, groups, recovery and removal fit ${size.width}x${size.height}`, async ({ page }) => {
+  test(`Advanced gate, groups and removal fit ${size.width}x${size.height}`, async ({ page }) => {
     await page.setViewportSize(size);
     await openAdvanced(page);
     await expect(root(page).getByLabel("CARE Clinic admin password", { exact: true })).toBeFocused();
     await fits(page);
     await screenshot(page, `advanced-gate-${size.width}x${size.height}`);
-    await root(page).getByRole("button", { name: "Forgot CARE Clinic password?" }).click();
-    await expect(root(page).getByLabel("Unused recovery code", { exact: true })).toBeFocused();
-    await fits(page);
-    await screenshot(page, `advanced-recovery-form-${size.width}x${size.height}`);
-    await root(page).getByRole("button", { name: "Cancel", exact: true }).click();
     await unlock(page);
-    await expect(root(page)).toContainText("Keep backups forever");
     await expect(root(page)).toContainText("Sunrise Clinic");
     await screenshot(page, `advanced-overview-${size.width}x${size.height}`);
     for (const entry of GROUPS) {
@@ -266,14 +257,14 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
   });
 }
 
-test("Advanced navigation never starts writes, rebuilds, recovery resets or removals", async ({ page }) => {
+test("Advanced navigation never starts writes, restarts, password changes or removals", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
   await group(page, "Staff access");
   await root(page).locator('[data-advanced-group="signin"]').click();
   await openRemoval(page);
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  for (const method of ["WriteEnv", "ClinicAction", "RunUninstall", "ResetAdminPassword", "ChangeAdminPassword", "SaveAdminRecoveryCodes", "ResetWebPassword"]) {
+  for (const method of ["WriteEnv", "ClinicAction", "RunUninstall", "ChangeAdminPassword"]) {
     expect(await count(page, method)).toBe(0);
   }
 });
@@ -406,7 +397,7 @@ test("saving merges fresh settings once and waits for the accepted restart", asy
     frontend: frontendEnvironment,
   });
   await expect(root(page)).toContainText("Applying settings");
-  await page.evaluate(() => window.careTest.finishJob("start"));
+  await page.evaluate(() => window.careTest.finishJob("restart"));
   await expect(root(page)).toContainText("Settings applied.");
 });
 
@@ -427,7 +418,7 @@ test("a saved setting isn't presented as applied when restart acceptance fails",
   await expect(root(page)).toContainText("Settings applied.");
 });
 
-test("the usual visit has no preset until an admin chooses one, then applies with a frontend rebuild", async ({ page }) => {
+test("the usual visit has no preset until an admin chooses one, then applies with a restart", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
   await group(page, "Patients and visits");
@@ -442,7 +433,7 @@ test("the usual visit has no preset until an admin chooses one, then applies wit
     frontend: frontendEnvironment.replace("REACT_DEFAULT_ENCOUNTER_TYPE=", "REACT_DEFAULT_ENCOUNTER_TYPE=hh"),
   });
   expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "ClinicAction").map((call) => call.args[0])))
-    .toEqual(["rebuild-frontend"]);
+    .toEqual(["restart"]);
 });
 
 test("usual visit choices respect the enabled visit types set by support", async ({ page }) => {
@@ -537,150 +528,32 @@ test("protected and everyday keys cannot be duplicated in support-only extras", 
   expect(await count(page, "WriteEnv")).toBe(0);
 });
 
-test("password reset validates the pair, handles used codes, and clears all sensitive fields", async ({ page }) => {
-  await openAdvanced(page);
-  await root(page).getByRole("button", { name: "Forgot CARE Clinic password?" }).click();
-  await expect(root(page)).toContainText("Password-only backup key downloads will require re-enrollment");
-  await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-  await fillNewPassword(page);
-  await root(page).getByLabel("Confirm new CARE Clinic admin password", { exact: true }).fill("Different789");
-  await expect(root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true })).toBeDisabled();
-  await root(page).getByLabel("Confirm new CARE Clinic admin password", { exact: true }).fill(nextPassword);
-  await page.evaluate(() => {
-    window.careTest.failNext("ResetAdminPassword", "that recovery code is invalid or already used; use an unused code from the latest set");
-  });
-  await root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true }).click();
-  await expect(root(page)).toContainText("That recovery code didn't work");
-  for (const label of ["Unused recovery code", "New CARE Clinic admin password", "Confirm new CARE Clinic admin password"]) {
-    await expect(root(page).getByLabel(label, { exact: true })).toHaveValue("");
-  }
-  await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-  await fillNewPassword(page);
-  await page.evaluate(() => window.careTest.hold("ResetAdminPassword"));
-  await root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true }).click();
-  await page.keyboard.press("Enter");
-  expect(await count(page, "ResetAdminPassword")).toBe(2);
-  await page.evaluate(() => window.careTest.release("ResetAdminPassword"));
-  await expect(root(page).getByRole("heading", { name: "Clinic settings" })).toBeVisible();
-  await expect(page.getByLabel("Unused recovery code", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Mark that recovery code used/)).toBeVisible();
-  expect(await page.evaluate(() => window.careTest.fixtures.recoveryCodes.filter(Boolean).length)).toBe(5);
-  expect(await page.evaluate(() => window.careTest.fixtures.recovery.backup_key_needs_enrollment)).toBe(true);
-  await root(page).getByRole("button", { name: "Lock Advanced settings" }).click();
-  await root(page).getByRole("button", { name: "Forgot CARE Clinic password?" }).click();
-  await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-  await fillNewPassword(page);
-  await root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true }).click();
-  await expect(root(page)).toContainText("That recovery code didn't work");
-  expect(await page.evaluate(() => window.careTest.fixtures.recoveryCodes.filter(Boolean).length)).toBe(5);
-});
-
-test("recovery rate limits are friendly and disable retry until the native wait expires", async ({ page }) => {
-  await openAdvanced(page);
-  await root(page).getByRole("button", { name: "Forgot CARE Clinic password?" }).click();
-  await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-  await fillNewPassword(page);
-  await page.evaluate(() => window.careTest.failNext("ResetAdminPassword", "too many recovery attempts; try again in 60 seconds"));
-  await root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true }).click();
-  await expect(root(page)).toContainText("Please wait before trying another code");
-  await expect(root(page)).toContainText(/Try again in \d+ seconds/);
-  await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-  await fillNewPassword(page);
-  await expect(root(page).getByRole("button", { name: "Reset CARE Clinic password", exact: true })).toBeDisabled();
-  await root(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(root(page).getByLabel("CARE Clinic admin password", { exact: true })).toHaveValue("");
-});
-
-test("changing the CARE Clinic password doesn't reset the web login or replace recovery codes", async ({ page }) => {
+test("changing the CARE Clinic password doesn't reset the web login", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
-  const originalCodes = await page.evaluate(() => window.careTest.fixtures.recoveryCodes);
   await root(page).getByRole("button", { name: "Change password", exact: true }).click();
   await fillNewPassword(page, dialog(page));
   await dialog(page).getByRole("button", { name: "Change CARE Clinic password", exact: true }).click();
   await expect(dialog(page)).toBeHidden();
-  await expect(root(page)).toContainText("Your CARE web login and unused recovery codes are unchanged");
+  await expect(root(page)).toContainText("Your CARE web login is unchanged");
   expect(await count(page, "ChangeAdminPassword")).toBe(1);
-  expect(await count(page, "ResetAdminPassword")).toBe(0);
-  expect(await count(page, "SaveAdminRecoveryCodes")).toBe(0);
-  expect(await page.evaluate(() => window.careTest.fixtures.recoveryCodes)).toEqual(originalCodes);
+  expect(await page.evaluate(() => window.careTest.fixtures.adminPassword)).toBe(nextPassword);
   await expect(root(page).getByRole("button", { name: "Change password", exact: true })).toBeEnabled();
-  await page.evaluate(() => {
-    window.careTest.fixtures.recoveryFile = "";
-    window.careTest.fixtures.recovery.backup_path = "";
-  });
-  await root(page).getByRole("button", { name: "Re-download backup key", exact: true }).click();
-  await expect(dialog(page).getByLabel("CARE Clinic admin password", { exact: true })).toHaveCount(0);
-  await dialog(page).getByRole("button", { name: "Choose where to save", exact: true }).click();
-  await expect(dialog(page)).toBeHidden();
-  expect(await page.evaluate(() => window.careTest.calls.filter((call) => call.method === "ExportBackupRecovery").map((call) => call.args)))
-    .toEqual([[nextPassword, ""]]);
 });
-
-test("replacement-code cancellation keeps the previous codes valid", async ({ page }) => {
-  await openAdvanced(page);
-  await unlock(page);
-  await root(page).getByRole("button", { name: "New recovery codes" }).click();
-  await expect(dialog(page)).toContainText("invalidates every previous code");
-  await page.evaluate(() => window.careTest.respond("SaveAdminRecoveryCodes", false));
-  await dialog(page).getByRole("button", { name: "Choose where to save" }).click();
-  await expect(dialog(page)).toContainText("No new codes were saved");
-  await expect(dialog(page)).toContainText("existing unused codes still work");
-  expect(await page.evaluate(() => window.careTest.fixtures.recoveryGeneration)).toBe(1);
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(root(page).getByRole("button", { name: "New recovery codes" })).toBeFocused();
-});
-
-test("replacement-code success invalidates the previous set and reports the saved location", async ({ page }) => {
-  await openAdvanced(page);
-  await unlock(page);
-  const originalCodes = await page.evaluate(() => window.careTest.fixtures.recoveryCodes);
-  await root(page).getByRole("button", { name: "New recovery codes" }).click();
-  await page.evaluate(() => {
-    window.careTest.hold("SaveAdminRecoveryCodes");
-  });
-  await dialog(page).getByRole("button", { name: "Choose where to save" }).click();
-  await expect(dialog(page).getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
-  await page.keyboard.press("Enter");
-  expect(await count(page, "SaveAdminRecoveryCodes")).toBe(1);
-  await page.evaluate(() => window.careTest.release("SaveAdminRecoveryCodes"));
-  await expect(dialog(page)).toBeHidden();
-  await expect(root(page)).toContainText("Every previous code is now invalid");
-  await expect(root(page)).toContainText("/test-fixtures/recovery/CARE-clinic-admin-codes.txt");
-  const nextCodes = await page.evaluate(() => window.careTest.fixtures.recoveryCodes);
-  expect(nextCodes).toHaveLength(6);
-  expect(nextCodes.every((code) => !originalCodes.includes(code))).toBe(true);
-});
-
-for (const [failure, expected] of [
-  ["keep recovery materials outside CARE's settings, installation, logs and backup folder", "Choose a separate place for the codes"],
-  ["could not save the recovery file; choose a new filename: file exists", "Choose a new filename"],
-  ["could not activate the new recovery codes; keep the previous sheet and retry: private error", "The new codes weren't activated"],
-] as const) {
-  test(`replacement recovery codes handle ${expected.toLowerCase()}`, async ({ page }) => {
-    await openAdvanced(page);
-    await unlock(page);
-    await root(page).getByRole("button", { name: "New recovery codes" }).click();
-    await page.evaluate((error) => window.careTest.failNext("SaveAdminRecoveryCodes", error), failure);
-    await dialog(page).getByRole("button", { name: "Choose where to save" }).click();
-    await expect(dialog(page)).toContainText(expected);
-    await expect(dialog(page)).not.toContainText("private error");
-    await expect(dialog(page).getByRole("button", { name: "Choose where to save" })).toBeEnabled();
-  });
-}
 
 test("removal is typed, all extras default off, cancellation clears choices, and focus stays in the dialog", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
   await openRemoval(page);
-  const remove = dialog(page).getByRole("button", { name: "Delete everything", exact: true });
+  const remove = dialog(page).getByRole("button", { name: "Remove CARE", exact: true });
   await expect(remove).toBeDisabled();
   for (const checkbox of await dialog(page).getByRole("checkbox").all()) await expect(checkbox).not.toBeChecked();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("delete");
   await expect(remove).toBeDisabled();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
   await expect(remove).toBeEnabled();
-  await dialog(page).getByRole("checkbox", { name: /Also delete the backups/ }).check();
+  await dialog(page).getByRole("checkbox", { name: /Also delete clinic data/ }).check();
+  await expect(dialog(page).getByRole("button", { name: "Delete everything", exact: true })).toBeEnabled();
   await page.keyboard.press("Tab");
   expect(await page.evaluate(() => !!document.activeElement?.closest('[role="alertdialog"]'))).toBe(true);
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
@@ -699,17 +572,15 @@ test("removal submits exact opt-ins once and remains busy until native completio
     window.careTest.fixtures.finishJobs = false;
     window.careTest.hold("RunUninstall");
   });
-  await dialog(page).getByRole("checkbox", { name: /Also remove downloaded images/ }).check();
-  await dialog(page).getByRole("checkbox", { name: /Also remove the CARE Clinic app/ }).check();
+  await dialog(page).getByRole("checkbox", { name: /Also delete clinic data/ }).check();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
   await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
   await page.keyboard.press("Enter");
   expect(await count(page, "RunUninstall")).toBe(1);
   expect(await page.evaluate(() => {
     const call = window.careTest.calls.find((entry) => entry.method === "RunUninstall")!;
-    return { images: call.args[0], backups: call.args[1], rancher: call.args[2],
-      passwordMatches: call.args[3] === window.careTest.fixtures.adminPassword };
-  })).toEqual({ images: true, backups: false, rancher: false, passwordMatches: true });
+    return { removeData: call.args[0], passwordMatches: call.args[1] === window.careTest.fixtures.adminPassword, args: call.args.length };
+  })).toEqual({ removeData: true, passwordMatches: true, args: 2 });
   await page.evaluate(() => window.careTest.release("RunUninstall"));
   await expect(dialog(page)).toBeHidden();
   await expect(root(page).getByRole("button", { name: "Uninstall…", exact: true, includeHidden: true })).toBeDisabled();
@@ -722,37 +593,24 @@ test("removal submits exact opt-ins once and remains busy until native completio
 test("unavailable removal options fail closed and an immediate rejection keeps the dialog open", async ({ page }) => {
   await openAdvanced(page);
   await unlock(page);
-  await page.evaluate(() => window.careTest.failNext("RancherDesktopInstalled", "private native lookup failure"));
+  await page.evaluate(() => window.careTest.failNext("CanRemoveApp", "private native lookup failure"));
   await root(page).getByRole("button", { name: "Uninstall…", exact: true }).click();
   await expect(dialog(page)).toContainText("Removal options couldn't be checked");
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await expect(dialog(page).getByRole("button", { name: "Delete everything", exact: true })).toBeDisabled();
+  await expect(dialog(page).getByRole("button", { name: "Remove CARE", exact: true })).toBeDisabled();
   await dialog(page).getByRole("button", { name: "Check removal options again" }).click();
-  await expect(dialog(page).getByRole("button", { name: "Delete everything", exact: true })).toBeEnabled();
+  await expect(dialog(page).getByRole("button", { name: "Remove CARE", exact: true })).toBeEnabled();
   await page.evaluate(() => window.careTest.failNext("RunUninstall", "something else is still running"));
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   await expect(dialog(page)).toContainText("Removal didn't start");
   await expect(dialog(page).getByLabel("Type DELETE to confirm", { exact: true })).toHaveValue("");
   await expect(page.getByRole("status", { name: "Removing CARE from this computer", exact: true })).toBeHidden();
   await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   await expect(dialog(page)).toBeHidden();
   await expect(page.getByRole("status", { name: "Removing CARE from this computer", exact: true })).toBeVisible();
   expect(await count(page, "RunUninstall")).toBe(2);
-});
-
-test("rebuild requires its own decision and cancellation does not start it", async ({ page }) => {
-  await openAdvanced(page);
-  await unlock(page);
-  await root(page).getByRole("button", { name: "Rebuild", exact: true }).click();
-  await expect(dialog(page)).toContainText("Patient data and backups are kept");
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(await count(page, "ClinicAction")).toBe(0);
-  await root(page).getByRole("button", { name: "Rebuild", exact: true }).click();
-  await dialog(page).getByRole("button", { name: "Rebuild CARE", exact: true }).click();
-  await expect(dialog(page)).toBeHidden();
-  expect(await count(page, "ClinicAction")).toBe(1);
 });
 
 test("unreadable settings never show guessed values or enable saving", async ({ page }) => {
@@ -798,24 +656,6 @@ test("partial saves keep the remaining edits and retry only the unwritten file b
   expect(await count(page, "ClinicAction")).toBe(1);
 });
 
-test("an unfinished restore disables environment writes, rebuilds and removal", async ({ page }) => {
-  await openAdvanced(page);
-  await unlock(page);
-  await page.evaluate(() => {
-    window.careTest.state.restore_pending = true;
-    window.careTest.emit("care-done", 0, "status");
-  });
-  await expect(root(page).getByRole("button", { name: "Rebuild", exact: true })).toBeDisabled();
-  await expect(root(page).getByRole("button", { name: "Uninstall…", exact: true, includeHidden: true })).toBeDisabled();
-  await group(page, "Staff access");
-  await expect(root(page)).toContainText("Finish the earlier restore first");
-  await expect(root(page).getByRole("spinbutton", { name: "Sign out inactive staff after" })).toBeDisabled();
-  await expect(root(page).getByRole("button", { name: "Save changes" })).toBeDisabled();
-  expect(await count(page, "WriteEnv")).toBe(0);
-  expect(await count(page, "RunUninstall")).toBe(0);
-  expect(await count(page, "ClinicAction")).toBe(0);
-});
-
 test("Advanced unlock expires and removes sensitive drafts without starting an operation", async ({ page }) => {
   await page.clock.install();
   await openAdvanced(page);
@@ -829,23 +669,8 @@ test("Advanced unlock expires and removes sensitive drafts without starting an o
   await expect(root(page)).toContainText("Advanced has locked");
   await expect(root(page).getByLabel("CARE Clinic admin password", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Value for CUSTOM_SECRET", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Re-download backup key", exact: true })).toHaveCount(0);
   expect(await count(page, "WriteEnv")).toBe(0);
   expect(await count(page, "ClinicAction")).toBe(0);
-});
-
-test("the backup recovery key card is only available after unlocking Advanced", async ({ page }) => {
-  await openAdvanced(page);
-  await expect(page.getByRole("button", { name: "Re-download backup key", exact: true })).toHaveCount(0);
-  await unlock(page);
-  const card = root(page).getByRole("region", { name: "Backup recovery key" });
-  await expect(card.getByRole("button", { name: "Re-download backup key", exact: true })).toBeEnabled();
-  await card.getByRole("button", { name: "Re-download backup key", exact: true }).click();
-  await expect(dialog(page)).toContainText("the original PEM is not needed");
-  await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  await root(page).getByRole("button", { name: "Lock Advanced settings" }).click();
-  await expect(page.getByRole("button", { name: "Re-download backup key", exact: true })).toHaveCount(0);
-  expect(await count(page, "ExportBackupRecovery")).toBe(0);
 });
 
 test("Windows installed-clinic removal requires Desktop authentication and a separate confirmation", async ({ page }) => {
@@ -853,9 +678,9 @@ test("Windows installed-clinic removal requires Desktop authentication and a sep
   await page.getByLabel("CARE Clinic admin password", { exact: true }).fill(desktopPassword);
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await page.getByRole("button", { name: "Uninstall…", exact: true }).click();
-  await expect(dialog(page).getByRole("button", { name: "Delete everything", exact: true })).toBeDisabled();
+  await expect(dialog(page).getByRole("button", { name: "Remove CARE", exact: true })).toBeDisabled();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await expect(dialog(page).getByRole("button", { name: "Delete everything", exact: true })).toBeEnabled();
+  await expect(dialog(page).getByRole("button", { name: "Remove CARE", exact: true })).toBeEnabled();
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
   expect(await count(page, "RunUninstall")).toBe(0);
   expect(await count(page, "ExitUninstall")).toBe(0);
@@ -878,7 +703,7 @@ test("Windows unfinished-setup removal needs typed confirmation and cancellation
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
   await expect(dialog(page).getByRole("button", { name: "Remove setup", exact: true })).toBeEnabled();
   await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(await count(page, "PurgeResidue")).toBe(0);
+  expect(await count(page, "CleanupFailedInstall")).toBe(0);
   expect(await count(page, "ExitUninstall")).toBe(0);
   await page.getByRole("button", { name: "Remove unfinished setup…" }).click();
   await expect(dialog(page).getByLabel("Type DELETE to confirm", { exact: true })).toHaveValue("");
@@ -891,7 +716,7 @@ test("the optional app removal waits for both successful native completion event
   await page.evaluate(() => { window.careTest.fixtures.finishJobs = false; });
   await dialog(page).getByRole("checkbox", { name: /Also remove the CARE Clinic app/ }).check();
   await dialog(page).getByLabel("Type DELETE to confirm", { exact: true }).fill("DELETE");
-  await dialog(page).getByRole("button", { name: "Delete everything", exact: true }).click();
+  await dialog(page).getByRole("button", { name: "Remove CARE", exact: true }).click();
   await expect(dialog(page)).toBeHidden();
   expect(await count(page, "RemoveApp")).toBe(0);
   await page.evaluate(() => {
@@ -934,7 +759,6 @@ test("an external panel blocker disables the Desktop gate and guards direct form
   await expect(password).toBeDisabled();
   await expect(password).toHaveAttribute("type", "password");
   await expect(root(page).getByRole("button", { name: "Unlock", exact: true })).toBeDisabled();
-  await expect(root(page).getByRole("button", { name: "Forgot CARE Clinic password?", exact: true })).toBeDisabled();
   await root(page).locator("form").dispatchEvent("submit");
   expect(await count(page, "VerifyAdminPassword")).toBe(0);
   await releaseAdvanced(page);
@@ -943,37 +767,26 @@ test("an external panel blocker disables the Desktop gate and guards direct form
   await expect(root(page).getByRole("heading", { name: "Clinic settings", exact: true })).toBeVisible();
 });
 
-for (const mode of ["reset", "change"] as const) {
-  test(`an external panel blocker disables the open CARE Clinic password ${mode} form`, async ({ page }) => {
-    await openAdvanced(page);
-    if (mode === "change") {
-      await unlock(page);
-      await root(page).getByRole("button", { name: "Change password", exact: true }).click();
-    } else {
-      await root(page).getByRole("button", { name: "Forgot CARE Clinic password?", exact: true }).click();
-      await root(page).getByLabel("Unused recovery code", { exact: true }).fill(recoveryCode);
-    }
-    const form = mode === "change" ? dialog(page) : root(page);
-    await fillNewPassword(page, form);
-    const submit = form.getByRole("button", { name: mode === "change" ? "Change CARE Clinic password" : "Reset CARE Clinic password", exact: true });
-    await expect(submit).toBeEnabled();
-    await blockAdvanced(page);
-    await expect(submit).toBeDisabled();
-    await expect(form.getByLabel("New CARE Clinic admin password", { exact: true })).toBeDisabled();
-    await expect(form.getByLabel("Confirm new CARE Clinic admin password", { exact: true })).toBeDisabled();
-    if (mode === "reset") await expect(form.getByLabel("Unused recovery code", { exact: true })).toBeDisabled();
-    await form.locator("form").dispatchEvent("submit");
-    expect(await count(page, mode === "change" ? "ChangeAdminPassword" : "ResetAdminPassword")).toBe(0);
-    await form.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(page.getByLabel("New CARE Clinic admin password", { exact: true })).toHaveCount(0);
-    await expect(page.getByLabel("Unused recovery code", { exact: true })).toHaveCount(0);
-  });
-}
+test("an external panel blocker disables the open CARE Clinic password change form", async ({ page }) => {
+  await openAdvanced(page);
+  await unlock(page);
+  await root(page).getByRole("button", { name: "Change password", exact: true }).click();
+  const form = dialog(page);
+  await fillNewPassword(page, form);
+  const submit = form.getByRole("button", { name: "Change CARE Clinic password", exact: true });
+  await expect(submit).toBeEnabled();
+  await blockAdvanced(page);
+  await expect(submit).toBeDisabled();
+  await expect(form.getByLabel("New CARE Clinic admin password", { exact: true })).toBeDisabled();
+  await expect(form.getByLabel("Confirm new CARE Clinic admin password", { exact: true })).toBeDisabled();
+  await form.locator("form").dispatchEvent("submit");
+  expect(await count(page, "ChangeAdminPassword")).toBe(0);
+  await form.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByLabel("New CARE Clinic admin password", { exact: true })).toHaveCount(0);
+});
 
 for (const action of [
-  { open: "New recovery codes", submit: "Choose where to save", method: "SaveAdminRecoveryCodes" },
-  { open: "Rebuild", submit: "Rebuild CARE", method: "ClinicAction" },
-  { open: "Uninstall…", submit: "Delete everything", method: "RunUninstall" },
+  { open: "Uninstall…", submit: "Remove CARE", method: "RunUninstall" },
 ] as const) {
   test(`an external panel blocker disables an already open ${action.open} dialog`, async ({ page }) => {
     await openAdvanced(page);
@@ -993,7 +806,7 @@ for (const action of [
     expect(await count(page, "RemoveApp")).toBe(0);
     await dialog(page).getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(dialog(page)).toBeHidden();
-    for (const name of ["Change password", "New recovery codes", "Rebuild", "Uninstall…"]) {
+    for (const name of ["Change password", "Uninstall…"]) {
       await expect(root(page).getByRole("button", { name, exact: true })).toBeDisabled();
     }
     await releaseAdvanced(page);

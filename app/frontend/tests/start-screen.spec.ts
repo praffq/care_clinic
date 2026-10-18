@@ -69,10 +69,10 @@ test("setup initializes once on its own screen before any guarded reads or write
   await visit(page);
   await page.evaluate(() => window.careTest.hold("BeginServerSetup"));
   await setup(page).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
-  await expect(page.getByRole("heading", { name: "Room for the clinic", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Checking this computer", exact: true })).toBeVisible();
   await expect(page.getByText("Preparing setup\u2026", { exact: true }).first()).toBeVisible();
   expect(await methodCount(page, "BeginServerSetup")).toBe(1);
-  for (const method of ["SetMDNSName", "GetSetupRecoveryStatus", "BackupDirSpace"]) {
+  for (const method of ["SetMDNSName", "MDNSStatus", "HostChecks"]) {
     expect(await methodCount(page, method)).toBe(0);
   }
   await expect(page.getByRole("button", { name: "Back", exact: true })).toBeDisabled();
@@ -86,11 +86,7 @@ test("setup initializes once on its own screen before any guarded reads or write
   expect(await methodCount(page, "SelectRole")).toBe(0);
 
   await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Removing stale files from an earlier setup", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Installing what CARE needs" })).toBeVisible();
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Room for the clinic", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Checking this computer", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(setup(page)).toBeVisible();
   expect(await page.evaluate(() => window.careTest.state.role)).toBe("");
@@ -201,7 +197,7 @@ for (const first of ["update", "setup", "client"] as const) {
       expect(await methodCount(page, "BeginServerSetup")).toBe(0);
       expect(await page.evaluate(() => window.careTest.state.role)).toBe("");
     } else {
-      await expect(page.getByRole("heading", { name: first === "setup" ? "Room for the clinic" : "Find your clinic's server" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: first === "setup" ? "Checking this computer" : "Find your clinic's server" })).toBeVisible();
       expect(await methodCount(page, "InstallAppUpdate")).toBe(0);
     }
   });

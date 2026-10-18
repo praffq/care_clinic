@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -30,21 +29,6 @@ func (a *App) askToProceed(title, message, yes string) (bool, error) {
 		return false, err
 	}
 	return affirmative(sel, yes), nil
-}
-
-func (a *App) ChooseFolder(title string) (dir string, err error) {
-	defer a.logError(&err)
-	opts := wruntime.OpenDialogOptions{Title: title}
-	if runtime.GOOS == "windows" {
-		desktop, err := proc.DesktopDir()
-		if err != nil {
-			return "", fmt.Errorf("couldn't locate your Desktop: %w", err)
-		}
-		opts.DefaultDirectory = desktop
-	} else if home, err := os.UserHomeDir(); err == nil {
-		opts.DefaultDirectory = home
-	}
-	return wruntime.OpenDirectoryDialog(a.ctx, opts)
 }
 
 func (a *App) LogPath() string { return a.log.Path() }

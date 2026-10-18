@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useAppUpdate, type AppUpdateController } from "@/hooks/use-app-update";
 import { errorText, megabytes } from "@/lib/format";
+import { SETUP_STEPS } from "@/lib/run-steps";
 import { useCare } from "@/state/care-store";
 
 import { InstallLayout } from "./install-layout";
@@ -81,8 +82,8 @@ export function FailedScreen() {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState("");
   const canResume = run.failure?.can_retry === true;
-  const interrupted = run.failure?.download_interrupted === true;
-  const update = useAppUpdate(retrying, !interrupted, () => pending.current);
+  const failedStep = SETUP_STEPS.find((s) => run.steps[s.id]?.status === "failed");
+  const update = useAppUpdate(retrying, true, () => pending.current);
   const disabled = retrying || busy || update.active;
 
   const retry = async () => {
@@ -94,7 +95,7 @@ export function FailedScreen() {
       await (canResume ? resumeInstall() : retryInstall());
     } catch (error) {
       setRetryError(canResume
-        ? "Installation couldn't be retried. Your saved setup has been kept. Check that the backup and recovery files are available, then try again or open the log file for support."
+        ? "Installation couldn't be retried. Your saved setup has been kept. Try again, or open the log file for support."
         : /\b(cancelled|canceled|declined)\b/i.test(errorText(error))
         ? "Cleanup was cancelled. Setup hasn't restarted and some unfinished installation may remain. Try again when you're ready."
         : "The unfinished installation couldn't be cleared. Setup hasn't restarted. Try again, or share the log file with your support contact.");
@@ -107,7 +108,7 @@ export function FailedScreen() {
   return (
     <InstallLayout
       failed
-      title={interrupted ? "The download was interrupted" : "Something went wrong during installation"}
+      title="Something went wrong during installation"
       subtitle="Installation stopped. Your clinic isn't ready to use yet."
       footer={<>
         <Button className="on-back" variant="ghost" disabled={disabled} onClick={() => {
@@ -127,20 +128,18 @@ export function FailedScreen() {
       <section className="on-card install-failure-card" aria-labelledby="install-failure-heading">
         <div className="on-card-head">
           <span className="on-tile on-large on-bad" aria-hidden="true"><AlertTriangle /></span>
-          <div className="on-grow"><h2 id="install-failure-heading">{interrupted ? "Check the internet connection" : "CARE couldn't finish setting up the clinic"}</h2>
-            <p>{interrupted ? "A required download didn't finish. Keep CARE Clinic open, reconnect to the internet, then try again."
-              : "It stopped partway through. The details are in the log file."}</p></div>
+          <div className="on-grow"><h2 id="install-failure-heading">CARE couldn't finish setting up the clinic</h2>
+            <p>{failedStep ? `It stopped at “${failedStep.label}”.` : "It stopped partway through."} The details are in the log file.</p></div>
         </div>
         <LogButton />
       </section>
-      {!interrupted || update.active ? <FailedInstallUpdate controller={update} /> : null}
+      <FailedInstallUpdate controller={update} />
       <div className={canResume ? "install-retry-consequences install-resume-consequences" : "install-retry-consequences"} id="install-retry-consequences">
         {canResume ? <Callout tone="info" title="Your setup choices are kept">
-          <p>Trying again keeps your clinic address, backup folder, admin password and saved recovery files. Completed downloads and images can be reused.</p>
+          <p>Trying again keeps your clinic address and admin password. Completed downloads and images can be reused.</p>
           <p>Keep CARE Clinic open to continue this installation without starting setup over.</p>
-        </Callout> : <Callout tone="danger" title="Trying again starts the backup and password steps over">
-          <p>The unfinished installation is cleared. Your clinic address and existing backups are kept. Choose the backup folder and admin password again, and save fresh recovery materials.</p>
-          <p>The old CARE Clinic admin codes stop working. Keep your old backup recovery files — you may still need them to open earlier backups.</p>
+        </Callout> : <Callout tone="danger" title="Trying again starts setup over">
+          <p>The unfinished installation is cleared. Your clinic address is kept. Check this computer and choose the admin password again.</p>
         </Callout>}
       </div>
       {retryError ? <Callout tone="danger" title={canResume ? "Installation hasn't restarted" : "Setup hasn't restarted"}>{retryError}</Callout> : null}

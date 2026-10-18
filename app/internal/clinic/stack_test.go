@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/agent"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack"
 	"github.com/ohcnetwork/care_desktop/app/internal/stack/stacktest"
 )
@@ -66,8 +68,23 @@ func TestStartConfiguresMigratesThenStarts(t *testing.T) {
 		}
 		e := &Clinic{InstallDir: dir, MDNSName: "north",
 			AdminPassword: "SyntheticAdminSecret123", Stack: fs.Runtime, StackImages: images, localSetupOffered: true}
+		var steps []string
+		e.Progress = func(ev progress.Event) {
+			if n := len(steps); n == 0 || steps[n-1] != ev.Step+":"+string(ev.State) {
+				steps = append(steps, ev.Step+":"+string(ev.State))
+			}
+		}
 		if err := e.Start(); err != nil {
 			t.Fatal(err)
+		}
+		admin := "admin:done"
+		if existing {
+			admin = "admin:skipped"
+		}
+		want := []string{"configure:active", "configure:done", "database:active", "database:done",
+			"start:active", "start:done", "admin:active", admin, "computer:skipped"}
+		if !slices.Equal(steps, want) {
+			t.Fatalf("steps = %v, want %v", steps, want)
 		}
 		got := strings.Join(fs.Methods(), " ")
 		if want := "RunMigrations StackUp Manage"; !strings.HasSuffix(got, want) {

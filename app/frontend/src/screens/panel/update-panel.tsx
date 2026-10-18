@@ -1,16 +1,13 @@
-import { Download, Monitor, RefreshCw, ScrollText, Stethoscope } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Download, Monitor, ScrollText } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import type { AppUpdateController } from "@/hooks/use-app-update";
-import { bridge, onCareEvent } from "@/lib/bridge";
-import { errorText, megabytes } from "@/lib/format";
+import { bridge } from "@/lib/bridge";
+import { megabytes } from "@/lib/format";
 import { useCare } from "@/state/care-store";
-import type { CareCheck, ChannelStatus } from "@/types";
-import { usePanelRequirements } from "./panel-requirements";
 import { PanelBadge, PanelLogButton, PanelNotice, PanelPageHeader, usePanelTask } from "./panel-ui";
-import { usePanelUpdateLock } from "./panel-update-lock";
 
 function checkedTime(timestamp: number) {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -20,9 +17,8 @@ export function UpdatePanel({ appUpdate }: { appUpdate: AppUpdateController }) {
   const { tab, reloadUpdateChecks } = useCare();
   useEffect(() => { if (tab === "updates") void reloadUpdateChecks(); }, [tab, reloadUpdateChecks]);
   return <div className="panel-page" aria-label="Updates">
-    <PanelPageHeader title="Updates" subtitle="Keep CARE and CARE Clinic up to date." />
+    <PanelPageHeader title="Updates" subtitle="Keep CARE Clinic up to date." />
     <UpdateChecksNotice />
-    <CareSoftwareCard />
     <ClinicApplicationCard controller={appUpdate} />
     <div className="panel-update-foot">
       <p className="panel-small panel-grow">Updates need internet. Your clinic records are kept.</p>
@@ -33,154 +29,19 @@ export function UpdatePanel({ appUpdate }: { appUpdate: AppUpdateController }) {
 
 function UpdateChecksNotice() {
   const { updateChecks, setTab } = useCare();
-  const appOff = updateChecks?.app === false;
-  const careOff = updateChecks?.care === false;
   if (!updateChecks) return null;
   const open = <Button onClick={() => setTab("advanced")}>Open Advanced</Button>;
-  if (!appOff && !careOff) return <PanelNotice tone="ok" title="Automatic update checks are on" actions={open} dismissKey="checks-on">
-    CARE Clinic looks for new versions of CARE and of this app. An administrator can turn either check off in Advanced.
+  if (updateChecks.app) return <PanelNotice tone="ok" title="Automatic update checks are on" actions={open} dismissKey="checks-on">
+    CARE Clinic looks for new versions of this app. An administrator can turn this off in Advanced.
   </PanelNotice>;
-  const title = appOff && careOff ? "Update checks are turned off"
-    : appOff ? "CARE Clinic app update checks are turned off" : "CARE software update checks are turned off";
-  const detail = appOff && careOff ? "CARE Clinic won't look for new versions of CARE or of this app."
-    : appOff ? "CARE Clinic won't look for new versions of this app. CARE software updates still work."
-      : "CARE Clinic won't look for or install CARE software updates. CARE Clinic app updates still work.";
-  return <PanelNotice tone="warning" title={title} actions={open} dismissKey={`checks-off|${appOff}|${careOff}`}>
-    {detail} An administrator can turn them back on in Advanced.
+  return <PanelNotice tone="warning" title="Update checks are turned off" actions={open} dismissKey="checks-off">
+    CARE Clinic won't look for new versions of this app. An administrator can turn them back on in Advanced.
   </PanelNotice>;
-}
-
-function CareSoftwareCard() {
-  const { log, busy, busyLabel, restorePending, careUpdate, applyCareUpdate, dismissCareUpdate, updateChecks, reloadUpdateChecks } = useCare();
-  const off = updateChecks?.care === false;
-  const requirements = usePanelRequirements();
-  const updateLock = usePanelUpdateLock();
-  const [status, setStatus] = useState<ChannelStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [checking, setChecking] = useState(false);
-  const [checkedAt, setCheckedAt] = useState(0);
-  const [upToDate, setUpToDate] = useState(false);
-  const [error, setError] = useState("");
-  const request = useRef(0);
-  const checkPending = useRef(false);
-  const mounted = useRef(false);
-  const action = usePanelTask();
-
-  const reload = useCallback(async () => {
-    const id = ++request.current;
-    try {
-      const next = await bridge.CareUpdateStatus();
-      if (mounted.current && id === request.current) {
-        setStatus(next);
-        setLoading(false);
-      }
-    } catch (cause) {
-      log(`CARE update status: ${errorText(cause)}`);
-      if (mounted.current && id === request.current) {
-        setError("Couldn't read the CARE update status. Try checking again, or open the log file for support.");
-        setLoading(false);
-      }
-    }
-  }, [log]);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; request.current++; };
-  }, []);
-  useEffect(() => { if (!busy) void reload(); }, [reload, careUpdate, busy]);
-  useEffect(() => onCareEvent("care-check", (check: CareCheck) => {
-    checkPending.current = check.running;
-    setChecking(check.running);
-    if (check.running) {
-      setError("");
-      setUpToDate(false);
-      return;
-    }
-    if (check.error) {
-      log(`CARE update check: ${check.error}`);
-      setError("Updates couldn't be checked. Check the internet connection and try again. If it keeps failing, share the log file with support.");
-      setUpToDate(false);
-    } else {
-      setError("");
-      setCheckedAt(Date.now());
-      setUpToDate(!check.found);
-    }
-    void reload();
-  }), [reload, log]);
-
-  const check = async () => {
-    if (off || checkPending.current || busy || updateLock.isActive() || requirements.working || restorePending) return;
-    checkPending.current = true;
-    setChecking(true);
-    setUpToDate(false);
-    setError("");
-    try {
-      await bridge.CheckCareUpdate();
-      // The native method accepts the check; care-check reports its result.
-    } catch (cause) {
-      log(`CARE update check: ${errorText(cause)}`);
-      checkPending.current = false;
-      setChecking(false);
-      if (/update checks are turned off/i.test(errorText(cause))) void reloadUpdateChecks();
-      else setError("Couldn't start the update check. Try again, or open the log file for support.");
-    }
-  };
-  const later = async () => {
-    if (locked || updateLock.isActive()) return;
-    await action.run(dismissCareUpdate, "Couldn't save this choice. Try again, or open the log file for support.");
-  };
-  const apply = () => {
-    if (locked || updateLock.isActive()) return;
-    void action.run(applyCareUpdate, "Couldn't start the CARE update. Try again, or open the log file for support.");
-  };
-  const pending = !off && !!(careUpdate?.backend || careUpdate?.frontend || status?.pending_backend || status?.pending_frontend);
-  const backendUpdate = !!(careUpdate?.backend || status?.pending_backend);
-  const applying = busy && busyLabel === "Updating CARE";
-  const locked = busy || updateLock.active || requirements.working || restorePending || action.working;
-  const failed = !off && !!error;
-
-  return <section className="panel-card panel-card-pad panel-update-card" aria-label="CARE software">
-    <div className="panel-update-head">
-      <span className="panel-tile"><Stethoscope aria-hidden="true" /></span>
-      <div className="panel-grow">
-        <h2 className="panel-title">CARE software</h2>
-        <p className="panel-card-sub">{off ? "Update checks are turned off in Advanced."
-          : checking ? "Checking for updates…"
-            : checkedAt ? `Checked at ${checkedTime(checkedAt)} · Updates are prepared in the background.`
-              : "Updates are prepared in the background."}</p>
-      </div>
-      {off && !applying ? <PanelBadge>Checks off</PanelBadge>
-        : <PanelBadge tone={error ? "warning" : pending || upToDate ? "ok" : "neutral"} working={checking || applying || loading}>
-          {applying ? "Installing" : checking ? "Checking…" : error ? "Couldn't check"
-            : pending ? "Ready to install" : upToDate ? "Up to date" : loading ? "Checking status…" : "Not checked yet"}
-        </PanelBadge>}
-      {!off ? <Button aria-label="Check CARE software updates" disabled={checking || locked} onClick={() => void check()}>Check now</Button> : null}
-    </div>
-    {applying ? <div className="panel-update-progress" role="status">
-      <h3>Installing the CARE software update…</h3>
-      <Progress aria-label="CARE software update" />
-      <p className="panel-small">Keep this computer on and CARE Clinic open. Staff may be signed out briefly.</p>
-    </div> : pending ? <PanelNotice tone="ok" title="An update is ready">
-      {backendUpdate ? "Staff will be signed out briefly while it installs. " : "CARE will reload when the update is applied. "}
-      If you choose Later, it will be applied the next time the clinic starts.
-      <div className="panel-actions">
-        <Button disabled={locked || checking} onClick={() => void later()}>Later</Button>
-        <Button variant="primary" disabled={locked || checking} onClick={apply}>
-          <Download aria-hidden="true" />Install now
-        </Button>
-      </div>
-    </PanelNotice> : checking && !off ? <p className="panel-small" role="status">
-      Anything found is prepared in the background. You can keep using the clinic while this runs.
-    </p> : null}
-    {failed || action.error ? <PanelNotice title={failed ? "Couldn't check for updates" : "Couldn't finish that"} tone="warning"
-      actions={<>{!off ? <Button disabled={checking || locked} onClick={() => void check()}><RefreshCw aria-hidden="true" />Try again</Button> : null}<PanelLogButton /></>}>
-      {failed ? error : action.error}
-    </PanelNotice> : null}
-  </section>;
 }
 
 function ClinicApplicationCard({ controller }: { controller: AppUpdateController }) {
-  const { system } = useCare();
+  const { service } = useCare();
+  const running = service?.summary.running === true;
   const { update, version, checking, problem, progress, active, disabled, check, install, off } = controller;
   const action = usePanelTask();
   const [checkedAt, setCheckedAt] = useState(0);
@@ -232,7 +93,7 @@ function ClinicApplicationCard({ controller }: { controller: AppUpdateController
       <p className="panel-small">{phase === "installer" ? "Follow the installer to finish, then reopen CARE Clinic."
         : phase === "restarting" ? "CARE Clinic is reopening."
           : "Keep CARE Clinic open. Your computer may ask for permission to replace the app."}</p>
-      {system === "running" ? <p className="panel-small">The clinic keeps running while CARE Clinic updates.</p> : null}
+      {running ? <p className="panel-small">The clinic keeps running while CARE Clinic updates.</p> : null}
       {phase === "installer" ? <Button disabled={controller.updating} onClick={controller.dismiss}>Done</Button> : null}
     </div> : off ? null : problem ? <PanelNotice title={problemTitle} tone={problem.kind === "download" || problem.kind === "install" ? "danger" : "warning"}
       actions={<>
@@ -243,7 +104,7 @@ function ClinicApplicationCard({ controller }: { controller: AppUpdateController
       {problemDetail}
     </PanelNotice> : update?.available ? <PanelNotice tone="ok" title={`CARE Clinic ${update.version} is available`}>
       Downloads and installs the new version. Your computer may ask for permission.
-      {system === "running" ? " Your clinic keeps running." : ""}
+      {running ? " Your clinic keeps running." : ""}
       <div className="panel-actions">
         {update.notes_url ? <Button disabled={action.working} onClick={() => void action.run(() => bridge.OpenURL(update.notes_url),
           "Couldn't open what's new. Try again when this computer is connected to the internet.")}>

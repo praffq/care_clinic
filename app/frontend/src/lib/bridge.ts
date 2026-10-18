@@ -68,13 +68,10 @@ export type CareEvent =
   | "care-error"
   | "setup-done"
   | "setup-failed"
+  | "setup-progress"
   | "uninstalled"
-  | "care-update"
-  | "care-check"
-  | "care-storage"
-  | "admin-recovery-codes-changed"
+  | "service-status"
   | "app-update-progress"
-  | "prereq-download-progress"
   | "client-connect-progress"
   | "quit-requested"
   | "confirmation-requested"
@@ -109,7 +106,7 @@ export function onCareEvent(
  *
  * Only for lines that ORIGINATE here. Anything arriving on `care-log` was written
  * to the file by Go before it was emitted, so sending it back would duplicate
- * every line of every docker build.
+ * every line of every install.
  */
 export function logToHost(line: string): void {
   try {

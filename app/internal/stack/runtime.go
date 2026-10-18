@@ -18,6 +18,7 @@ import (
 
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
 
@@ -37,7 +38,12 @@ type Runtime struct {
 	StateDir string
 	// Log receives progress lines; nil discards them.
 	Log func(string)
+	// Progress receives byte counts for the "images" step.
+	Progress progress.Func
 }
+
+// StepImages is the progress step Images reports.
+const StepImages = "images"
 
 // DefaultStateDir is where the app and ctl keep host-side clinic state.
 func DefaultStateDir() (string, error) {
@@ -137,12 +143,33 @@ func (r *Runtime) Configure(ctx context.Context, kit fs.FS, host string, origins
 }
 
 // Images loads (tarball) or pulls each image; the agent verifies digests.
+// Loads report their bytes as one total; pulls report each image's download.
 func (r *Runtime) Images(ctx context.Context, images []Image) error {
 	ag := r.Service.Agent()
+	var total int64
 	for _, img := range images {
 		if img.Tarball == "" {
+			continue
+		}
+		info, err := os.Stat(img.Tarball)
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+	}
+	load := r.Progress.Meter(StepImages, "", total)
+	for i, img := range images {
+		detail := fmt.Sprintf("%s (%d of %d)", imageTitle(img), i+1, len(images))
+		if img.Tarball == "" {
 			r.logf("Pulling %s", img.Ref())
-			if err := ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, r.frames); err != nil {
+			frames := func(f protocol.Frame) {
+				if p := f.Progress; p != nil && p.Total > 0 {
+					r.Progress.Bytes(StepImages, "Downloading "+detail, p.Bytes, p.Total)
+				}
+				r.frames(f)
+			}
+			r.Progress.Start(StepImages, "Downloading "+detail)
+			if err := ag.Op(ctx, protocol.ImagePull{Role: img.Role, Ref: img.Repo, Digest: img.Digest}, nil, frames); err != nil {
 				return err
 			}
 			continue
@@ -152,13 +179,32 @@ func (r *Runtime) Images(ctx context.Context, images []Image) error {
 		if err != nil {
 			return err
 		}
-		err = ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, f, nil)
+		load.SetDetail("Loading " + detail)
+		err = ag.LoadImage(ctx, protocol.ImageLoad{Role: img.Role, Digest: img.Digest}, load.Reader(f), nil)
 		_ = f.Close()
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+var imageTitles = map[protocol.ImageRole]string{
+	protocol.ImageRoleBackend:  "CARE server",
+	protocol.ImageRoleFrontend: "CARE web app",
+	protocol.ImageRoleCaddy:    "web proxy",
+	protocol.ImageRoleBackup:   "backup tools",
+	protocol.ImageRolePostgres: "database",
+	protocol.ImageRoleRedis:    "task queue",
+	protocol.ImageRoleSilo:     "file storage",
+}
+
+// imageTitle names an image for people.
+func imageTitle(img Image) string {
+	if t, ok := imageTitles[img.Role]; ok {
+		return t
+	}
+	return img.Repo
 }
 
 // Install loads the images, configures the clinic for host and brings the

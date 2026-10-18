@@ -9,6 +9,9 @@ or push a tag to start a build. The workflow reads the selected commit's
 applications, creates a tag automatically, and creates a **draft prerelease**.
 Nothing is published to clinic users automatically.
 
+> In this fork the push trigger is disabled while the v2 engine work is in
+> progress: `release.yml` runs only when started by hand.
+
 Windows builds are signed through SignPath when the
 [SignPath configuration](#windows-signing-signpath) is present; otherwise they
 are unsigned previews. macOS retains the existing optional Developer ID signing
@@ -35,46 +38,12 @@ protection.
 | `POSTGRES_IMAGE`, `REDIS_IMAGE`, `MINIO_IMAGE`, `CADDY_IMAGE` | Deliberately chosen image versions; use immutable digests when available. |
 | `CORAZA_VERSION` | The WAF module version used to build the proxy. |
 | `BACKUP_IMAGE`, `CADDY_WAF_IMAGE`, `BACKEND_IMAGE`, `FRONTEND_IMAGE` | Local output image names. These are not upstream version selectors; normally leave them alone. |
-| `RANCHER_*`, `GIT_WINDOWS_*`, `DOCKER_LINUX_*`, `COMPOSE_LINUX_*` | The exact Rancher Desktop, Git for Windows, and Linux Docker Engine/Compose downloads the app installs. See [below](#bump-a-pinned-prerequisite). |
 
-Changing these branches changes what every installed clinic follows from its
-next update check onward, not only what this release ships. Only point them at
-a branch whose commits are verified.
+These refs select the CARE sources a clinic builds at install time. Only point
+them at a branch whose commits are verified.
 
 Do not add passwords, signing credentials, or clinic-specific data to this file:
 the exact file is embedded in the app and attached to the release.
-
-### Bump a pinned prerequisite
-
-Only bump to a stable upstream release, and test the new installer on a clean
-machine for each platform before releasing it.
-
-1. Set the version without a leading `v`: `RANCHER_VERSION` (for example
-   `1.24.0`), `GIT_WINDOWS_VERSION` (the Git for Windows tag, for example
-   `2.55.0.windows.5`), `DOCKER_LINUX_VERSION` (a `docker-<version>.tgz` listed at
-   `download.docker.com/linux/static/stable/x86_64/`, for example `29.8.1`), or
-   `COMPOSE_LINUX_VERSION` (the `docker/compose` release, for example `5.5.1`).
-2. Compute the SHA-256 of each file from its official release page:
-
-   ```sh
-   v=1.24.0; r=https://github.com/rancher-sandbox/rancher-desktop/releases/download/v$v
-   for f in Rancher.Desktop-$v.aarch64.dmg Rancher.Desktop-$v.x86_64.dmg Rancher.Desktop.Setup.$v.msi; do
-     curl -fsSL "$r/$f" | shasum -a 256
-   done
-   curl -fsSL https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/Git-2.55.0.5-64-bit.exe | shasum -a 256
-   for a in x86_64 aarch64; do
-     curl -fsSL https://download.docker.com/linux/static/stable/$a/docker-29.8.1.tgz | shasum -a 256
-     curl -fsSL https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-$a | shasum -a 256
-   done
-   ```
-
-3. Put each hash in its `*_SHA256` key. Rancher also publishes a
-   `<file>.sha512sum` beside each installer, and Compose a
-   `docker-compose-linux-<arch>.sha256`; checking against them confirms the file
-   you hashed is the one upstream released.
-
-The release workflow downloads each pinned installer again and fails if any hash
-differs, so a wrong or missing value cannot reach a draft.
 
 `deployments/.env` is the version source of truth. Do not maintain
 `app/wails.json`'s `info.productVersion` by hand. The staging script synchronizes
@@ -86,7 +55,7 @@ release input.
 Merging the version PR into `main` runs **Release CARE Clinic**. Its first
 job, **Decide whether to release**, compares `CARE_CLINIC_VERSION` with the
 commit before the push: when it changed, the release continues; when only other
-`.env` values changed (an image or prerequisite pin, a CARE branch), every
+`.env` values changed (an image pin, a CARE branch), every
 other job is skipped and the run ends without a release. Pushes that do not
 touch `deployments/.env` do not start the workflow at all.
 
@@ -115,10 +84,9 @@ succeeds. For `CARE_CLINIC_VERSION=0.1.1`, the tag is `v0.1.1`.
 | --- | --- |
 | Gate | On a push to `main`, continue only when `CARE_CLINIC_VERSION` differs from the previous commit; otherwise skip every job. A manual run always continues. |
 | Validate | Reject malformed/duplicate version values, FE/BE refs that are not a branch name or commit SHA, and a version that already has a draft or published release. |
-| Verify prerequisites | In parallel with validation, download every pinned Rancher Desktop, Git for Windows, Docker Engine, and Compose file from upstream and compare its SHA-256 with `deployments/.env`. A missing file or a different hash fails the release before anything is built. |
 | Check and build | Call the same CI workflow used by PRs: lint, race tests, frontend checks, and real macOS/Windows native builds. No separate untested release rebuild. |
 | Windows signing | With the SignPath configuration, submit the CI-built `CARE Clinic.exe` and `uninstall.exe` for signing in one request, rebuild the NSIS installer around the signed files with the installer inputs CI produced, and submit the installer for signing. Each request waits for an approver. Without the configuration, both jobs are skipped and the CI installer is used unsigned. |
-| macOS signing | With the existing credentials, sign the app with hardened runtime, notarize/staple it, then sign and notarize/staple the DMG. Otherwise explicitly report ad-hoc signing. |
+| macOS signing | With the existing credentials, sign the nested `care-clinic-service` with hardened runtime and its virtualization entitlement, then the app with hardened runtime (see [bundle layout](#macos-app-bundle-layout)), notarize/staple it, then sign and notarize/staple the DMG. Otherwise explicitly report ad-hoc signing. |
 | Package | Wrap the CI macOS app in a DMG and copy the signed (or CI-built unsigned) Windows installer. Verify macOS metadata matches the release version. |
 | Record | Save the exact release configuration, source commit, workflow run URL, signing status, and SHA-256 file checksums. |
 | Draft | Verify the complete asset set, create/reuse the tag at the exact source commit, and create a draft marked as a prerelease. Never replace an existing release. Runs after an unsigned package too: its condition allows the Windows signing jobs to be skipped, which GitHub's default job condition would not. |
@@ -165,14 +133,14 @@ the eventual published release assets are the durable downloads.
 Before publishing:
 
 1. Check both installers and their checksums. Use a disposable clinic to check
-   fresh setup, existing-clinic upgrade, browser access, and operation without
-   internet after provisioning.
+   fresh setup (including the service install), browser access, and operation
+   without internet after provisioning.
 2. Add release notes describing visible changes, dependency changes, known
-   limitations, and any database migration or prerequisite requirements.
-3. For an existing clinic, require a verified backup before an update is
-   applied. Preserve
-   its CA identity and persistent data; an application upgrade should not
-   require all client devices to reinstall certificate trust.
+   limitations, and any database migration requirements. Say so when the
+   bundled service changed: machines that already have it need a service
+   reinstall (see [the care-clinic-service](development-and-release.md#the-care-clinic-service)).
+3. An application upgrade must preserve the clinic's CA identity and persistent
+   data; client devices should not need to reinstall certificate trust.
 4. Decide how to publish. The draft is created as a prerelease. The in-app
    updater only offers GitHub's **latest** release, which never includes
    prereleases, so installed clinics are offered this version only if you
@@ -186,8 +154,7 @@ download. Publishing a stable release is a separate maintainer decision.
 
 Once published, do not move the tag or replace its files. Corrections require a
 new version and another configuration PR. A database downgrade is not guaranteed
-by reinstalling an older desktop binary; recovery may require a version-matched
-backup.
+by reinstalling an older desktop binary.
 
 ## Failure and retry
 
@@ -206,24 +173,57 @@ identity.
 
 ## Scope and current limitations
 
-The process does not deploy to clinics, bundle Docker/prerequisite installers,
-or prebuild the upstream CARE container images. Initial clinic setup still
-needs the dependencies and source downloads described in the installation
-guides. Image tags and downstream dependency downloads are not guaranteed
-immutable.
+The process does not deploy to clinics or prebuild the upstream CARE container
+images. Initial clinic setup still needs the source and image downloads
+described in [onboarding](onboarding.md). Image tags and downstream dependency
+downloads are not guaranteed immutable.
 
-A published release does reach installed clinics on its own, by two separate
-routes, both described in
-[clinic lifecycle](clinic-lifecycle.md) and
-[configuration and settings](configuration-and-settings.md):
+CI does not build an engine bundle, so a release `.app` ships one only if the
+packaging run provides it (see [bundle layout](#macos-app-bundle-layout)).
+Without one, setup uses an engine already installed in the service or fails
+with a message naming `ctl install`. Windows releases contain the app only:
+there is no Windows service yet, so a Windows computer cannot be set up as a
+server.
 
-- **CARE backend and frontend** follow the branch named in the manifest. An
-  installed clinic checks it in the background, builds the newer commit, and
-  applies it when the operator accepts or at the next start. This needs no
-  desktop release at all, which is the point: a verified fix merged to the
-  branch reaches clinics that nobody will manually update.
-- **CARE Clinic** is offered from this release page under Advanced ->
-  Updates, and is always operator-initiated.
+CARE Clinic itself is offered from this release page under Advanced ->
+Updates, and is always operator-initiated. CARE backend and frontend updates
+were removed in v2 and return later via engine agent ops.
+
+## macOS app bundle layout
+
+[`scripts/bundle-macos.sh`](../scripts/bundle-macos.sh) runs as the Wails
+`postBuildHooks` entry for `darwin/*` in [`app/wails.json`](../app/wails.json),
+after every macOS `wails build`. It adds:
+
+```text
+CARE Clinic.app/Contents/
+|-- MacOS/
+|   |-- CARE Clinic
+|   `-- care-clinic-service                     # the host service
+`-- Resources/engine/                           # optional
+    |-- care-engine-<version>-arm64.tar.gz
+    `-- SHA256SUMS
+```
+
+| Item | Source |
+| --- | --- |
+| `care-clinic-service` | Built from `app/cmd/care-clinic-service` with CGO (`lipo` of arm64 and amd64 for `darwin/universal`), or copied from `CARE_CLINIC_SERVICE_BINARY`. Ad-hoc signed with [`care-clinic-service.entitlements`](../app/cmd/care-clinic-service/care-clinic-service.entitlements) (`com.apple.security.virtualization`). |
+| Engine tarball | `CARE_CLINIC_ENGINE_BUNDLE`, else the newest `dist/care-engine-*-arm64.tar.gz`, else none. Its `SHA256SUMS` line is taken from a `SHA256SUMS` beside the tarball, or computed. |
+
+The app is then re-signed ad-hoc without `--deep` (which would drop the
+service's entitlements) and checked with `codesign --verify --strict`. The
+release workflow re-signs both with the Developer ID: the service first, with
+`--options runtime`, a timestamp and the same entitlements, then the app.
+
+At run time [`internal/bundle`](../app/internal/bundle) reads these files, and
+the same two variables override them, for example under `wails dev`, where
+there is no bundle. Onboarding copies the service binary into place with one
+administrator prompt ([onboarding](onboarding.md)); setup uploads the engine
+tarball unless the same or a newer version is already active.
+
+A service binary that changed does not replace an installed service. On a
+machine where it is installed, reinstall it with
+`sudo scripts/service-macos.sh install-built <binary>`.
 
 ## Windows signing (SignPath)
 
@@ -304,7 +304,7 @@ so it could never be signed. `project.nsi` has two build modes for this:
 Without either define, as in `wails build -nsis`, the installer generates its
 uninstaller as before. In every mode the uninstaller first asks the app whether
 the clinic setup is gone; see
-[removing the desktop app](cleanup-and-uninstall.md#removing-the-desktop-app). Keep the registry entries in the `SIGNED_UNINSTALLER`
+[removing the desktop app](cleanup-and-uninstall.md#3-removing-the-desktop-app). Keep the registry entries in the `SIGNED_UNINSTALLER`
 branch in step with Wails' `wails.writeUninstaller` macro when upgrading Wails.
 
 ### Before the first signed release

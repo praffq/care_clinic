@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ohcnetwork/care_desktop/app/internal/bundle"
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
 	"github.com/ohcnetwork/care_desktop/app/internal/service/api"
 )
 
@@ -208,6 +210,69 @@ func TestWatchServicePublishesUntilStopped(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func recordProgress(a *App) *[]progress.Event {
+	var mu sync.Mutex
+	var got []progress.Event
+	a.onProgress = func(e progress.Event) { mu.Lock(); got = append(got, e); mu.Unlock() }
+	return &got
+}
+
+func TestEnsureEngineReportsUploadBytes(t *testing.T) {
+	t.Setenv(bundle.EngineBundleEnv, "")
+	a, _ := serviceApp(t)
+	shipEngine(t, a, "0.2.0")
+	got := recordProgress(a)
+	if err := a.ensureEngine(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	evs := *got
+	last := evs[len(evs)-1]
+	if last.Step != stepEngine || last.State != progress.Done {
+		t.Fatalf("last event = %+v", last)
+	}
+	var full bool
+	for _, e := range evs {
+		if e.Step == stepEngine && e.Total > 0 && e.Done == e.Total {
+			full = true
+		}
+	}
+	if !full {
+		t.Fatalf("no complete byte progress in %+v", evs)
+	}
+}
+
+func TestEnsureEngineSkipsAKeptEngine(t *testing.T) {
+	t.Setenv(bundle.EngineBundleEnv, "")
+	a, f := serviceApp(t)
+	f.set(func(s *api.ServiceStatus) { s.Slots.Current = "0.1.1" })
+	got := recordProgress(a)
+	if err := a.ensureEngine(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 || (*got)[0].State != progress.Skipped || !strings.Contains((*got)[0].Detail, "0.1.1") {
+		t.Fatalf("events = %+v", *got)
+	}
+}
+
+func TestPrepareEngineReportsStepsInOrder(t *testing.T) {
+	t.Setenv(bundle.EngineBundleEnv, "")
+	a, f := serviceApp(t)
+	f.set(func(s *api.ServiceStatus) { s.Slots.Current = "0.1.1" })
+	got := recordProgress(a)
+	if err := a.prepareEngine(context.Background(), "north"); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, e := range *got {
+		seq = append(seq, e.Step+":"+string(e.State))
+	}
+	want := []string{"service:active", "service:done", "engine:active", "engine:skipped",
+		"engine-ready:active", "engine-ready:done", "address:active", "address:done"}
+	if !slices.Equal(seq, want) {
+		t.Fatalf("steps = %v, want %v", seq, want)
+	}
 }
 
 func TestPrepareEngineSetsTheClinicAddress(t *testing.T) {

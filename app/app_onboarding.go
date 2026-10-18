@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
+
 	"github.com/ohcnetwork/care_desktop/app/cmd/care-clinic-service/launchd"
 	"github.com/ohcnetwork/care_desktop/app/internal/clinic"
 	"github.com/ohcnetwork/care_desktop/app/internal/hostcheck"
@@ -179,6 +181,7 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 				}
 				e = a.engine()
 				e.AdminPassword = adminPassword
+				e.Progress = a.progress()
 				return e.Setup()
 			},
 			start: func() error { return e.Start() },
@@ -189,19 +192,43 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 
 // prepareEngine gets the engine installed, running and advertising host.
 func (a *App) prepareEngine(ctx context.Context, host string) error {
+	p := a.progress()
+	p.Start(stepService, "")
 	if err := a.waitServiceReachable(10 * time.Second); err != nil {
 		return fmt.Errorf("the CARE Clinic service isn't running; install it from the computer check first (%w)", err)
 	}
+	p.Finish(stepService, "")
+	p.Start(stepEngine, "")
 	if err := a.ensureEngine(ctx); err != nil {
 		return err
 	}
+	p.Start(stepEngineReady, "")
 	if err := a.waitEngineReady(ctx); err != nil {
 		return err
 	}
+	p.Finish(stepEngineReady, "")
+	p.Start(stepAddress, host+".local")
 	if _, err := a.svc().UpdateConfig(ctx, api.ServiceConfigUpdate{MDNSName: &host}); err != nil {
 		return fmt.Errorf("couldn't set the clinic address: %w", err)
 	}
+	p.Finish(stepAddress, host+".local")
 	return nil
+}
+
+// Setup steps the app reports before the clinic's own (clinic.Step*).
+const (
+	stepService     = "service"
+	stepEngine      = "engine"
+	stepEngineReady = "engine-ready"
+	stepAddress     = "address"
+)
+
+// progress sends setup steps to the UI as "setup-progress" events.
+func (a *App) progress() progress.Func {
+	if a.onProgress != nil {
+		return a.onProgress
+	}
+	return func(e progress.Event) { a.emit("setup-progress", e) }
 }
 
 // checkNameFree checks no other device answers for host, unless this

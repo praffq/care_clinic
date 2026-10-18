@@ -12,11 +12,6 @@ const ROWS: { key: keyof UpdateChecks; label: string; help: string }[] = [
     label: "Check for CARE Clinic app updates",
     help: "When off, this app never contacts GitHub to look for a newer CARE Clinic version.",
   },
-  {
-    key: "care",
-    label: "Check for CARE software updates",
-    help: "When off, CARE stays on its current version: nothing is checked, prepared or installed in the background.",
-  },
 ];
 
 export function UpdateCheckSettings({ adminPassword }: { adminPassword: string }) {

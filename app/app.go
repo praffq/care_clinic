@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/progress"
+
 	"github.com/ohcnetwork/care_desktop/app/internal/bundle"
 	"github.com/ohcnetwork/care_desktop/app/internal/hostcheck"
 	"github.com/ohcnetwork/care_desktop/app/internal/release"
@@ -22,10 +24,12 @@ import (
 )
 
 type App struct {
-	ctx       context.Context
-	installFS fs.FS
-	pins      *release.Pins
-	log       *applog.Logger
+	ctx context.Context
+	// onProgress receives setup progress in tests instead of the UI.
+	onProgress progress.Func
+	installFS  fs.FS
+	pins       *release.Pins
+	log        *applog.Logger
 	// service reaches the host service; nil means the installed one.
 	service serviceAPI
 

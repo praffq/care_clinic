@@ -9,7 +9,8 @@ import (
 	"github.com/ohcnetwork/care_desktop/app/internal/sys/trust"
 )
 
-func (e *Clinic) setUpThisComputer() {
+// setUpThisComputer reports whether this computer can open the clinic.
+func (e *Clinic) setUpThisComputer() bool {
 	e.localSetupOffered = true
 	host := e.host()
 
@@ -30,7 +31,7 @@ func (e *Clinic) setUpThisComputer() {
 		if e.Confirm == nil || !e.Confirm(title, message) {
 			e.logln("Skipped - other devices can still use the clinic, but this computer's own " +
 				"browser may not open https://" + host + "/. Starting CARE again will offer this once more.")
-			return
+			return false
 		}
 		var steps []elevate.Step
 		if needHosts {
@@ -46,7 +47,9 @@ func (e *Clinic) setUpThisComputer() {
 			cert.TryWithoutAdmin()
 		}
 	}
-	e.logln(localSetupResult(host, hosts.HasEntry(host), trust.HostTrusts(host), err))
+	hostsReady, trustReady := hosts.HasEntry(host), trust.HostTrusts(host)
+	e.logln(localSetupResult(host, hostsReady, trustReady, err))
+	return err == nil && hostsReady && trustReady
 }
 
 func trustWithoutAdminFirst(goos string, elevatingAnyway bool) bool {

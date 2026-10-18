@@ -112,16 +112,20 @@ func (e *Clinic) migrate() error {
 
 func (e *Clinic) createAdmin() error {
 	if e.AdminPassword == "" {
+		e.Progress.Skip(StepAdmin, "")
 		return nil
 	}
 	r, err := e.runtime()
 	if err != nil {
 		return err
 	}
+	e.Progress.Start(StepAdmin, "")
 	switch err := r.CreateSuperuser(e.context(), "admin", e.AdminPassword); {
 	case err == nil:
 		e.logln("Created admin login (username: admin).")
+		e.Progress.Finish(StepAdmin, "")
 	case errors.Is(err, stack.ErrUserExists):
+		e.Progress.Skip(StepAdmin, "The admin login already exists")
 	default:
 		return fmt.Errorf("couldn't create the admin login: %w", err)
 	}
