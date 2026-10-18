@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+
+name="care-engine-agent"
+description="CARE engine agent"
+supervisor="supervise-daemon"
+command="/usr/bin/care-engine-agent"
+output_log="/dev/console"
+error_log="/dev/console"
+respawn_delay=2
+
+depend() {
+	need net docker
+	after docker
+}
+
+start_pre() {
+	supported=$(cat /etc/care-engine/data-schema)
+	current=$(cat /var/lib/care/.data-schema 2>/dev/null)
+	case "$current" in
+	''|*[!0-9]*)
+		eerror "/var/lib/care/.data-schema is missing or invalid ('$current'); refusing to start"
+		return 1
+		;;
+	esac
+	if [ "$current" -gt "$supported" ]; then
+		eerror "data disk schema $current is newer than this engine supports ($supported); refusing to start. Upgrade the CARE engine."
+		return 1
+	fi
+}

@@ -1,0 +1,82 @@
+#!/bin/busybox sh
+# care-engine initramfs: mount the read-only EROFS system image, put a
+# writable tmpfs overlay over it, mount the persistent data disk at /var/lib
+# and switch_root into OpenRC.
+/bin/busybox --install -s /bin
+export PATH=/bin
+
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+exec >/dev/console 2>&1
+
+log() { echo "care-init: $*"; }
+fail() {
+	log "FATAL: $*"
+	log "dropping to emergency shell"
+	exec sh
+}
+
+SYSTEM_DEV=/dev/vda
+DATA_DEV=/dev/vdb
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+	care.system=*) SYSTEM_DEV=${arg#care.system=} ;;
+	care.data=*) DATA_DEV=${arg#care.data=} ;;
+	care.debug) set -x ;;
+	esac
+done
+
+log "loading modules"
+for m in $(cat /etc/modules-initramfs); do
+	modprobe "$m" || log "warning: modprobe $m failed"
+done
+
+wait_dev() {
+	i=0
+	while [ ! -b "$1" ]; do
+		i=$((i + 1))
+		[ "$i" -gt 100 ] && return 1
+		sleep 0.1
+	done
+}
+
+wait_dev "$SYSTEM_DEV" || fail "system disk $SYSTEM_DEV not found"
+wait_dev "$DATA_DEV" || fail "data disk $DATA_DEV not found"
+
+log "mounting system image $SYSTEM_DEV"
+mkdir -p /ro /rw /sysroot
+mount -t erofs -o ro "$SYSTEM_DEV" /ro || fail "cannot mount $SYSTEM_DEV (erofs)"
+
+if [ -z "$(blkid "$DATA_DEV")" ]; then
+	log "data disk $DATA_DEV is blank; formatting ext4"
+	mount -t devtmpfs devtmpfs /ro/dev
+	mount -t proc proc /ro/proc
+	chroot /ro /sbin/mkfs.ext4 -q -F -L care-data "$DATA_DEV"
+	rc=$?
+	umount /ro/proc /ro/dev
+	[ "$rc" -eq 0 ] || fail "mkfs.ext4 $DATA_DEV failed"
+fi
+
+log "mounting writable overlay"
+mount -t tmpfs -o mode=0755 tmpfs /rw
+mkdir -p /rw/upper /rw/work
+mount -t overlay overlay -o lowerdir=/ro,upperdir=/rw/upper,workdir=/rw/work /sysroot ||
+	fail "cannot mount overlay root"
+
+log "mounting data disk $DATA_DEV at /var/lib"
+mkdir -p /sysroot/var/lib
+mount -t ext4 -o noatime "$DATA_DEV" /sysroot/var/lib || fail "cannot mount $DATA_DEV (ext4)"
+mkdir -p /sysroot/var/lib/docker /sysroot/var/lib/care/clinic /sysroot/var/lib/care/backups /sysroot/var/lib/care/builds
+chmod 0700 /sysroot/var/lib/care/clinic /sysroot/var/lib/care/builds
+if [ ! -e /sysroot/var/lib/care/.data-schema ]; then
+	log "initialising data schema 1"
+	echo 1 >/sysroot/var/lib/care/.data-schema
+fi
+log "data schema $(cat /sysroot/var/lib/care/.data-schema)"
+
+umount /proc /sys
+mount --move /dev /sysroot/dev
+log "switching root"
+exec switch_root /sysroot /sbin/init
+fail "switch_root failed"
