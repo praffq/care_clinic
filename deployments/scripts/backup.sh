@@ -152,7 +152,7 @@ restore_set() {
 	valid_id "$id" || fail "invalid backup id: $id" || return 1
 	key="$INPUT_DIR/recovery-key.pem"
 	[ -s "$key" ] || fail "no recovery key in the restore input" || return 1
-	grep -q "\"id\":\"$id\"" "$INPUT_DIR/manifest.json" || fail "the restore input is not set $id" || return 1
+	grep -Eq "\"id\"[[:space:]]*:[[:space:]]*\"$id\"" "$INPUT_DIR/manifest.json" || fail "the restore input is not set $id" || return 1
 	wait_for_database || return 1
 	clean_scratch
 	work="$BACKUP_DIR/.restore-$id"

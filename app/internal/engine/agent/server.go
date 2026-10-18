@@ -215,12 +215,17 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The lock is released before the final frame is written: a client that
+	// has read the result may start its next op straight away.
+	release := func() {}
 	if !readOnlyOps[name] {
 		if running, ok := s.acquire(name); !ok {
 			writeBusy(w, running)
 			return
 		}
-		defer s.release()
+		var once sync.Once
+		release = func() { once.Do(s.release) }
+		defer release()
 	}
 
 	// A mutating op killed half-way is worse than one that finishes, so it
@@ -238,6 +243,7 @@ func (s *Server) handleOp(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	fw := newFrameWriter(w)
 	result, err := dispatch(ctx, s.exec, op, body, password, fw)
+	release()
 	if err != nil {
 		oe := toOpError(ctx, err)
 		s.logf("op %s: failed after %s: %s", name, time.Since(start).Round(time.Millisecond), oe.Error())
