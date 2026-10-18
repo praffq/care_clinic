@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/ohcnetwork/care_desktop/app/internal/engine/client"
 	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 )
 
@@ -36,6 +38,23 @@ var appServices = []protocol.Service{protocol.ServiceBackend, protocol.ServiceCe
 
 // stackUpTimeout is passed to stack.up; the agent waits until healthy.
 const stackUpTimeout = 600
+
+var busyRetry = 2 * time.Second
+
+func (c *Coordinator) stackUp(ctx context.Context) error {
+	deadline := time.Now().Add(stackUpTimeout * time.Second)
+	for {
+		err := c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil)
+		if !errors.Is(err, client.ErrBusy) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(busyRetry):
+		}
+	}
+}
 
 func (c *Coordinator) careForward() map[string]stepFunc {
 	return map[string]stepFunc{
@@ -95,7 +114,7 @@ func (c *Coordinator) careForward() map[string]stepFunc {
 			return c.o.Agent.Op(ctx, protocol.RunMigrations{}, nil)
 		},
 		StepStartApp: func(ctx context.Context, j *Journal) error {
-			return c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil)
+			return c.stackUp(ctx)
 		},
 		StepHealth: func(ctx context.Context, j *Journal) error { return c.o.Stack.Health(ctx) },
 	}
@@ -201,7 +220,7 @@ func (c *Coordinator) careRollback() map[string]stepFunc {
 			return c.o.Stack.WriteEnv(ctx, StackImages(j.Rollback.PreviousImages), j.Rollback.PreviousPlugs)
 		},
 		StepRBStart: func(ctx context.Context, j *Journal) error {
-			return c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil)
+			return c.stackUp(ctx)
 		},
 		StepRBHealth: func(ctx context.Context, j *Journal) error { return c.o.Stack.Health(ctx) },
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ohcnetwork/care_desktop/app/internal/engine/protocol"
 	"github.com/ohcnetwork/care_desktop/app/internal/feed"
 )
 
@@ -137,7 +136,7 @@ func (c *Coordinator) desktopForward() map[string]stepFunc {
 			if !t.WithCare {
 				return nil
 			}
-			if err := c.o.Agent.Op(ctx, protocol.StackUp{Wait: true, TimeoutSec: stackUpTimeout}, nil); err != nil {
+			if err := c.stackUp(ctx); err != nil {
 				return err
 			}
 			return c.o.Stack.Health(ctx)
