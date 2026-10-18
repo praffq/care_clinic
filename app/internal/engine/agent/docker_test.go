@@ -80,7 +80,7 @@ func newDocker(respond func(Command) fakeRun) (*DockerExecutor, *fakeRunner) {
 	}, r
 }
 
-var composePrefix = []string{"docker", "compose", "--project-name", "care", "--file", "/var/lib/care/clinic/docker-compose.yml", "--project-directory", "/var/lib/care/clinic"}
+var composePrefix = []string{"docker", "compose", "--project-name", "care", "--file", "/var/lib/care/files/config/compose.yml", "--project-directory", "/var/lib/care/files/config", "--env-file", "/var/lib/care/files/config/stack.env"}
 
 func c(args ...string) []string { return append(slices.Clone(composePrefix), args...) }
 
@@ -231,6 +231,9 @@ func TestDockerWithoutComposeFile(t *testing.T) {
 	var oe *protocol.OpError
 	if err := d.StackLogs(ctx, protocol.StackLogs{Service: "backend", TailLines: 10}, em); !errors.As(err, &oe) || oe.Code != protocol.CodeNotInstalled {
 		t.Fatalf("stack.logs: %v", err)
+	}
+	if err := d.StackUp(ctx, protocol.StackUp{Wait: true}, em); !errors.As(err, &oe) || oe.Code != protocol.CodeNotInstalled {
+		t.Fatalf("stack.up: %v", err)
 	}
 	if len(r.argv()) != 0 {
 		t.Fatalf("ran %v without a compose file", r.argv())

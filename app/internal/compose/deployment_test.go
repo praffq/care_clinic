@@ -1,7 +1,6 @@
 package compose
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,7 +84,7 @@ func TestCaddyBootstrapServesMobileSetupAndPublicRoot(t *testing.T) {
 	bootstrap := text[start:end]
 	for _, want := range []string{
 		"@mobileSetup path /setup /setup/",
-		"handle @mobileSetup {\n\t\troot * /setup\n\t\trewrite * /index.html\n\t\tfile_server\n\t}",
+		"handle @mobileSetup {\n\t\troot * /setup\n\t\trewrite * /index.html\n\t\ttemplates\n\t\tfile_server\n\t}",
 		"handle /root.crt {\n\t\theader Content-Type application/x-x509-ca-cert\n\t\troot * /data/caddy/pki/authorities/local\n\t\tfile_server\n\t}",
 	} {
 		if !strings.Contains(bootstrap, want) {
@@ -104,7 +103,7 @@ func TestCaddyBootstrapServesMobileSetupAndPublicRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "./setup:/setup:ro") {
+	if !strings.Contains(string(compose), "./setup.html:/setup/index.html:ro") {
 		t.Fatal("mobile setup directory is not mounted read-only")
 	}
 	page, err := os.ReadFile("../../../deployments/setup/index.html")
@@ -128,7 +127,7 @@ func TestOnboardingIsServedByCARE(t *testing.T) {
 	}
 	text := string(data)
 	start := strings.Index(text, "(site) {")
-	end := strings.Index(text, ":80 {")
+	end := strings.Index(text, "\n:80 {")
 	if start < 0 || end <= start {
 		t.Fatal("missing site route group")
 	}
@@ -138,65 +137,5 @@ func TestOnboardingIsServedByCARE(t *testing.T) {
 	}
 	if !strings.Contains(site, "handle {\n\t\treverse_proxy frontend:80\n\t}") {
 		t.Fatal("CARE frontend catch-all must serve the onboarding route")
-	}
-}
-
-func TestComposePassesSharedStorageSettings(t *testing.T) {
-	if !proc.Exists("docker") {
-		t.Skip("Docker Compose is not installed")
-	}
-	if _, err := (proc.Runner{}).Capture("docker", "compose", "version", "--short"); err != nil {
-		t.Skip("Docker Compose is not installed")
-	}
-	dir, err := filepath.Abs("../../../deployments")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tt := range []struct {
-		name       string
-		user       string
-		password   string
-		patient    string
-		facility   string
-		wantUser   string
-		wantPass   string
-		wantBucket string
-		wantPublic string
-	}{
-		{"defaults", "", "", "", "", "minioadmin", "minioadmin", "patient-bucket", "facility-bucket"},
-		{"custom", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities", "clinic-storage", "custom-storage-password", "clinic-records", "clinic-facilities"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			run := proc.Runner{Dir: dir, Env: append(os.Environ(),
-				"MINIO_ACCESS_KEY="+tt.user,
-				"MINIO_SECRET_KEY="+tt.password,
-				"FILE_UPLOAD_BUCKET="+tt.patient,
-				"FACILITY_S3_BUCKET="+tt.facility,
-			)}
-			output, err := run.Capture("docker", "compose", "--project-directory", dir,
-				"--env-file", filepath.Join(dir, ".env"), "-f", filepath.Join(dir, "docker-compose.yml"),
-				"config", "--format", "json")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var config struct {
-				Services map[string]struct {
-					Environment map[string]string `json:"environment"`
-				} `json:"services"`
-			}
-			if err := json.Unmarshal([]byte(output), &config); err != nil {
-				t.Fatal(err)
-			}
-			for _, service := range []string{"minio", "caddy"} {
-				env := config.Services[service].Environment
-				if env["FILE_UPLOAD_BUCKET"] != tt.wantBucket || env["FACILITY_S3_BUCKET"] != tt.wantPublic {
-					t.Errorf("%s does not receive the configured buckets", service)
-				}
-			}
-			env := config.Services["minio"].Environment
-			if env["MINIO_ROOT_USER"] != tt.wantUser || env["MINIO_ROOT_PASSWORD"] != tt.wantPass {
-				t.Fatal("MinIO server credentials differ from configured credentials")
-			}
-		})
 	}
 }

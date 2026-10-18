@@ -105,9 +105,9 @@ if [ -e "$SCHEMA" ]; then
 	esac
 fi
 
-mkdir -p /sysroot/var/lib/docker /sysroot/var/lib/care/clinic /sysroot/var/lib/care/backups \
+mkdir -p /sysroot/var/lib/docker /sysroot/var/lib/care/files /sysroot/var/lib/care/backups \
 	/sysroot/var/lib/care/builds /sysroot/var/lib/care/logs
-chmod 0700 /sysroot/var/lib/care/clinic /sysroot/var/lib/care/builds
+chmod 0700 /sysroot/var/lib/care/files /sysroot/var/lib/care/builds
 if [ ! -e "$SCHEMA" ]; then
 	log "initialising data schema 1"
 	# Crash-safe: make the directories durable, then write + fsync a temp
