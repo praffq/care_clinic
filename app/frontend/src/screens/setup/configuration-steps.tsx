@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, CheckCircle2, Cpu, Download, Globe, KeyRound, Lock, Minus, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Cpu, Download, Folder, FolderOpen, Globe, KeyRound, Lock, Minus, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { useState } from "react";
 
 import { Callout, ClinicAddressInput, LogButton, StatusBadge } from "@/components/onboarding";
@@ -6,9 +6,11 @@ import { Spinner } from "@/components/spinner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PasswordStrength } from "@/hooks/use-password-strength";
+import { diskSize } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useCare } from "@/state/care-store";
 import type { SetupForm } from "@/state/forms";
-import type { HostCheck, HostReport, SetupPage } from "@/types";
+import type { BackupSpace, HostCheck, HostReport, SetupBackupStatus, SetupPage } from "@/types";
 
 export type AddressResult = { name: string; state: "waiting" | "checking" | "ready" | "bad" | "failed"; message: string };
 
@@ -69,6 +71,72 @@ export function ComputerStep({ report, problem, busy, installing, onInstallServi
   );
 }
 
+function spaceDescription(space: BackupSpace, windows: boolean): string {
+  if (space.total === 0) return "The available space couldn't be measured. Check the location again.";
+  if (windows) return `${diskSize(space.free)} free`;
+  const room = space.days_left > 365 ? `room for about ${Math.floor(space.days_left / 365)} years of backups`
+    : space.days_left > 0 ? `room for about ${space.days_left} days of backups`
+    : space.need > 0 ? `backups need at least ${diskSize(space.need)}` : "";
+  return `${diskSize(space.free)} free${room ? ` · ${room}` : ""}`;
+}
+
+export function BackupStep({ form, space, folderProblem, recovery, recoveryError, busy, action, onChoose, onCheck, onSave, onVerify, onReplace, onReload, onOpenFolder }: {
+  form: SetupForm; space: BackupSpace | null; folderProblem: string; recovery: SetupBackupStatus;
+  recoveryError: string; busy: boolean; action: string;
+  onChoose: () => void; onCheck: () => void; onSave: () => void; onVerify: () => void; onReplace: () => void; onReload: () => void;
+  onOpenFolder: () => void;
+}) {
+  const { platform } = useCare();
+  const folderReady = space !== null && !folderProblem;
+  const checked = recovery.backup_verified && !recovery.backup_problem && !recoveryError && action !== "verify-backup";
+  return (
+    <>
+      <section className="on-card">
+        <div className="on-data-row" style={{ paddingTop: 20, paddingBottom: 20 }}>
+          <span className="on-tile"><Folder aria-hidden="true" /></span>
+          <div className="on-grow"><div className="on-eyebrow">Backups are saved to</div>
+            <strong className="on-mono">{space?.dir || form.backupDir || "Checking the backup location…"}</strong>
+            {space ? <p>{spaceDescription(space, platform === "windows")}</p> : null}
+          </div>
+          <Button disabled={busy} onClick={onChoose}><FolderOpen aria-hidden="true" />Change folder</Button>
+        </div>
+        {folderProblem ? <div style={{ padding: "0 20px 16px" }}><p role="alert">{space && space.total > 0 && space.free < space.need
+          ? `Only ${diskSize(space.free)} is free there. Backups need at least ${diskSize(space.need)} to start with. Choose a different location with more room.`
+          : folderProblem}</p><div className="on-actions"><Button disabled={busy} onClick={onCheck}>Check again</Button></div></div> : null}
+      </section>
+      <section className="on-card on-backup-recovery" aria-label="Your backup recovery file">
+        <div className="on-card-title"><h3>Your backup recovery file</h3><p>This small file unlocks your backups if you ever need to restore, on this computer or a new one. CARE keeps a copy on this computer too, but it is lost with the computer. Keep this separate file safe.</p>
+          {!folderReady ? <p>Sort the folder out first — the file is made once CARE knows where the backups go.</p> : null}
+        </div>
+        <div className="on-data-row">
+          <span className={cn("on-tile", recovery.backup_saved && !recovery.backup_problem && "on-solid")}>{recovery.backup_saved && !recovery.backup_problem ? <Check /> : <KeyRound />}</span>
+          <div className="on-grow"><strong>{recovery.backup_saved ? recovery.backup_problem ? "The saved recovery file needs checking" : "Recovery file saved" : "1. Save the recovery file"}</strong>
+            <p className={recovery.backup_saved ? "on-mono" : ""}>{recovery.backup_saved ? recovery.backup_path || "The saved location isn't available." : "You choose where it goes — anywhere except CARE's own folders."}</p>
+          </div>
+          {recovery.backup_saved ? !recovery.backup_problem ? <StatusBadge tone="ok"><Check />Saved</StatusBadge> : null
+            : <Button variant="primary" className="on-save-primary" disabled={busy || !folderReady} onClick={onSave}>{action === "save-backup" ? <Spinner /> : <FolderOpen aria-hidden="true" />}Choose where to save</Button>}
+          {recovery.backup_saved ? <Button disabled={busy || !folderReady} onClick={onReplace}>{action === "replace-backup" ? <Spinner /> : <RefreshCw aria-hidden="true" />}Save a new recovery file</Button> : null}
+          {platform === "windows" && recovery.backup_saved && !recovery.backup_problem ? <Button disabled={busy} onClick={onOpenFolder}>Open folder</Button> : null}
+        </div>
+        <div className="on-data-row">
+          <span className={cn("on-tile", checked && "on-solid", recoveryError && "on-bad")}>{checked ? <Check /> : <ShieldAlert />}</span>
+          <div className="on-grow"><strong>{checked ? "Recovery file checked" : "2. Check the file you saved"}</strong><p>{checked ? "The file matches this clinic." : "Select the saved file so CARE can confirm it's the right one."}</p></div>
+          {checked ? <StatusBadge tone="ok"><Check />Checked</StatusBadge> : null}
+          <Button variant={checked || !recovery.backup_saved ? "default" : "primary"} disabled={busy || !folderReady || !recovery.backup_saved} onClick={onVerify}>{action === "verify-backup" ? <Spinner /> : checked ? <RefreshCw aria-hidden="true" /> : <FolderOpen aria-hidden="true" />}{checked ? "Check again" : "Select saved file"}</Button>
+        </div>
+        {recovery.backup_saved ? <p className="on-small" style={{ padding: "0 20px 14px" }}>Lost the saved file? Save a new recovery file here. This replaces the old key; select and check the new file before continuing.</p> : null}
+      </section>
+      {recovery.backup_problem ? <Callout title="The recovery file isn't ready">
+        {recovery.backup_problem === "mismatch" ? "That file doesn't match this clinic. Select the file you saved for this setup." : "The saved file couldn't be opened. Select it in its new location, or save a new recovery file."}
+        <p>A new recovery file replaces the old one. Only the new file will unlock the backups this setup makes.</p>
+      </Callout> : null}
+      {recoveryError ? <Callout tone="danger" title="The recovery file couldn't be checked">{recoveryError}<div className="on-actions"><Button disabled={busy} onClick={onReload}>Check saved files again</Button><LogButton /></div></Callout> : null}
+      <Callout tone="danger" title="Keep this file safe, and don't share it with anyone">It unlocks every backup this clinic makes.</Callout>
+      {platform === "windows" ? <Callout title="Choose a secure location">An external drive is recommended for backups. Desktop may sync to OneDrive; saving recovery files there can upload them to your cloud account.</Callout> : null}
+    </>
+  );
+}
+
 export function AdminStep({ form, patch, strength, passwordError, busy }: {
   form: SetupForm; patch: (form: Partial<SetupForm>) => void; strength: PasswordStrength;
   passwordError: string; busy: boolean;
@@ -105,14 +173,15 @@ export function AdminStep({ form, patch, strength, passwordError, busy }: {
   );
 }
 
-export function ReviewStep({ steps, form, report, issues, verified, busy, onEdit }: {
-  steps: SetupPage[]; form: SetupForm; report: HostReport | null; issues: SetupIssue[];
+export function ReviewStep({ steps, form, report, backupPath, issues, verified, busy, onEdit }: {
+  steps: SetupPage[]; form: SetupForm; report: HostReport | null; backupPath: string; issues: SetupIssue[];
   verified: boolean; busy: boolean; onEdit: (page: SetupPage) => void;
 }) {
   const passed = report?.checks.filter((check) => check.level !== "fail").length ?? 0;
   const rows = [
     { id: "computer" as const, icon: Cpu, label: "This computer", value: report ? `${passed} of ${report.checks.length} computer checks passed` : "", detail: verified ? "Checked just now" : "Checking before installation" },
     { id: "address" as const, icon: Globe, label: "Clinic address", value: `https://${form.hostInput.trim().toLowerCase()}.local`, detail: "What staff type in their browser" },
+    { id: "backup" as const, icon: Folder, label: "Backups", value: backupPath, detail: "Every night at 12 AM · recovery file saved and checked" },
     { id: "admin" as const, icon: KeyRound, label: "Admin login", value: "admin", detail: "Password set" },
   ];
   return (

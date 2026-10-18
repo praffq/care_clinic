@@ -35,7 +35,16 @@ export type AppState = {
 
 export type ClientConnectPhase = "finding" | "connecting" | "checking" | "opening";
 
-export type SetupPage = "computer" | "address" | "admin" | "review" | "install";
+export type SetupPage = "computer" | "address" | "backup" | "admin" | "review" | "install";
+
+export type SetupBackupStatus = {
+  backup_saved: boolean;
+  backup_verified: boolean;
+  backup_path: string;
+  backup_problem: "" | "missing" | "unreadable" | "mismatch";
+};
+
+export type BackupSpace = { dir: string; free: number; total: number; need: number; days_left: number };
 export type SetupFailure = { can_retry: boolean };
 
 /** One row of HostChecks: what this computer needs before setup. */

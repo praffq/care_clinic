@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import type {} from "./fixtures/host";
+import { completeBackups } from "./helpers/setup";
 
 const samplePassword = "ClinicTest123";
 const forward = (page: Page) => page.getByRole("button", { name: "Continue", exact: true });
@@ -46,6 +47,7 @@ async function address(page: Page, platform = "darwin") {
 async function admin(page: Page, platform = "darwin") {
   await address(page, platform);
   await forward(page).click();
+  await completeBackups(page);
   await expect(page.getByRole("heading", { name: "Creating the admin password" })).toBeVisible();
 }
 async function fillPassword(page: Page, password = samplePassword) {
@@ -537,20 +539,20 @@ test("RunSetup rejection before acceptance stays on Review; acceptance alone ent
   expect(await page.evaluate(() => {
     const attempts = window.careTest.calls.filter((call) => call.method === "RunSetup");
     return attempts[attempts.length - 1]?.args;
-  })).toEqual(["care.local", samplePassword]);
+  })).toEqual(["care.local", samplePassword, ""]);
 });
 
-test("installation preserves the 5-step wizard rail", async ({ page }) => {
+test("installation preserves the 6-step wizard rail", async ({ page }) => {
   await review(page);
   const rail = page.getByRole("complementary", { name: "Setup progress" });
   const labels = rail.locator(".on-rail-step > span:nth-child(2)");
-  await expect(rail).toContainText("Step 4 of 5");
+  await expect(rail).toContainText("Step 5 of 6");
   const reviewedPages = await labels.allTextContents();
-  expect(reviewedPages).toHaveLength(5);
+  expect(reviewedPages).toHaveLength(6);
   await page.evaluate(() => window.careTest.respond("RunSetup", undefined));
   await install(page).click();
   await expect(page.getByRole("heading", { name: "Installing CARE", exact: true })).toBeVisible();
-  await expect(rail).toContainText("Step 5 of 5");
+  await expect(rail).toContainText("Step 6 of 6");
   await expect(labels).toHaveText(reviewedPages);
   await expect(rail.locator('[aria-current="step"]')).toContainText("Install");
   await capture(page, "onboarding-install-rail");
@@ -568,7 +570,9 @@ for (const size of [{ width: 1100, height: 700 }, { width: 720, height: 560 }]) 
     await expect(forward(page)).toBeEnabled();
     await fits(page); await capture(page, `onboarding-address-${size.width}x${size.height}`);
     await forward(page).click();
-    await expect(page.getByRole("heading", { name: "Creating the admin password" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Setting up backups" })).toBeVisible();
+    await fits(page); await capture(page, `onboarding-backup-${size.width}x${size.height}`);
+    await completeBackups(page);
     await fits(page); await capture(page, `onboarding-admin-${size.width}x${size.height}`);
     await fillPassword(page);
     await expect(forward(page)).toBeEnabled();

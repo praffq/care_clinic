@@ -5,6 +5,7 @@ import type {
   AppState,
   AppUpdate,
   AppUpdateOutcome,
+  BackupSpace,
   BackupsState,
   CareHealth,
   ClientPreflight,
@@ -22,6 +23,7 @@ import type {
   QuitRequest,
   RestoreChoice,
   ServiceState,
+  SetupBackupStatus,
   StorageState,
   SystemInfo,
   UpdateChecks,
@@ -56,7 +58,15 @@ declare global {
           ChangeAdminPassword(currentPassword: string, newPassword: string): Promise<void>;
           ClinicAction(action: "start" | "stop" | "restart"): Promise<void>;
           ClinicStatus(): Promise<string>;
-          RunSetup(mdnsName: string, adminPassword: string): Promise<void>;
+          RunSetup(mdnsName: string, adminPassword: string, backupDir: string): Promise<void>;
+          ValidateBackupDir(dir: string): Promise<string>;
+          BackupDirSpace(dir: string): Promise<BackupSpace>;
+          ChooseFolder(title: string): Promise<string>;
+          GetSetupBackupStatus(): Promise<SetupBackupStatus>;
+          SaveSetupBackupRecovery(backupDir: string): Promise<boolean>;
+          ReplaceSetupBackupRecovery(backupDir: string): Promise<boolean>;
+          VerifySetupBackupRecovery(backupDir: string): Promise<boolean>;
+          OpenSetupBackupRecoveryFolder(): Promise<void>;
           RetrySetup(): Promise<void>;
           CleanupFailedInstall(): Promise<void>;
           ReadEnv(name: string, adminPassword: string): Promise<string>;

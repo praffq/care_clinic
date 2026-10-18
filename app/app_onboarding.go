@@ -147,7 +147,7 @@ func (a *App) setupFailure(error) SetupFailure {
 // RunSetup installs the clinic: the engine bundle through the service, then
 // the CARE stack through the engine. The service must already be installed
 // (HostChecks / InstallService).
-func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
+func (a *App) RunSetup(mdnsName, adminPassword, backupDir string) (err error) {
 	defer a.logError(&err)
 	if err := ValidatePassword(adminPassword); err != nil {
 		return err
@@ -168,6 +168,11 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 	if cfg := a.loadConfig(); cfg.SetupDone || cfg.Removing {
 		a.jobMu.Unlock()
 		return errors.New("this computer already has a clinic set up")
+	}
+	backupKey, err := a.prepareSetupBackupKey(backupDir)
+	if err != nil {
+		a.jobMu.Unlock()
+		return err
 	}
 	return a.runLockedJob(func() error {
 		cfg := a.loadConfig()
@@ -190,6 +195,9 @@ func (a *App) RunSetup(mdnsName, adminPassword string) (err error) {
 			config: cfg,
 			prepare: func() error {
 				if err := a.prepareEngine(ctx, host); err != nil {
+					return err
+				}
+				if err := a.applySetupBackups(ctx, backupDir, backupKey); err != nil {
 					return err
 				}
 				if _, err := a.ensureInstallDir(); err != nil {

@@ -171,7 +171,7 @@ after the job succeeds, then emits `setup-done`. The frontend waits for both
 `setup-done` and the matching successful `care-done` before entering the
 panel. A failure emits `setup-failed {can_retry}` first. `RetrySetup` reuses
 the in-memory `setupAttempt` (and its password) under the same lock; it is
-lost when the app restarts. See [server onboarding](onboarding.md#3-install).
+lost when the app restarts. See [server onboarding](onboarding.md#5-install).
 
 A job can be waiting for an in-window confirmation or an OS approval while
 holding the lock. A panic inside the job is logged with a stack trace and
@@ -216,7 +216,14 @@ The following methods are declared in [`wails.d.ts`](../app/frontend/src/wails.d
 | `ValidateDomain(name)`, `ValidatePassword(pw)` | `string` | Query. Empty when valid, else the message. |
 | `MDNSStatus(name)` | `NameStatus` | Query. Whether the name is free on the network or already this computer's. |
 | `SetMDNSName(name)` | `void` | Sync. Saves the name before setup. |
-| `RunSetup(name, adminPassword)` | `void` | Job `setup`. Engine install, clinic install and start. |
+| `ValidateBackupDir(dir)` | `string` | Query. Empty when the folder can hold backups ("" means the service's current folder), else the problem. |
+| `BackupDirSpace(dir)` | `BackupSpace` | Query. Free and total space where backups would go. |
+| `ChooseFolder(title)` | `string` | Native folder dialog; "" when cancelled. |
+| `GetSetupBackupStatus()` | `SetupBackupStatus` | Query. Whether the setup recovery file is saved and checked, and any `missing`, `unreadable` or `mismatch` problem. |
+| `SaveSetupBackupRecovery(backupDir)`, `ReplaceSetupBackupRecovery(backupDir)` | `bool` | Sync. Make the backup key and save its recovery file; false when cancelled. Refused once installation starts. |
+| `VerifySetupBackupRecovery(backupDir)` | `bool` | Sync. Checks the selected file matches the setup key; false when cancelled. |
+| `OpenSetupBackupRecoveryFolder()` | `void` | Shows the saved recovery file in Finder or File Explorer. |
+| `RunSetup(name, adminPassword, backupDir)` | `void` | Job `setup`. Engine install, backup folder and key, clinic install and start. |
 | `RetrySetup()` | `void` | Job `setup`. Resumes the in-memory failed attempt. |
 | `CleanupFailedInstall()` | `void` | Sync. Removes an unfinished clinic from the engine and the install files; keeps the role, service and engine. |
 

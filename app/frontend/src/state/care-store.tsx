@@ -27,6 +27,7 @@ export type ClinicAction = "start" | "stop" | "restart";
 export type InstallParams = {
   host: string;
   adminPassword: string;
+  backupDir: string;
   pages?: SetupPage[];
 };
 
@@ -45,7 +46,7 @@ const IDLE_RUN: RunState = {
   finished: false,
   failMessage: "",
   failure: null,
-  pages: ["computer", "address", "admin", "review", "install"],
+  pages: ["computer", "address", "backup", "admin", "review", "install"],
 };
 
 const ACTION_LABELS: Record<ClinicAction, string> = {
@@ -391,7 +392,7 @@ export function CareProvider({ children }: { children: ReactNode }) {
         pages: params.pages ?? IDLE_RUN.pages,
       });
       try {
-        await bridge.RunSetup(params.host, params.adminPassword);
+        await bridge.RunSetup(params.host, params.adminPassword, params.backupDir);
         if (flowRef.current === "setup" && !setupEndedRef.current) {
           setFlow("installing");
           setBusy(true, "Installing CARE");
