@@ -326,7 +326,10 @@ func TestInstallActivateRelayStop(t *testing.T) {
 func TestRelayStreams(t *testing.T) {
 	release := make(chan struct{})
 	e := newEnv(t, func(x *agent.FakeExecutor) {
-		x.Handle = func(ctx context.Context, _ protocol.Op, em agent.Emitter) (any, error) {
+		x.Handle = func(ctx context.Context, op protocol.Op, em agent.Emitter) (any, error) {
+			if _, ok := op.(*protocol.ImageLoad); !ok {
+				return nil, nil // the service's stack start after boot
+			}
 			em.Progress(protocol.Progress{State: "loading"})
 			select {
 			case <-release:

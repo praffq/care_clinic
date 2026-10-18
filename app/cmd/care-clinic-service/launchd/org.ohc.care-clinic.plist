@@ -14,9 +14,9 @@
   launchd's Standard{Out,Error}Path only catch output from before that file
   is open (bad flags, an unwritable log dir); launchd itself never rotates.
 
-  ExitTimeOut 60: on SIGTERM the supervisor asks the guest to shut down
-  (up to 30 s) before killing the VM; launchd's default 20 s would SIGKILL
-  it mid-shutdown.
+  ExitTimeOut 120: on SIGTERM the supervisor stops the clinic stack (up to
+  60 s) and asks the guest to shut down (up to 30 s) before killing the VM;
+  launchd's default 20 s would SIGKILL it mid-shutdown.
 -->
 <plist version="1.0">
 <dict>
@@ -37,7 +37,7 @@
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>ExitTimeOut</key>
-	<integer>60</integer>
+	<integer>120</integer>
 	<key>StandardOutPath</key>
 	<string>/Library/Logs/care-clinic/launchd.log</string>
 	<key>StandardErrorPath</key>

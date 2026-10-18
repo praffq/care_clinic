@@ -32,15 +32,16 @@ loaded() {
 	launchctl print "system/$label" >/dev/null 2>&1
 }
 
-# bootout returns before the daemon has exited (it stops the VM first);
-# bootstrapping again before the old job is gone fails with error 5.
+# bootout returns before the daemon has exited (it stops CARE and the VM
+# first); bootstrapping again before the old job is gone fails with error 5.
+# Wait a little past the plist's ExitTimeOut (120s), when launchd kills it.
 stop_service() {
 	launchctl bootout "system/$label" || true
-	for _ in $(seq 180); do
+	for _ in $(seq 300); do
 		loaded || return 0
 		sleep 0.5
 	done
-	die "$label is still running 90s after bootout; see $logdir/service.log"
+	die "$label is still running 150s after bootout; see $logdir/service.log"
 }
 
 install_root() {
@@ -62,7 +63,7 @@ install_root() {
 	mv -f "$bin.new" "$bin"
 
 	if loaded; then
-		echo "stopping the running service"
+		echo "stopping the running service (stops CARE and the VM first)"
 		stop_service
 	fi
 	install -o root -g wheel -m 0644 "$repo/app/cmd/care-clinic-service/launchd/$label.plist" "$plist"

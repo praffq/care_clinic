@@ -15,8 +15,35 @@ an unresponsive agent), forwards the host's ports into the VM, advertises
 If a port is taken, the service keeps running, logs the owning process and
 reports it under `forward` in `ctl status`, and retries every 10 s.
 `proxy_protocol` in `config.json` prefixes every forwarded connection with a
-PROXY v2 header (off until Caddy is configured for it). Changing it through
-the control API applies to new connections at once; open ones are unaffected.
+PROXY v2 header (off until Caddy is configured for it; installing a clinic
+turns it on). Changing it through the control API applies to new connections
+at once; open ones are unaffected.
+
+## Clinic stack
+
+Once the agent is ready after a boot, the service runs `stack.up` (waiting
+for healthy) when a clinic is installed, so CARE comes back without the app.
+It never migrates or updates. Before shutting the VM down it runs
+`stack.stop`. `ctl status` reports the outcome under `engine.stack.state`:
+`not_installed`, `starting`, `running`, `failed` (with `error`), `stopping`
+or `stopped`; per-container state is `ctl clinic status`.
+
+Install a clinic without the app from dev images (`scripts/dev-images.sh`),
+run from the repo root so `deployments/` is found:
+
+```sh
+B='/Library/Application Support/care-clinic/bin/care-clinic-service'
+"$B" ctl clinic install --images dist/images --admin admin --admin-password '...'
+"$B" ctl clinic status
+"$B" ctl clinic logs caddy 50
+"$B" ctl restart                       # the stack comes back on its own
+```
+
+`install` renders `deployments/` for `<mdns_name>.local`, loads the images
+(digest-verified by the agent), uploads the config, runs migrations and
+starts the stack. Secrets are generated once and kept in
+`~/Library/Application Support/care-clinic/clinic/secrets.env`; see
+`internal/stack`.
 
 ## Developer install (LaunchDaemon)
 
